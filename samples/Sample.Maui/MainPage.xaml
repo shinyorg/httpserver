@@ -44,6 +44,11 @@
                     <Label Text="{Binding LocalUrl, TargetNullValue='Server not started'}"
                            LineBreakMode="CharacterWrap" />
 
+                    <!-- The MCP endpoint, for pasting into an AI client. Same server, same password. -->
+                    <Label Text="MCP endpoint" TextColor="Gray" Margin="0,6,0,0" />
+                    <Label Text="{Binding McpUrl, TargetNullValue='Server not started'}"
+                           LineBreakMode="CharacterWrap" />
+
                 </VerticalStackLayout>
             </Border>
 
@@ -134,7 +139,7 @@
                 </VerticalStackLayout>
             </Border>
 
-            <Label Text="Endpoints: /  ·  /api/device  ·  /api/notes  ·  /files (browse app storage) — all behind the password. /ping is open."
+            <Label Text="Endpoints: /  ·  /api/device  ·  /api/notes  ·  /files (browse app storage)  ·  /mcp (4 tools, for an AI client) — all behind the password. /ping is open."
                    TextColor="Gray"
                    FontSize="12" />
 

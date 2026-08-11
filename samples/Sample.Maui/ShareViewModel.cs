@@ -77,7 +77,10 @@ public sealed class ShareViewModel : INotifyPropertyChanged
         private set
         {
             if (this.Set(ref this.publicUrl, value))
+            {
                 this.OnPropertyChanged(nameof(this.HasPublicUrl));
+                this.OnPropertyChanged(nameof(this.McpUrl));
+            }
         }
     }
 
@@ -87,8 +90,20 @@ public sealed class ShareViewModel : INotifyPropertyChanged
     public string? LocalUrl
     {
         get => this.localUrl;
-        private set => this.Set(ref this.localUrl, value);
+        private set
+        {
+            if (this.Set(ref this.localUrl, value))
+                this.OnPropertyChanged(nameof(this.McpUrl));
+        }
     }
+
+    /// <summary>
+    /// What to paste into an MCP client. The public address when the tunnel is up, because that is
+    /// the one that works from wherever the client happens to be running; otherwise the LAN address.
+    /// </summary>
+    public string? McpUrl => (this.PublicUrl ?? this.LocalUrl) is { Length: > 0 } url
+        ? $"{url.TrimEnd('/')}/mcp"
+        : null;
 
     public string? LastError
     {

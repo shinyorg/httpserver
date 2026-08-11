@@ -196,12 +196,16 @@ public static class Http3Extensions
     /// <c>Alt-Svc</c> so clients know to try QUIC.
     /// <code>
     /// var app = builder.Build();
-    /// await app.StartAsync();
+    ///
+    /// // Before StartAsync: advertising Alt-Svc adds middleware, and the pipeline is composed
+    /// // once the server starts serving.
     /// await using var h3 = await app.ListenHttp3Async(o =>
     /// {
     ///     o.Port = 5001;
     ///     o.Certificate = certificate;
     /// });
+    ///
+    /// await app.StartAsync();
     /// </code>
     /// <para>
     /// A client will not use HTTP/3 without being told it exists. Advertising it from the TCP

@@ -1,0 +1,70 @@
+name: Bug Report
+description: You have found something wrong with Shiny HTTP Server
+title: "[Bug]: "
+labels: [bug, unverified]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for filing an issue.  Please only file issues against the LATEST STABLE or LATEST BETA version of Shiny HTTP Server from Nuget (ALPHAs are not accepted for issues).
+        If you have questions, please post them in GitHub discussions.
+        Documentation is at https://shinylib.net/httpserver
+  - type: dropdown
+    id: package
+    attributes:
+      label: Package
+      description: The package you are filing against.  If it is not listed here it means there is no support for it.
+      options:
+        - Core (Shiny.Net.HttpServer)
+        - JWT (Shiny.Net.HttpServer.Jwt)
+        - Azure Relay (Shiny.Net.HttpServer.AzureRelay)
+        - MCP (Shiny.Net.HttpServer.Mcp)
+        - SSH Tunnel (Shiny.Net.HttpServer.Ssh)
+        - Source Generator (Shiny.Net.HttpServer.SourceGenerators)
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Shiny HTTP Server Version
+      description: The version of the Nuget package you are filing against.
+    validations:
+      required: true
+  - type: input
+    id: dotnet
+    attributes:
+      label: .NET / Runtime Version
+      description: e.g. net10.0, net10.0-android, and whether you are running Native AOT / trimming.
+    validations:
+      required: true
+  - type: textarea
+    validations:
+      required: true
+    attributes:
+      label: Steps To Reproduce
+      description: Steps to reproduce the behavior.
+      placeholder: |
+        1.
+        2.
+        3.
+  - type: textarea
+    attributes:
+      label: Expected Behavior
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Actual Behavior
+    validations:
+      required: true
+  - type: textarea
+    id: exception
+    attributes:
+      label: Exception or Log output
+      description: Please copy and paste any relevant log output.
+  - type: textarea
+    id: codesample
+    attributes:
+      label: Code Sample
+      description: Please include a github repo with your reproducible sample.

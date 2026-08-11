@@ -51,11 +51,17 @@ public static class McpEndpointExtensions
                 "Build the server with HttpServer.CreateBuilder() rather than new HttpServer()."
             );
 
-        return services.GetService(typeof(McpHttpHandler)) as McpHttpHandler
-            ?? throw new InvalidOperationException(
-                "The MCP HTTP transport is not registered. Add it alongside the MCP server: " +
-                "services.AddMcpServer().WithTools<T>().WithHttpTransport()."
-            );
+        // Resolving the handler pulls the whole MCP server graph in behind it, tools included, so
+        // this is also where a tool that cannot describe itself surfaces. Building them is not
+        // deferred work that could be skipped — it is what registering an MCP server means — so the
+        // only question is whether the failure arrives as something a caller can act on.
+        return McpStartupValidation.Guarded(
+            () => services.GetService(typeof(McpHttpHandler)) as McpHttpHandler
+                ?? throw new InvalidOperationException(
+                    "The MCP HTTP transport is not registered. Add it alongside the MCP server: " +
+                    "services.AddMcpServer().WithTools<T>().WithHttpTransport()."
+                )
+        );
     }
 }
 

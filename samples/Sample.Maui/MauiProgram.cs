@@ -1,8 +1,10 @@
 using System.Net;
 using Microsoft.Extensions.Logging;
+using ModelContextProtocol.Protocol;
 using Sample.Maui.Server;
 using Shiny.Net.HttpServer;
 using Shiny.Net.HttpServer.FileBrowser;
+using Shiny.Net.HttpServer.Mcp;
 using Shiny.Net.HttpServer.Security;
 using Shiny.Net.HttpServer.Ssh;
 using Shiny.Net.HttpServer.StaticFiles;
@@ -40,6 +42,35 @@ public static class MauiProgram
         // validator is a service rather than a list handed over at startup.
         builder.Services.AddAuthentication().AddBasic<CredentialStore>(o => o.Realm = "Shiny device");
 
+        // An MCP server, in a phone app. The MCP SDK's own HTTP transport is an ASP.NET Core package,
+        // so this is the part that cannot be done any other way.
+        //
+        // ApiJsonContext is handed to WithTools rather than left to reflection: a tool's parameter
+        // and return types are published to the client as a JSON schema, and building that schema by
+        // reflection does not survive trimming — which on iOS is not optional. The context already
+        // describes DeviceSummary and Note for the HTTP API, so the tools reuse it. Miss a type and
+        // MapMcp() says so at startup rather than on the first request.
+        builder.Services
+            .AddMcpServer(o =>
+            {
+                o.ServerInfo = new Implementation { Name = "shiny-device", Version = "1.0.0" };
+                o.ServerInstructions =
+                    "Reads and edits the notes held by a phone running the Shiny HTTP Server sample, " +
+                    "and reports what that device is.";
+            })
+            .WithTools<DeviceTools>(ApiJsonContext.Default.Options)
+            .WithHttpTransport(o =>
+            {
+                // A phone is not a datacentre, and this endpoint is reachable from the public
+                // internet whenever the tunnel is up.
+                o.MaxSessions = 8;
+                o.IdleSessionTimeout = TimeSpan.FromMinutes(10);
+
+                // AllowedOrigins is left empty, which refuses every browser origin. Native MCP
+                // clients send no Origin header and are unaffected; what this stops is a page the
+                // user happens to have open driving the server behind their back.
+            });
+
         builder.Services.AddHttpServer(
             options =>
             {
@@ -65,6 +96,12 @@ public static class MauiProgram
                 server.UseEmbeddedFiles(typeof(MauiProgram).Assembly, "Sample.Maui.wwwroot");
 
                 DeviceApi.Map(server, services.GetRequiredService<NoteStore>());
+
+                // Deliberately not added to RequireAuthenticationMiddleware.AllowAnonymous: this
+                // endpoint hands out the device's state and lets a caller write to it, so it sits
+                // behind the same password as everything else. An MCP client reaches it by sending
+                // the Basic credentials from the settings screen.
+                server.MapMcp();
 
                 // The app's own storage, over HTTP. Mapped as routes rather than middleware so
                 // authorization can differ per verb — here everything is already behind the password

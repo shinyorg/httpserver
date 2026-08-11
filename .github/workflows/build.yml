@@ -1,0 +1,69 @@
+name: Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      logLevel:
+        description: 'Log level'
+        required: true
+        default: 'warning'
+  push:
+    branches:
+    - main
+    - dev
+    - preview
+    - v*
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    permissions:
+      id-token: write   # required for NuGet trusted publishing (OIDC)
+      contents: read
+
+    runs-on: macos-26
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v7
+      with:
+          fetch-depth: 0   # nbgv computes {height} from full history
+
+    - name: Setup .NET 10.0
+      uses: actions/setup-dotnet@v6
+      with:
+          dotnet-version: '10.0.x'
+
+    # build.slnf leaves out Sample.Maui - the MAUI head needs the workloads installed and proves
+    # nothing the other samples do not already prove about the library itself.
+    - name: Build
+      run: dotnet build build.slnf /restore -m -property:Configuration=Release -property:PublicRelease=true
+
+    - name: Test
+      run: dotnet test tests/Shiny.Net.HttpServer.Tests/Shiny.Net.HttpServer.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=test-results.trx"
+
+    # Runs the real ILC compiler over the library. Catches trim/AOT breaks the Roslyn analyzers cannot
+    # see - warnings out of dependencies, and anything only reachable through a call graph.
+    - name: Verify Native AOT
+      run: dotnet publish samples/Sample.Api/Sample.Api.csproj -r osx-arm64 --configuration Release
+
+    - name: Post NuGet Artifacts
+      uses: actions/upload-artifact@v7
+      with:
+        name: nuget-artifacts
+        path: '**/*.nupkg'
+        retention-days: 5
+
+    - name: NuGet Login (OIDC)
+      id: nuget-login
+      if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/v') }}
+      uses: NuGet/login@v1
+      with:
+        user: aritchie
+
+    - name: Publish NuGets
+      if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/v') }}
+      run: dotnet nuget push "**/*.nupkg" --source https://api.nuget.org/v3/index.json --api-key ${{ steps.nuget-login.outputs.NUGET_API_KEY }} --skip-duplicate

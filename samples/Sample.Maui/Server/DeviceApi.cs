@@ -128,7 +128,8 @@ public static class DeviceApi
         });
     }
 
-    static DeviceSummary Describe()
+    /// <summary>Internal rather than private: the MCP tools report the same device.</summary>
+    internal static DeviceSummary Describe()
     {
         // Battery is not readable on every platform or in every emulator, and an unhandled
         // exception here would take down a request that is otherwise fine.

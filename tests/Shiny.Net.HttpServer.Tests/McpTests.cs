@@ -1,6 +1,8 @@
 using System.ComponentModel;
 using System.Net;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
@@ -343,7 +345,91 @@ public class McpTests
         Assert.Contains("WithHttpTransport", ex.Message);
     }
 
+    // ---- Trimming: the JSON context a trimmed app needs ----
+    //
+    // These stand in for what only happens once the app is trimmed. The test host is not trimmed and
+    // its reflection resolver would describe any type asked of it, so a tool that fails on a phone
+    // passes here. Handing the MCP server a JsonSerializerOptions whose only resolver is a
+    // source-generated context reproduces the same absence on purpose: a type the context does not
+    // cover cannot be described, exactly as if the trimmer had taken the reflection path away.
+
+    [Fact]
+    public async Task MapMcp_Rejects_A_Tool_Whose_Types_The_Json_Context_Omits()
+    {
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => StartPocoServerAsync(EmptyToolJson.Default.Options)
+        );
+
+        // Names the type that could not be described, and what to do about it.
+        Assert.Contains(nameof(PocoQuery), ex.Message);
+        Assert.Contains("JsonSerializerContext", ex.Message);
+        Assert.IsType<NotSupportedException>(ex.InnerException);
+    }
+
+    [Fact]
+    public async Task A_Tool_Covered_By_The_Json_Context_Round_Trips()
+    {
+        await using var server = await StartPocoServerAsync(PocoToolJson.Default.Options);
+        await using var client = await ConnectAsync(server);
+
+        var tools = await client.ListToolsAsync(cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Contains(tools, t => t.Name == "query");
+
+        var result = await client.CallToolAsync(
+            "query",
+            new Dictionary<string, object?>
+            {
+                ["query"] = JsonSerializer.SerializeToElement(new PocoQuery("kitchen", 2), PocoToolJson.Default.PocoQuery)
+            },
+            cancellationToken: TestContext.Current.CancellationToken
+        );
+
+        var text = Assert.IsType<TextContentBlock>(Assert.Single(result.Content));
+        Assert.Contains("kitchen", text.Text);
+    }
+
+    [Fact]
+    public async Task Primitive_Tools_Need_No_Json_Context()
+    {
+        // The whole reason the check is worth having is that it stays out of the way of the common
+        // case. Every tool on McpTestTools takes and returns primitives, so the default options
+        // describe them all and MapMcp() is silent.
+        await using var server = await StartMcpServerAsync();
+        await using var client = await ConnectAsync(server);
+
+        var tools = await client.ListToolsAsync(cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.Contains(tools, t => t.Name == "echo");
+    }
+
+    [Fact]
+    public async Task An_Unrelated_Failure_Is_Not_Dressed_Up_As_A_Json_Problem()
+    {
+        // The guard only claims the one fault it can recognise. A server with no transport
+        // registered still gets told that, rather than advice about JsonSerializerContext.
+        var builder = HttpServer.CreateBuilder();
+        builder.Options.Port = 0;
+        builder.Services
+            .AddMcpServer(o => o.ServerInfo = new Implementation { Name = "shiny-test", Version = "1.0.0" })
+            .WithTools<PocoTools>(EmptyToolJson.Default.Options);
+
+        await using var server = builder.Build();
+
+        var ex = Assert.Throws<InvalidOperationException>(() => server.MapMcp());
+        Assert.Contains("WithHttpTransport", ex.Message);
+        Assert.DoesNotContain("JsonSerializerContext", ex.Message);
+    }
+
     // ---- Helpers ----
+
+    static Task<TestServer> StartPocoServerAsync(JsonSerializerOptions toolJson)
+        => TestServer.StartAsync(
+            app => app.MapMcp(),
+            builder => builder.Services
+                .AddMcpServer(o => o.ServerInfo = new Implementation { Name = "shiny-test", Version = "1.0.0" })
+                .WithTools<PocoTools>(toolJson)
+                .WithHttpTransport()
+        );
 
     static Task<TestServer> StartMcpServerAsync(Action<McpHttpOptions>? configure = null)
         => TestServer.StartAsync(
@@ -417,6 +503,29 @@ public sealed class McpTestTools
     [McpServerTool(Name = "greet"), Description("Greets someone using an injected service.")]
     public static string Greet(IGreeter greeter, string name) => greeter.Greet(name);
 }
+
+/// <summary>A tool that trades in something other than primitives, which is what needs describing.</summary>
+public sealed record PocoQuery(string Sensor, int Take);
+
+public sealed record PocoReading(string Sensor, double Value);
+
+[McpServerToolType]
+public sealed class PocoTools
+{
+    [McpServerTool(Name = "query"), Description("Queries readings.")]
+    public static IReadOnlyList<PocoReading> Query(PocoQuery query)
+        => [.. Enumerable.Range(0, query.Take).Select(i => new PocoReading(query.Sensor, 20 + i))];
+}
+
+/// <summary>Covers the tool's types, which is what a trimmed app has to supply.</summary>
+[JsonSerializable(typeof(PocoQuery))]
+[JsonSerializable(typeof(PocoReading))]
+[JsonSerializable(typeof(IReadOnlyList<PocoReading>))]
+public partial class PocoToolJson : JsonSerializerContext;
+
+/// <summary>Covers nothing, standing in for the types a trimmer removed.</summary>
+[JsonSerializable(typeof(string))]
+public partial class EmptyToolJson : JsonSerializerContext;
 
 public interface IGreeter
 {

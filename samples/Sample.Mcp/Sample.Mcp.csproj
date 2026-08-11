@@ -4,14 +4,10 @@
     <RootNamespace>Sample.Mcp</RootNamespace>
   </PropertyGroup>
 
-  <!-- The other samples double as the AOT proof. This one cannot: the MCP SDK discovers tools by
-       reflecting over attributes, so its own analyzers would light up regardless of what this
-       sample does. Same trade-off the Mcp package itself makes. -->
-  <PropertyGroup>
-    <IsAotCompatible>false</IsAotCompatible>
-    <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
-    <EnableAotAnalyzer>false</EnableAotAnalyzer>
-  </PropertyGroup>
+  <!-- This sample is the AOT proof for MCP, same as the others are for the core server: it publishes
+       with PublishAot and the tools below answer over the wire from the native binary. The tool
+       parameters here are primitives, so no JsonSerializerContext is needed; see the docs for what
+       to add when a tool takes or returns a complex type. -->
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Logging.Console" />

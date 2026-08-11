@@ -14,6 +14,14 @@
     <NoWarn>$(NoWarn);RS2008</NoWarn>
     <IncludeBuildOutput>false</IncludeBuildOutput>
     <DevelopmentDependency>true</DevelopmentDependency>
+
+    <!-- The build output ships under analyzers/dotnet/cs, not lib/, which is exactly what NU5128
+         complains about. With no lib/ assembly there is also nothing for a symbol package to carry,
+         and an empty .snupkg is a hard pack error (NU5017) - so the Release symbol/source settings
+         from the root Directory.Build.props are turned back off here. -->
+    <NoWarn>$(NoWarn);NU5128</NoWarn>
+    <IncludeSymbols>false</IncludeSymbols>
+    <IncludeSource>false</IncludeSource>
   </PropertyGroup>
 
   <!-- The trim/AOT analyzers inherited from src/Directory.Build.props do not apply to a

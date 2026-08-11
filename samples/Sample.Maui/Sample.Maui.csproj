@@ -82,11 +82,17 @@
 	<ItemGroup>
 		<PackageReference Include="Microsoft.Maui.Controls" Version="$(MauiVersion)" />
 		<PackageReference Include="Microsoft.Extensions.Logging.Debug" Version="10.0.0" />
+
+		<!-- Turning central package management off above also strands the version of the repo-wide
+		     Nerdbank.GitVersioning reference, which restore reports as NU1015 rather than a warning.
+		     The sample is not packed and has no assembly version worth stamping, so it goes. -->
+		<PackageReference Remove="Nerdbank.GitVersioning" />
 	</ItemGroup>
 
 	<ItemGroup>
 		<ProjectReference Include="../../src/Shiny.Net.HttpServer/Shiny.Net.HttpServer.csproj" />
 		<ProjectReference Include="../../src/Shiny.Net.HttpServer.Ssh/Shiny.Net.HttpServer.Ssh.csproj" />
+		<ProjectReference Include="../../src/Shiny.Net.HttpServer.Mcp/Shiny.Net.HttpServer.Mcp.csproj" />
 	</ItemGroup>
 
 	<!-- The shared page is embedded rather than shipped as a MauiAsset, so one file serves from

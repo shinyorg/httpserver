@@ -5,6 +5,10 @@
     <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
   </PropertyGroup>
 
+  <ItemGroup>
+    <PackageVersion Include="Nerdbank.GitVersioning" Version="3.10.91" />
+  </ItemGroup>
+
   <!-- 10.0.10 rather than 10.0.0: the MCP SDK requires the servicing build, and with transitive
        pinning on, one package asking for a newer patch makes every older pin a downgrade error. -->
   <ItemGroup>

@@ -5,16 +5,19 @@
     <Description>Model Context Protocol (Streamable HTTP) transport for Shiny.Net.HttpServer. Hosts an MCP server anywhere this server runs — including inside a .NET MAUI app, where ASP.NET Core's MCP transport cannot go.</Description>
   </PropertyGroup>
 
-  <!-- Not claiming AOT compatibility. The transport code here is trim-clean, but the MCP SDK's
-       tool discovery (WithTools&lt;T&gt;(), WithToolsFromAssembly()) is reflection over attributes and
-       is annotated RequiresUnreferencedCode. Claiming otherwise would make the core server's
-       promise a lie by association, which is why this is a separate package. -->
-  <PropertyGroup>
-    <IsAotCompatible>false</IsAotCompatible>
-    <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
-    <EnableAotAnalyzer>false</EnableAotAnalyzer>
-    <EnableSingleFileAnalyzer>false</EnableSingleFileAnalyzer>
-  </PropertyGroup>
+  <!-- Analyzers on, same as every other shipping project — the defaults from src/Directory.Build.props
+       apply and nothing is turned off here.
+
+       This package used to opt out, on the grounds that the MCP SDK discovered tools by reflecting
+       over attributes. That is no longer true of the shape we depend on: as of MCP SDK 2.0 and
+       Microsoft.Extensions.AI 10.8, nothing in the dependency graph is annotated RequiresDynamicCode,
+       and the generic WithTools<T>() overload carries DynamicallyAccessedMembers rather than
+       RequiresUnreferencedCode. WithToolsFromAssembly() and the IEnumerable<Type> overloads are still
+       annotated and are still the wrong call to make in a trimmed app.
+
+       What does not survive trimming is JSON schema generation for a tool's parameter and return
+       types, which needs a source-generated JsonSerializerContext. That failure is the caller's to
+       make and used to surface as a 500 on the first request; MapMcp() now catches it at startup. -->
 
   <ItemGroup>
     <PackageReference Include="ModelContextProtocol" />
