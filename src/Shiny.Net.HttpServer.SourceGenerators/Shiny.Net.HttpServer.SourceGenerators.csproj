@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Overrides src/Directory.Build.props: an analyzer has to load into the compiler host,
+         which is netstandard2.0, not into the app being compiled. -->
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <RootNamespace>Shiny.Net.HttpServer.SourceGenerators</RootNamespace>
+    <Description>Source generator for Shiny.Net.HttpServer typed endpoints.</Description>
+
+    <IsRoslynComponent>true</IsRoslynComponent>
+    <EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>
+    <!-- RS2008 wants AnalyzerReleases.*.md release-tracking files, which only earn their keep for
+         an analyzer package with a public support contract. -->
+    <NoWarn>$(NoWarn);RS2008</NoWarn>
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <DevelopmentDependency>true</DevelopmentDependency>
+  </PropertyGroup>
+
+  <!-- The trim/AOT analyzers inherited from src/Directory.Build.props do not apply to a
+       compile-time-only assembly and would only produce noise. -->
+  <PropertyGroup>
+    <IsAotCompatible>false</IsAotCompatible>
+    <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
+    <EnableAotAnalyzer>false</EnableAotAnalyzer>
+    <EnableSingleFileAnalyzer>false</EnableSingleFileAnalyzer>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.CodeAnalysis.Analyzers" PrivateAssets="all" />
+    <PackageReference Include="PolySharp" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="$(OutputPath)$(AssemblyName).dll" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
+  </ItemGroup>
+
+</Project>

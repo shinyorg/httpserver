@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Shiny.Net.HttpServer.Ssh</RootNamespace>
+    <Description>SSH remote port forwarding for Shiny.Net.HttpServer. Publishes an embedded server through any SSH endpoint you can log in to — a VPS you own, or a hosted tunnel like sish — with no inbound connectivity.</Description>
+  </PropertyGroup>
+
+  <!-- Deliberately not claiming AOT compatibility. SSH.NET carries BouncyCastle and its own
+       algorithm registries, neither of which is trim-clean. The core server still is; this package
+       is where that trade-off is made, which is why it is a separate package. -->
+  <PropertyGroup>
+    <IsAotCompatible>false</IsAotCompatible>
+    <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
+    <EnableAotAnalyzer>false</EnableAotAnalyzer>
+    <EnableSingleFileAnalyzer>false</EnableSingleFileAnalyzer>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="SSH.NET" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Shiny.Net.HttpServer/Shiny.Net.HttpServer.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Shiny.Net.HttpServer.Tests" />
+  </ItemGroup>
+
+</Project>

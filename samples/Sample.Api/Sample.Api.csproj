@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Sample.Api</RootNamespace>
+
+    <!-- Declared here rather than passed as -p:PublishAot=true on the command line. A global
+         property flows into every project in the graph, including the netstandard2.0 generator,
+         which cannot be AOT-compiled and fails the build. It also states the intent: this sample
+         is meant to survive `dotnet publish -c Release -r <rid>` with zero trim/AOT warnings. -->
+    <PublishAot>true</PublishAot>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Console" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/Shiny.Net.HttpServer/Shiny.Net.HttpServer.csproj" />
+    <ProjectReference Include="../../src/Shiny.Net.HttpServer.Jwt/Shiny.Net.HttpServer.Jwt.csproj" />
+
+    <!-- Referenced as an analyzer, not as a library: the generator runs inside the compiler and
+         must not end up in the app's output. -->
+    <ProjectReference Include="../../src/Shiny.Net.HttpServer.SourceGenerators/Shiny.Net.HttpServer.SourceGenerators.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+</Project>

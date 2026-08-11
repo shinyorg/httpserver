@@ -1,0 +1,94 @@
+using System.Net;
+using Microsoft.Extensions.Logging;
+using Sample.Maui.Server;
+using Shiny.Net.HttpServer;
+using Shiny.Net.HttpServer.FileBrowser;
+using Shiny.Net.HttpServer.Security;
+using Shiny.Net.HttpServer.Ssh;
+using Shiny.Net.HttpServer.StaticFiles;
+
+namespace Sample.Maui;
+
+public static class MauiProgram
+{
+    public static MauiApp CreateMauiApp()
+    {
+        var builder = MauiApp.CreateBuilder();
+
+        builder
+            .UseMauiApp<App>()
+            .ConfigureFonts(fonts =>
+            {
+                fonts.AddFont("OpenSans-Regular.ttf", "OpenSansRegular");
+                fonts.AddFont("OpenSans-Semibold.ttf", "OpenSansSemibold");
+            });
+
+#if DEBUG
+        builder.Logging.AddDebug();
+#endif
+
+        // The app's own JSON metadata, registered once. A source generator cannot see another
+        // generator's output, so this is the app's job rather than the library's — and it is what
+        // keeps serialization reflection-free, which iOS requires.
+        JsonTypeInfoRegistry.Register(ApiJsonContext.Default);
+
+        builder.Services.AddSingleton<NoteStore>();
+        builder.Services.AddSingleton<RequestCounter>();
+        builder.Services.AddSingleton<RequireAuthenticationMiddleware>();
+
+        // The accounts live in the app's own storage and change from the settings screen, so the
+        // validator is a service rather than a list handed over at startup.
+        builder.Services.AddAuthentication().AddBasic<CredentialStore>(o => o.Realm = "Shiny device");
+
+        builder.Services.AddHttpServer(
+            options =>
+            {
+                // Any, not loopback: the point is for another device to reach this one. Port 0
+                // lets the OS pick, so two copies of the app on one network do not collide.
+                options.Address = IPAddress.Any;
+                options.Port = 0;
+            },
+            server =>
+            {
+                var services = server.Services!;
+
+                server.Use(services.GetRequiredService<RequestCounter>());
+
+                // Identify the caller, then insist on one. Both run before the static file handler,
+                // because that handler answers before routing and would otherwise serve the page to
+                // anyone with the link.
+                server.UseAuthentication();
+                server.Use(services.GetRequiredService<RequireAuthenticationMiddleware>());
+
+                // The page a visitor lands on, served straight out of the assembly — a packaged app
+                // has no wwwroot on disk to point at.
+                server.UseEmbeddedFiles(typeof(MauiProgram).Assembly, "Sample.Maui.wwwroot");
+
+                DeviceApi.Map(server, services.GetRequiredService<NoteStore>());
+
+                // The app's own storage, over HTTP. Mapped as routes rather than middleware so
+                // authorization can differ per verb — here everything is already behind the password
+                // gate, so this asks for nothing further.
+                server.MapFileBrowser("/files", o =>
+                {
+                    o.RootPath = FileSystem.AppDataDirectory;
+                    o.AllowWrite = true;
+                    o.AllowDelete = true;
+                });
+            },
+
+            // Started by the UI instead, so the app does not open a port before anyone asked it to.
+            autoStart: false
+        );
+
+        // localhost.run: no account, no key, nothing installed. The URL it assigns is what the app
+        // shows on screen.
+        builder.Services.AddQuickTunnel();
+
+        builder.Services.AddSingleton<ShareViewModel>();
+        builder.Services.AddSingleton<MainPage>();
+        builder.Services.AddSingleton<AppShell>();
+
+        return builder.Build();
+    }
+}

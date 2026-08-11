@@ -1,0 +1,46 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <RootNamespace>Shiny.Net.HttpServer.Tests</RootNamespace>
+
+    <!-- xunit v3 runs on Microsoft.Testing.Platform: the test assembly is its own runner, so
+         `dotnet test` and running the executable directly do exactly the same thing. -->
+    <UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>
+    <TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+
+    <!-- The MCP tests drive the endpoint with the SDK's own client, so the SDK is a test
+         dependency in its own right and not just a transitive one. -->
+    <PackageReference Include="ModelContextProtocol" />
+  </ItemGroup>
+
+  <!-- Content for the embedded static-file source. Serving assets out of the assembly is the
+       packaged-app case, and it cannot be tested without a real embedded resource. -->
+  <ItemGroup>
+    <EmbeddedResource Include="TestAssets/**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/Shiny.Net.HttpServer/Shiny.Net.HttpServer.csproj" />
+    <ProjectReference Include="../../src/Shiny.Net.HttpServer.Jwt/Shiny.Net.HttpServer.Jwt.csproj" />
+    <ProjectReference Include="../../src/Shiny.Net.HttpServer.AzureRelay/Shiny.Net.HttpServer.AzureRelay.csproj" />
+    <ProjectReference Include="../../src/Shiny.Net.HttpServer.Mcp/Shiny.Net.HttpServer.Mcp.csproj" />
+    <ProjectReference Include="../../src/Shiny.Net.HttpServer.Ssh/Shiny.Net.HttpServer.Ssh.csproj" />
+
+    <!-- Both an analyzer and a referenced assembly: the tests exercise the generated output *and*
+         the generator's own route-template parser, which has to agree with the runtime one. -->
+    <ProjectReference Include="../../src/Shiny.Net.HttpServer.SourceGenerators/Shiny.Net.HttpServer.SourceGenerators.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="true" />
+  </ItemGroup>
+
+</Project>

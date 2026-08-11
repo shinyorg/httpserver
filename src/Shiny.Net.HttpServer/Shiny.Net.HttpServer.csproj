@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <RootNamespace>Shiny.Net.HttpServer</RootNamespace>
+        <Description>A dependency-light, AOT-friendly HTTP server for .NET. Runs anywhere .NET runs, including .NET MAUI, where ASP.NET Core cannot.</Description>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Microsoft.Extensions.DependencyInjection"/>
+        <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions"/>
+        <PackageReference Include="Microsoft.Extensions.Logging.Abstractions"/>
+        <PackageReference Include="Microsoft.Extensions.Primitives"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <InternalsVisibleTo Include="Shiny.Net.HttpServer.Tests"/>
+
+        <!-- The SSH provider needs the loopback listener: SSH remote forwarding delivers to a
+             host:port, so the tunnel owns a private loopback socket rather than making the app
+             bind one of its own. -->
+        <InternalsVisibleTo Include="Shiny.Net.HttpServer.Ssh"/>
+    </ItemGroup>
+
+</Project>

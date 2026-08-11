@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Shiny.Net.HttpServer.Mcp</RootNamespace>
+    <Description>Model Context Protocol (Streamable HTTP) transport for Shiny.Net.HttpServer. Hosts an MCP server anywhere this server runs — including inside a .NET MAUI app, where ASP.NET Core's MCP transport cannot go.</Description>
+  </PropertyGroup>
+
+  <!-- Not claiming AOT compatibility. The transport code here is trim-clean, but the MCP SDK's
+       tool discovery (WithTools&lt;T&gt;(), WithToolsFromAssembly()) is reflection over attributes and
+       is annotated RequiresUnreferencedCode. Claiming otherwise would make the core server's
+       promise a lie by association, which is why this is a separate package. -->
+  <PropertyGroup>
+    <IsAotCompatible>false</IsAotCompatible>
+    <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
+    <EnableAotAnalyzer>false</EnableAotAnalyzer>
+    <EnableSingleFileAnalyzer>false</EnableSingleFileAnalyzer>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="ModelContextProtocol" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Options" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Shiny.Net.HttpServer/Shiny.Net.HttpServer.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Shiny.Net.HttpServer.Tests" />
+  </ItemGroup>
+
+</Project>

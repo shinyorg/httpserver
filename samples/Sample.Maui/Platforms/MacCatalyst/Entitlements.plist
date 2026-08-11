@@ -1,0 +1,19 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+    <!-- See https://aka.ms/maui-publish-app-store#add-entitlements for more information about adding entitlements.-->
+    <dict>
+        <!-- App Sandbox must be enabled to distribute a MacCatalyst app through the Mac App Store. -->
+        <key>com.apple.security.app-sandbox</key>
+        <true/>
+        <!-- When App Sandbox is enabled, this value is required to open outgoing network connections.
+             The tunnel needs it: it dials out over SSH. -->
+        <key>com.apple.security.network.client</key>
+        <true/>
+        <!-- And this one is required to *listen*. Without it the sandbox refuses the bind and the
+             server never comes up — with no error a user would connect to the cause. -->
+        <key>com.apple.security.network.server</key>
+        <true/>
+    </dict>
+</plist>
+

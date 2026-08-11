@@ -1,0 +1,144 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             x:Class="Sample.Maui.MainPage"
+             Title="Shiny HTTP Server">
+
+    <ScrollView>
+        <VerticalStackLayout Padding="24" Spacing="18">
+
+            <Label Text="This phone is a web server"
+                   FontSize="24"
+                   FontAttributes="Bold" />
+
+            <Label Text="Start it, share the link, and someone on the other side of the world can open a page served from here."
+                   TextColor="Gray" />
+
+            <!-- Status -->
+            <Border Stroke="{AppThemeBinding Light=#E5E5EA, Dark=#2C2C32}"
+                    StrokeThickness="1"
+                    Padding="16"
+                    StrokeShape="RoundRectangle 12">
+                <VerticalStackLayout Spacing="10">
+
+                    <HorizontalStackLayout Spacing="8">
+                        <Label Text="Status" TextColor="Gray" />
+                        <Label Text="{Binding Status}" FontAttributes="Bold" />
+                        <ActivityIndicator IsRunning="{Binding Busy}"
+                                           IsVisible="{Binding Busy}"
+                                           HeightRequest="16"
+                                           WidthRequest="16" />
+                    </HorizontalStackLayout>
+
+                    <Label Text="{Binding LastError}"
+                           TextColor="#D9534F"
+                           IsVisible="{Binding HasError}" />
+
+                    <!-- The public link. Bound, never captured once: a free tunnel hands out a new
+                         address on every reconnect, and a phone reconnects whenever the network does. -->
+                    <Label Text="Public link" TextColor="Gray" Margin="0,6,0,0" />
+                    <Label Text="{Binding PublicUrl, TargetNullValue='Not shared yet'}"
+                           LineBreakMode="CharacterWrap" />
+
+                    <Label Text="On this network" TextColor="Gray" Margin="0,6,0,0" />
+                    <Label Text="{Binding LocalUrl, TargetNullValue='Server not started'}"
+                           LineBreakMode="CharacterWrap" />
+
+                </VerticalStackLayout>
+            </Border>
+
+            <!-- Actions -->
+            <VerticalStackLayout Spacing="10">
+                <Button Text="Share publicly"
+                        Clicked="OnShareClicked"
+                        IsEnabled="{Binding NotBusy}" />
+
+                <Button Text="Start on this network only"
+                        Clicked="OnStartLocalClicked"
+                        IsEnabled="{Binding NotBusy}" />
+
+                <Grid ColumnDefinitions="*,*" ColumnSpacing="10">
+                    <Button Grid.Column="0"
+                            Text="Copy link"
+                            Clicked="OnCopyClicked"
+                            IsEnabled="{Binding HasPublicUrl}" />
+                    <Button Grid.Column="1"
+                            Text="Open"
+                            Clicked="OnOpenClicked"
+                            IsEnabled="{Binding HasPublicUrl}" />
+                </Grid>
+
+                <Button Text="Stop sharing"
+                        Clicked="OnStopClicked"
+                        IsEnabled="{Binding HasPublicUrl}" />
+            </VerticalStackLayout>
+
+            <!-- The account a visitor has to present. Changeable here, and in force on the very
+                 next request — the validator reads these values rather than a startup copy. -->
+            <Border Stroke="{AppThemeBinding Light=#E5E5EA, Dark=#2C2C32}"
+                    StrokeThickness="1"
+                    Padding="16"
+                    StrokeShape="RoundRectangle 12">
+                <VerticalStackLayout Spacing="10">
+                    <Label Text="Access" TextColor="Gray" />
+                    <Label Text="Anyone opening the link is asked for these."
+                           TextColor="Gray"
+                           FontSize="12" />
+
+                    <Entry Placeholder="Username"
+                           Text="{Binding UsernameInput}"
+                           IsSpellCheckEnabled="False"
+                           IsTextPredictionEnabled="False" />
+
+                    <!-- Deliberately not masked: on a device you are handing a link to, someone has
+                         to read this out. A product with real accounts would not show it. -->
+                    <Entry Placeholder="Password"
+                           Text="{Binding PasswordInput}"
+                           IsSpellCheckEnabled="False"
+                           IsTextPredictionEnabled="False" />
+
+                    <Grid ColumnDefinitions="*,*" ColumnSpacing="10">
+                        <Button Grid.Column="0"
+                                Text="Save"
+                                Clicked="OnSaveCredentialsClicked"
+                                IsEnabled="{Binding NotBusy}" />
+                        <Button Grid.Column="1"
+                                Text="New password"
+                                Clicked="OnRegenerateClicked"
+                                IsEnabled="{Binding NotBusy}" />
+                    </Grid>
+
+                    <Label Text="{Binding CredentialStatus}"
+                           TextColor="Gray"
+                           FontSize="12" />
+                </VerticalStackLayout>
+            </Border>
+
+            <!-- Live traffic, so it is obvious the requests are landing here -->
+            <Border Stroke="{AppThemeBinding Light=#E5E5EA, Dark=#2C2C32}"
+                    StrokeThickness="1"
+                    Padding="16"
+                    StrokeShape="RoundRectangle 12">
+                <VerticalStackLayout Spacing="8">
+                    <Label Text="Traffic" TextColor="Gray" />
+
+                    <HorizontalStackLayout Spacing="8">
+                        <Label Text="Requests served:" />
+                        <Label Text="{Binding RequestCount}" FontAttributes="Bold" />
+                    </HorizontalStackLayout>
+
+                    <HorizontalStackLayout Spacing="8">
+                        <Label Text="Last note posted:" />
+                        <Label Text="{Binding LastNote}" FontAttributes="Bold" LineBreakMode="TailTruncation" />
+                    </HorizontalStackLayout>
+                </VerticalStackLayout>
+            </Border>
+
+            <Label Text="Endpoints: /  ·  /api/device  ·  /api/notes  ·  /files (browse app storage) — all behind the password. /ping is open."
+                   TextColor="Gray"
+                   FontSize="12" />
+
+        </VerticalStackLayout>
+    </ScrollView>
+
+</ContentPage>

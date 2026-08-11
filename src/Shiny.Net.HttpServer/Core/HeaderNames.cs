@@ -1,0 +1,58 @@
+namespace Shiny.Net.HttpServer;
+
+/// <summary>Well-known HTTP header names, matching ASP.NET Core's spelling.</summary>
+public static class HeaderNames
+{
+    public const string Accept = "Accept";
+    public const string AcceptEncoding = "Accept-Encoding";
+    public const string AcceptRanges = "Accept-Ranges";
+    public const string AccessControlAllowCredentials = "Access-Control-Allow-Credentials";
+    public const string AccessControlAllowHeaders = "Access-Control-Allow-Headers";
+    public const string AccessControlAllowMethods = "Access-Control-Allow-Methods";
+    public const string AccessControlAllowOrigin = "Access-Control-Allow-Origin";
+    public const string AccessControlExposeHeaders = "Access-Control-Expose-Headers";
+    public const string AccessControlMaxAge = "Access-Control-Max-Age";
+    public const string AccessControlRequestHeaders = "Access-Control-Request-Headers";
+    public const string AccessControlRequestMethod = "Access-Control-Request-Method";
+    public const string Allow = "Allow";
+    public const string AltSvc = "Alt-Svc";
+    public const string ContentRange = "Content-Range";
+    public const string IfMatch = "If-Match";
+    public const string IfModifiedSince = "If-Modified-Since";
+    public const string IfNoneMatch = "If-None-Match";
+    public const string IfRange = "If-Range";
+    public const string IfUnmodifiedSince = "If-Unmodified-Since";
+    public const string SecWebSocketExtensions = "Sec-WebSocket-Extensions";
+    public const string SecWebSocketProtocol = "Sec-WebSocket-Protocol";
+    public const string Authorization = "Authorization";
+    public const string WwwAuthenticate = "WWW-Authenticate";
+    public const string CacheControl = "Cache-Control";
+    public const string Connection = "Connection";
+    public const string ContentDisposition = "Content-Disposition";
+    public const string ContentEncoding = "Content-Encoding";
+    public const string ContentLength = "Content-Length";
+    public const string ContentType = "Content-Type";
+    public const string Cookie = "Cookie";
+    public const string Date = "Date";
+    public const string ETag = "ETag";
+    public const string Expect = "Expect";
+    public const string Host = "Host";
+    public const string KeepAlive = "Keep-Alive";
+    public const string LastModified = "Last-Modified";
+    public const string Location = "Location";
+    public const string Origin = "Origin";
+    public const string Range = "Range";
+    public const string RetryAfter = "Retry-After";
+    public const string SecWebSocketAccept = "Sec-WebSocket-Accept";
+    public const string SecWebSocketKey = "Sec-WebSocket-Key";
+    public const string SecWebSocketVersion = "Sec-WebSocket-Version";
+    public const string Server = "Server";
+    public const string SetCookie = "Set-Cookie";
+    public const string TransferEncoding = "Transfer-Encoding";
+    public const string Upgrade = "Upgrade";
+    public const string UserAgent = "User-Agent";
+    public const string Vary = "Vary";
+    public const string XForwardedFor = "X-Forwarded-For";
+    public const string XForwardedHost = "X-Forwarded-Host";
+    public const string XForwardedProto = "X-Forwarded-Proto";
+}

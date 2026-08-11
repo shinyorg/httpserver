@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Shiny.Net.HttpServer.AzureRelay</RootNamespace>
+    <Description>Azure Relay Hybrid Connections tunnel for Shiny.Net.HttpServer. Gives an embedded server a public HTTPS endpoint without inbound connectivity, so it works from behind carrier-grade NAT.</Description>
+  </PropertyGroup>
+
+  <!-- Deliberately not claiming AOT compatibility. Microsoft.Azure.Relay pulls in Azure.Identity,
+       MSAL and IdentityModel, none of which are trim- or AOT-clean. The core server still is; this
+       package is the one place that trade-off is made, which is why it is a separate package. -->
+  <PropertyGroup>
+    <IsAotCompatible>false</IsAotCompatible>
+    <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
+    <EnableAotAnalyzer>false</EnableAotAnalyzer>
+    <EnableSingleFileAnalyzer>false</EnableSingleFileAnalyzer>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Azure.Relay" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Shiny.Net.HttpServer/Shiny.Net.HttpServer.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Shiny.Net.HttpServer.Tests" />
+  </ItemGroup>
+
+</Project>
