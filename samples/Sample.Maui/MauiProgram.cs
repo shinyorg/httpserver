@@ -8,6 +8,7 @@ using Shiny.Net.HttpServer.Mcp;
 using Shiny.Net.HttpServer.Security;
 using Shiny.Net.HttpServer.Ssh;
 using Shiny.Net.HttpServer.StaticFiles;
+using Shiny.Net.HttpServer.WebDav;
 
 namespace Sample.Maui;
 
@@ -124,6 +125,23 @@ public static class MauiProgram
                     o.RootPath = FileSystem.AppDataDirectory;
                     o.AllowWrite = true;
                     o.AllowDelete = true;
+                });
+
+                // The same directory again, over WebDAV — and the difference is who the client is.
+                // /files is a JSON API for a script; this is the protocol a desktop already speaks,
+                // so the phone's storage opens as a drive in Finder or Windows Explorer with nothing
+                // installed on either end. Point them at http://<device>:<port>/dav and sign in with
+                // the same account as everything else.
+                //
+                // Locking is left on, and that is not a detail: Finder and the Windows redirector
+                // both check for DAV class 2 at mount time and mount read-only without it, however
+                // much AllowWrite allows.
+                server.MapWebDav("/dav", o =>
+                {
+                    o.RootPath = FileSystem.AppDataDirectory;
+                    o.AllowWrite = true;
+                    o.AllowDelete = true;
+                    o.DisplayName = DeviceInfo.Name;
                 });
             },
 

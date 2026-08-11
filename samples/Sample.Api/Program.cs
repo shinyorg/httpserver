@@ -9,6 +9,7 @@ using Shiny.Net.HttpServer.OpenApi;
 using Shiny.Net.HttpServer.RateLimiting;
 using Shiny.Net.HttpServer.Security;
 using Shiny.Net.HttpServer.Tunneling;
+using Shiny.Net.HttpServer.WebDav;
 
 // ---------------------------------------------------------------------------
 // The whole ramp, in one app. Every tier below is optional and they all compose:
@@ -178,6 +179,33 @@ app.OnPost("/echo", async ctx =>
 });
 
 app.OnGet("/boom", _ => throw new InvalidOperationException("deliberate failure"));
+
+// --- A directory, as a drive ---
+//
+// One call maps the twenty-two routes of an RFC 4918 class 1 & 2 WebDAV mount. Point Finder (Go →
+// Connect to Server) or Explorer (Map network drive) at http://localhost:8080/dav and the folder
+// below opens as a drive — no client to write, and no client to install.
+//
+// A browser GET of the same URL shows a plain HTML index, which is the quickest way to see it
+// working without mounting anything.
+var davRoot = Directory.CreateDirectory(Path.Combine(AppContext.BaseDirectory, "dav-root"));
+
+if (!File.Exists(Path.Combine(davRoot.FullName, "readme.txt")))
+    File.WriteAllText(Path.Combine(davRoot.FullName, "readme.txt"), "Edit me from your file manager.\n");
+
+app.MapWebDav("/dav", o =>
+{
+    o.RootPath = davRoot.FullName;
+    o.AllowWrite = true;
+    o.AllowDelete = true;
+    o.DisplayName = "Sample";
+});
+
+// Left open because this sample binds loopback and nothing else can reach it. A mount anyone else
+// can see needs both of these — a WebDAV client sends its password on every single request:
+//
+//   app.MapWebDav("/dav", …).RequireAuthorization();     // or .RequireAuthorizationForChanges()
+//   builder.Configure(o => o.Certificate = …);           // see /httpserver/tls/
 
 // --- Controlling the server from inside the app ---
 //

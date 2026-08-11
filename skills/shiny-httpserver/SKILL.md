@@ -1,6 +1,6 @@
 ---
 name: shiny-httpserver
-description: Generate code using Shiny.Net.HttpServer — a dependency-light, AOT/trim-clean HTTP/1.1, HTTP/2 & HTTP/3 server that runs anywhere .NET runs, including .NET MAUI, where ASP.NET Core cannot. Covers routing, middleware, source-generated typed endpoints, results and JSON, static files and Blazor WASM, uploads/downloads, WebSockets, SSE, sessions, OpenAPI, authentication (Basic/API key/cookie/JWT), authorization, CORS, rate limiting, IP filtering, TLS and self-signed certificates, tunnelling (relay, SSH, quick tunnels, Azure Relay) and hosting an MCP server.
+description: Generate code using Shiny.Net.HttpServer — a dependency-light, AOT/trim-clean HTTP/1.1, HTTP/2 & HTTP/3 server that runs anywhere .NET runs, including .NET MAUI, where ASP.NET Core cannot. Covers routing, middleware, source-generated typed endpoints, results and JSON, content negotiation with XML/MessagePack/protobuf formatters in both directions, static files and Blazor WASM, uploads/downloads, WebSockets, SSE, sessions, OpenAPI, authentication (Basic/API key/cookie/JWT), authorization, CORS, rate limiting, IP filtering, TLS and self-signed certificates, tunnelling (relay, SSH, quick tunnels, Azure Relay), serving a directory over WebDAV, serving gRPC and gRPC-Web, and hosting an MCP server.
 auto_invoke: true
 triggers:
 - Shiny.Net.HttpServer
@@ -28,6 +28,22 @@ triggers:
 - IActionResult
 - Results.Ok
 - JsonTypeInfoRegistry
+- AddContentNegotiation
+- ContentNegotiationOptions
+- NegotiateByDefault
+- IOutputFormatter
+- IInputFormatter
+- InputFormatterResult
+- BodyReadStatus
+- TryReadBodyAsync
+- AddXml
+- XmlOutputFormatter
+- XmlInputFormatter
+- AddMessagePack
+- MessagePackOutputFormatter
+- AddProtobuf
+- BinaryCodecRegistry
+- AddBinaryFormat
 - ProblemDetails
 - UseStaticFiles
 - UseEmbeddedFiles
@@ -73,6 +89,53 @@ triggers:
 - MediatorHttpPost
 - MapGeneratedMediatorEndpoints
 - MediatorDispatch
+- Shiny.Net.HttpServer.DocumentDb
+- MapDocuments
+- MapDocumentCollection
+- DocumentEndpoints
+- DocumentResourceBuilder
+- Shiny.Net.HttpServer.WebDav
+- MapWebDav
+- WebDavOptions
+- WebDavMountBuilder
+- WebDavMethods
+- WebDavHeaderNames
+- IWebDavPropertyStore
+- InMemoryWebDavPropertyStore
+- WebDavLock
+- WebDavLockScope
+- webdav
+- RFC 4918
+- PROPFIND
+- PROPPATCH
+- MKCOL
+- LOCK
+- UNLOCK
+- mount a folder in Finder
+- map a network drive
+- Shiny.Net.HttpServer.Grpc
+- MapGrpcService
+- GrpcServiceBuilder
+- GrpcOptions
+- GrpcCallContext
+- GrpcMarshaller
+- GrpcMarshallerRegistry
+- GrpcStatusException
+- GrpcStatusCode
+- GrpcMethodMetadata
+- MapUnary
+- MapServerStreaming
+- MapClientStreaming
+- MapDuplexStreaming
+- grpc
+- grpc-web
+- protobuf
+- proto file
+- RPC service
+- AppendTrailer
+- DeclareTrailer
+- Response.Trailers
+- trailing headers
 - SWS001
 - SWS006
 - SWM003
@@ -96,8 +159,11 @@ Invoke this skill when the user wants to:
 - Serve HTTP from an app that cannot use ASP.NET Core (.NET MAUI, single-file, embedded, AOT)
 - Add routes, middleware or typed endpoints to a `Shiny.Net.HttpServer` app
 - Serve static files, a Blazor WebAssembly app, or a device's file system over HTTP
+- Expose a folder as a WebDAV mount so it appears as a drive in Finder or Windows Explorer
+- Read or write bodies in XML, MessagePack, protobuf or a format of their own instead of JSON
 - Add authentication, authorization, CORS, rate limiting or IP filtering to that server
 - Make a device-local server reachable from the internet through a tunnel
+- Serve gRPC or gRPC-Web from an app that cannot run ASP.NET Core
 - Host a Model Context Protocol server inside a non-ASP.NET app
 
 **Do not** use this skill for ASP.NET Core / Kestrel / minimal APIs. Those are a different library
@@ -124,6 +190,10 @@ dotnet add package Shiny.Net.HttpServer.Jwt              # JWT auth
 dotnet add package Shiny.Net.HttpServer.Ssh              # SSH + quick tunnels
 dotnet add package Shiny.Net.HttpServer.AzureRelay       # Azure Relay tunnel (NOT AOT-clean)
 dotnet add package Shiny.Net.HttpServer.Mcp              # Model Context Protocol transport
+dotnet add package Shiny.Net.HttpServer.Mediator         # Shiny.Mediator handlers as endpoints
+dotnet add package Shiny.Net.HttpServer.DocumentDb       # Shiny.DocumentDb types as REST resources
+dotnet add package Shiny.Net.HttpServer.WebDav           # a directory as a WebDAV mount (RFC 4918)
+dotnet add package Shiny.Net.HttpServer.Grpc             # gRPC + gRPC-Web services
 ```
 
 ## The four tiers — the spine of this library
@@ -296,6 +366,71 @@ Common: `Ok()`, `Ok(value)`, `Created(location, value)`, `NoContent()`, `BadRequ
 `Stream`, `File`, `Redirect`, `Json`, `Negotiate`, `Problem`, `ValidationProblem`,
 `ServerSentEvents`.
 
+## Formats other than JSON
+
+JSON is the default and is what to generate unless the user asks for something else. When they do,
+**do not reach for `XmlSerializer`, `DataContractSerializer`, or MessagePack-CSharp's default
+resolver** — all of them build their mapping by reflecting over the type and break a trimmed or AOT
+build. Register a formatter instead. Formats plug into content negotiation, which lives at tier 1
+(configuration) and applies to all four tiers above it:
+
+```csharp
+builder.Services.AddContentNegotiation(o =>
+{
+    o.NegotiateByDefault = true;   // Results.Ok(value) honours Accept; off by default
+    o.AddXml();                    // application/xml, text/xml
+    o.AddMessagePack();            // application/msgpack, application/x-msgpack
+});
+```
+
+Both directions come from that one call, and **no endpoint changes**:
+
+- **Responses** — `Results.Negotiate(value)` always negotiates; `Results.Ok(value)` and
+  `new OkObjectResult(value)` negotiate only with `NegotiateByDefault = true`. `Results.Json(...)`
+  never does, because the name states a format.
+- **Request bodies** — chosen from `Content-Type`. Every `[FromBody]` parameter, mediator contract and
+  `EndpointBinder.TryReadBodyAsync<T>` call accepts the registered formats immediately.
+
+Both XML and MessagePack read the app's existing `JsonSerializerContext` metadata, so the DTOs need
+**no format-specific attributes** — do not generate `[XmlRoot]`, `[DataMember]` or `[MessagePackObject]`.
+A type is covered because it is in the `JsonTypeInfoRegistry`, same as for JSON.
+
+Protobuf needs a schema, so its codecs are supplied, not discovered — one line per message type using
+the pair `protoc` already generated:
+
+```csharp
+o.AddProtobuf(p => p
+    .Add<Reading>(m => m.ToByteArray(), Reading.Parser.ParseFrom)
+);
+```
+
+`BinaryCodecRegistry` is not protobuf-specific; `o.AddBinaryFormat("application/cbor", codecs)`
+registers any binary encoding the same way. This is also the escape hatch for MessagePack-CSharp's
+native codec when the built-in transcoding formatter's JSON type system is not enough.
+
+Reading a body by hand, with the three outcomes kept distinct:
+
+```csharp
+var body = await EndpointBinder.TryReadBodyAsync<Probe>(ctx);
+
+if (!body.Success)
+{
+    // NoBody/Malformed → 400, UnsupportedMediaType → 415
+    await EndpointBinder.BodyReadFailedAsync(ctx, "probe", body.Status, nameof(Probe));
+    return;
+}
+```
+
+Gotchas to respect when generating:
+- MessagePack maps must be **string-keyed**; integer keys are refused with a 400.
+- A `byte[]` goes over MessagePack as base64, and a `decimal` beyond `double` precision loses digits —
+  both because the shared metadata is JSON's.
+- XML reading is type-directed, so `<postalCode>01234</postalCode>` into a `string` member stays
+  `"01234"`. Do not add a converter to work around a problem that is not there.
+- XML collections are a wrapper element containing child elements (`<tags><item>a</item></tags>`), not
+  repeated siblings.
+- A custom `IOutputFormatter` for a binary format should return `Charset => null`.
+
 ## Tier 2: middleware
 
 ```csharp
@@ -381,6 +516,36 @@ app.MapFileBrowser("/files", o => o.RootPath = FileSystem.AppDataDirectory).Requ
   small fields.
 - Downloads: `FileDownloadResult.FromFile(...)` gives ranges, ETags and conditional GETs.
 
+### WebDAV — a directory as a mountable drive
+
+`MapFileBrowser` is a JSON API you drive with curl or your own client. `MapWebDav` speaks the
+protocol the operating system already has a client for, so the folder mounts as a drive with no
+client code at all. Reach for it whenever the user says *mount*, *Finder*, *Explorer*, *map a
+network drive*, or *WebDAV*; reach for the file browser when they want an API.
+
+Tier 1: a mounted module of raw routes, twenty-two of them, mapped in one call.
+
+```csharp
+app.MapWebDav("/dav", o =>
+{
+    o.RootPath = FileSystem.AppDataDirectory;
+    o.AllowWrite = true;      // PUT, MKCOL, PROPPATCH, COPY, LOCK — off by default
+    o.AllowDelete = true;     // DELETE, and the delete half of MOVE — off by default
+})
+.RequireAuthorization();      // or .RequireAuthorizationForChanges() to leave reads open
+```
+
+- **Always put authentication in front of a writable mount, and serve it over TLS.** WebDAV clients
+  send Basic credentials on every request.
+- Leave `EnableLocking` on. It is class 2, and Finder and the Windows redirector both mount a class 1
+  server read-only however much `AllowWrite` allows.
+- `AllowInfiniteDepth` is off by default: `PROPFIND` with `Depth: infinity` answers 403 with
+  `<DAV:propfind-finite-depth/>`, which is the refusal RFC 4918 §9.1 defines. Turn it on only for a
+  small tree.
+- Dead properties (`PROPPATCH`) are held in memory. Assign `PropertyStore` to keep them across
+  restarts.
+- The mount is excluded from the OpenAPI document — do not try to describe it.
+
 ## Realtime
 
 ```csharp
@@ -448,6 +613,65 @@ await app.RunTunnelAsync(provider, logger, ct);
 - There is no ngrok/Cloudflare provider by design — they need an agent process, impossible on
   iOS/Android.
 
+## gRPC and gRPC-Web
+
+Tier 1: a mounted module of raw routes — one `POST /{service}/{method}` per method. Reach for it when
+the user says *gRPC*, *proto*, *RPC service* or *grpc-web*.
+
+```csharp
+app.MapGrpcService("greet.Greeter", svc =>
+{
+    // Marshalling is supplied, never discovered. Register once per message type, before the
+    // methods that use it — a missing one throws at startup naming the method.
+    svc.AddMarshaller<HelloRequest>(m => m.ToByteArray(), HelloRequest.Parser.ParseFrom);
+    svc.AddMarshaller<HelloReply>(m => m.ToByteArray(), HelloReply.Parser.ParseFrom);
+
+    svc.MapUnary<HelloRequest, HelloReply>("SayHello", (request, context) =>
+        new ValueTask<HelloReply>(new HelloReply { Message = $"Hello {request.Name}" }));
+
+    svc.MapServerStreaming<HelloRequest, HelloReply>("Greetings", Greetings);
+    svc.MapClientStreaming<Reading, Summary>("Upload", async (requests, context) => …);
+    svc.MapDuplexStreaming<Note, Note>("Chat", Chat);
+})
+.RequireAuthorization();
+```
+
+- **Do not** reference `Grpc.AspNetCore`, `Grpc.Core` or `Grpc.Core.Api` on the server side — none of
+  them are used here. For `.proto` files add `Google.Protobuf` + `Grpc.Tools` with
+  `GrpcServices="None"`: the generated *message* classes are what marshallers need, not the
+  generated service base.
+- Streams are `IAsyncEnumerable<T>` both ways. Generate `static async IAsyncEnumerable<TResponse>`
+  local or member methods for streaming handlers rather than lambdas — a lambda cannot be an
+  iterator.
+- Failures the caller should see: `throw new GrpcStatusException(GrpcStatusCode.NotFound, "…")`.
+  Anything else becomes `Unknown` with a generic message unless `EnableDetailedErrors` is set.
+- Deadlines arrive as `context.CancellationToken` — thread it through every await. `grpc-timeout`
+  expiry is reported as `DeadlineExceeded` automatically.
+- Metadata: read `context.RequestHeaders`, write `context.ResponseTrailers` (writable all call long)
+  and `context.ResponseHeaders` (until the first message goes out).
+- Native gRPC needs HTTP/2. Over cleartext set `Options.Http2.AllowCleartext = true`; an HTTP/1.1
+  caller gets a 505 pointing at gRPC-Web.
+- gRPC-Web is on by default and is how a browser calls in. It has no client-streaming or duplex —
+  those methods answer `Unimplemented` to a web caller. Pair it with a CORS policy that exposes
+  `grpc-status` and `grpc-message`.
+- The routes are excluded from OpenAPI; do not try to describe them.
+
+## Trailing headers
+
+`Response.Trailers` / `AppendTrailer` / `DeclareTrailer` send headers *after* the body, on HTTP/1.1,
+HTTP/2 and HTTP/3. Use them to report what a handler could not know before it started writing — a
+checksum, a row count, an outcome discovered mid-stream. This is what carries gRPC's status.
+
+```csharp
+ctx.Response.DeclareTrailer("X-Row-Count");
+await WriteCsvAsync(ctx.Response.Body);
+ctx.Response.AppendTrailer("X-Row-Count", rows.ToString());
+```
+
+On HTTP/1.1 the response **must not** declare a `Content-Length` — trailers ride the terminating
+chunk, and there is no chunk on a length-delimited body. Do not set `ContentLength` on a handler
+that appends trailers.
+
 ## MCP
 
 ```csharp
@@ -509,6 +733,36 @@ app.MapGeneratedMediatorEndpoints();       // or Map{Handler}MediatorEndpoints()
 2. Stream requests need an `IConfiguration` in the container (`AddShinyMediator` registers a
    timer-refresh stream middleware that takes one). A generic host has it; a hand-built
    `ServiceCollection` does not, and the failure lands *after* the SSE headers have gone out.
+
+## Shiny.DocumentDb
+
+`Shiny.Net.HttpServer.DocumentDb` publishes a document type as a REST resource. Same shape as
+`Shiny.DocumentDb.AspNetCore`, on a server that runs in a MAUI app.
+
+```csharp
+app.MapDocuments<Order>("/orders", o =>
+{
+    o.Operations = DocumentEndpoints.All;     // default is Read | Count — the safe half
+    o.TypeInfo = AppJson.Default.Order;       // REQUIRED here; there is no reflection fallback
+    o.AllowFilterOn(x => x.Status, x => x.Total);
+    o.Scope<ITenant>((t, ctx) => x => x.TenantId == t.Id);
+})
+.RequireAuthorization("orders");               // fans out to every route the resource mapped
+```
+
+- Maps `GET /`, `GET /{id}`, `GET /count`, `GET /stream` (SSE), `POST /`, `PUT /{id}`, `PATCH /{id}`,
+  `DELETE /{id}` — whichever the `Operations` flags allow.
+- **Always set `TypeInfo`.** Unlike the ASP.NET package there is no reflection fallback; without
+  source-generated metadata the first request throws with a message naming the property.
+- Query surface: `?filter=` (grammar), `?orderby=`, `?fields=` (sparse), `?skip=`/`?take=` (clamped to
+  `MaxPageSize`, never refused), `?cursor=` (keyset; cannot be combined with `fields`).
+- `Scope(...)` is the security boundary: AND-ed into reads, checked on **both sides** of a write,
+  and an out-of-scope document is **404** not 403. Read the request from `ctx.Http` — the ambient
+  `IHttpContextAccessor` is only published when `UseSessions()` is mapped.
+- `MapDocumentCollection` is the schema-free lane (relational providers only). Scoped inserts and
+  replaces are refused there by design — a raw JSON body cannot be checked against the scope.
+- `PATCH` is RFC 7396: an explicit `null` **removes** the member.
+- Mapping `DocumentEndpoints.Stream` on a provider without change monitoring is a startup error.
 
 ## MAUI specifics
 

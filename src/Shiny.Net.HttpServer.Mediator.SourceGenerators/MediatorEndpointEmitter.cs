@@ -126,24 +126,26 @@ static class MediatorEndpointEmitter
     /// </summary>
     static void WriteBodyBinding(CodeWriter writer, MediatorEndpointModel endpoint)
     {
-        writer.Line($"var (__ok, __body) = await {Binder}");
+        // The format comes from the request's Content-Type by way of the app's registered input
+        // formatters, so a mediator contract arrives as XML or MessagePack on the same terms as JSON.
+        writer.Line($"var __body = await {Binder}");
         writer.Indent();
-        writer.Line($".TryReadJsonBodyAsync<{endpoint.ContractFullyQualified}>(__ctx)");
+        writer.Line($".TryReadBodyAsync<{endpoint.ContractFullyQualified}>(__ctx)");
         writer.Line(".ConfigureAwait(false);");
         writer.Outdent();
 
-        writer.Line("if (!__ok || __body is null)");
+        writer.Line("if (!__body.Success || __body.Value is null)");
         writer.OpenBrace();
         writer.Line($"await {Binder}");
         writer.Indent();
-        writer.Line($".BindFailedAsync(__ctx, \"body\", {Binder}.Source.Body, \"{endpoint.ContractDisplay}\")");
+        writer.Line($".BodyReadFailedAsync(__ctx, \"body\", __body.Status, \"{endpoint.ContractDisplay}\")");
         writer.Line(".ConfigureAwait(false);");
         writer.Outdent();
         writer.Line("return;");
         writer.CloseBrace();
         writer.Blank();
 
-        writer.Line("var __request = __body;");
+        writer.Line("var __request = __body.Value;");
         writer.Blank();
 
         if (endpoint.RouteOverrides.Count == 0)

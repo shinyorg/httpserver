@@ -2,9 +2,23 @@ using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Primitives;
+using Shiny.Net.HttpServer.Negotiation;
 
 namespace Shiny.Net.HttpServer.Endpoints;
+
+/// <summary>
+/// A typed body read: the value, or the reason there isn't one.
+/// <para>
+/// Separate from a <c>bool</c> because "no body", "unreadable body" and "body in a format I do not
+/// speak" are three different answers, and only the last one is a 415.
+/// </para>
+/// </summary>
+public readonly record struct BodyReadResult<T>(BodyReadStatus Status, T? Value)
+{
+    public bool Success => this.Status == BodyReadStatus.Success;
+}
 
 /// <summary>
 /// The runtime half of tier 3. The generator decides <em>what</em> to bind at compile time and
@@ -161,13 +175,82 @@ public static class EndpointBinder
 
     /// <summary>
     /// Deserializes the JSON request body using metadata from <see cref="JsonTypeInfoRegistry"/>.
-    /// This is the overload generated endpoints use: the app registers its
-    /// <c>JsonSerializerContext</c> once and every <c>[FromBody]</c> parameter is covered.
+    /// <para>
+    /// Kept for handlers that want JSON and only JSON regardless of what the caller declared.
+    /// Generated endpoints go through <see cref="TryReadBodyAsync{T}"/> instead.
+    /// </para>
     /// </summary>
     public static ValueTask<(bool Success, T? Value)> TryReadJsonBodyAsync<T>(HttpContext context)
         => TryReadJsonBodyAsync(context, JsonTypeInfoRegistry.GetRequired<T>());
 
+    /// <summary>
+    /// Reads the request body in whichever format the caller declared, using the
+    /// <see cref="IInputFormatter"/> registered for its <c>Content-Type</c>.
+    /// <para>
+    /// This is what generated endpoints call, which is what makes <c>[FromBody]</c> format-agnostic:
+    /// an app that registers the XML or MessagePack formatters gets XML and MessagePack request
+    /// bodies on every existing endpoint without touching a handler. With nothing registered it is
+    /// JSON, exactly as before.
+    /// </para>
+    /// </summary>
+    public static async ValueTask<BodyReadResult<T>> TryReadBodyAsync<T>(HttpContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+
+        if (!context.Request.HasBody)
+            return new BodyReadResult<T>(BodyReadStatus.NoBody, default);
+
+        var options = context.RequestServices.GetService<ContentNegotiationOptions>()
+            ?? ContentNegotiationOptions.Default;
+
+        var formatter = options.SelectInput(context.Request, typeof(T));
+
+        // No formatter for this Content-Type is a 415, not a 400: the body may be perfectly valid
+        // and simply in a format nobody here reads, and saying so is the difference between a client
+        // fixing its header and a client hunting for a syntax error that is not there.
+        if (formatter is null)
+            return new BodyReadResult<T>(BodyReadStatus.UnsupportedMediaType, default);
+
+        var result = await formatter
+            .ReadAsync(context, typeof(T), context.RequestAborted)
+            .ConfigureAwait(false);
+
+        return result.Value is T typed
+            ? new BodyReadResult<T>(BodyReadStatus.Success, typed)
+            : new BodyReadResult<T>(result.Success ? BodyReadStatus.Malformed : result.Status, default);
+    }
+
     // ---- Failure and completion ----
+
+    /// <summary>
+    /// Writes the response for a body that could not be read — a 415 when the format was the
+    /// problem, a 400 when the content was.
+    /// </summary>
+    public static ValueTask BodyReadFailedAsync(
+        HttpContext context,
+        string parameterName,
+        BodyReadStatus status,
+        string typeName
+    )
+    {
+        ArgumentNullException.ThrowIfNull(context);
+
+        if (status != BodyReadStatus.UnsupportedMediaType)
+            return BindFailedAsync(context, parameterName, Source.Body, typeName);
+
+        var options = context.RequestServices.GetService<ContentNegotiationOptions>()
+            ?? ContentNegotiationOptions.Default;
+
+        var supported = string.Join(", ", options.InputFormatters.Select(f => f.MediaType).Distinct());
+
+        context.Response.StatusCode = StatusCodes.Status415UnsupportedMediaType;
+
+        return context.Response.WriteTextAsync(
+            $"The request body content type '{ContentNegotiationOptions.BareMediaType(context.Request.ContentType)}' "
+                + $"cannot be read as {typeName}. Supported content types: {supported}.",
+            cancellationToken: context.RequestAborted
+        );
+    }
 
     /// <summary>Writes the 400 for a parameter that could not be bound.</summary>
     public static ValueTask BindFailedAsync(HttpContext context, string parameterName, Source source, string typeName)

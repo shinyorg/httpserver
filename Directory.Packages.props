@@ -33,6 +33,21 @@
              released independently. -->
         <PackageVersion Include="Shiny.Mediator" Version="6.8.0"/>
         <PackageVersion Include="ModelContextProtocol" Version="2.1.0"/>
+
+        <!-- Same arrangement as the mediator: this repo ships the HTTP-server side of DocumentDb and
+             the engine is versioned and released on its own. 13.2.1 is the floor — it is the first
+             release carrying the public Shiny.DocumentDb.Hosting surface (DocumentPredicate /
+             DocumentFilter / DocumentStoreAccessor) that the endpoints evaluate a request scope with,
+             so an earlier one would not compile. The SQLite provider is test-only and must stay in
+             lockstep, because a provider compiled against a different engine build is a runtime
+             mismatch rather than a build error. -->
+        <PackageVersion Include="Shiny.DocumentDb" Version="13.2.1"/>
+        <PackageVersion Include="Shiny.DocumentDb.Sqlite" Version="13.2.1"/>
+
+        <!-- Test-only. The gRPC tests call the server with the real gRPC client rather than a
+             hand-rolled one, because "our framing agrees with itself" is not the claim being
+             tested. Nothing that ships depends on it. -->
+        <PackageVersion Include="Grpc.Net.Client" Version="2.83.0"/>
     </ItemGroup>
     <ItemGroup>
         <PackageVersion Include="xunit.v3" Version="3.2.2"/>

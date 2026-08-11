@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Shiny.Net.HttpServer.WebDav</RootNamespace>
+    <Description>A WebDAV (RFC 4918) class 1 and 2 server for Shiny.Net.HttpServer — mount a directory from a .NET MAUI app in Finder, Windows Explorer or any WebDAV client, without ASP.NET Core. XML is read and written with XmlReader/XmlWriter, so the whole path is trim- and AOT-clean.</Description>
+    <PackageTags>$(PackageTags) webdav rfc4918 dav</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Shiny.Net.HttpServer/Shiny.Net.HttpServer.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Shiny.Net.HttpServer.Tests" />
+  </ItemGroup>
+
+</Project>

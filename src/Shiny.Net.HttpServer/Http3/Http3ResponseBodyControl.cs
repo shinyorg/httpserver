@@ -62,6 +62,11 @@ sealed class Http3ResponseBodyControl(QuicStream stream, HttpResponse response, 
             }
         }
 
+        await this.WriteHeaderFrameAsync(fields, cancellationToken).ConfigureAwait(false);
+    }
+
+    async ValueTask WriteHeaderFrameAsync(List<HeaderField> fields, CancellationToken cancellationToken)
+    {
         var payload = new ArrayBufferWriter<byte>(256);
         encoder.Encode(payload, fields);
 
@@ -84,6 +89,28 @@ sealed class Http3ResponseBodyControl(QuicStream stream, HttpResponse response, 
 
         await this.StartAsync(cancellationToken).ConfigureAwait(false);
         await this.FlushStagedAsync(cancellationToken).ConfigureAwait(false);
+
+        if (response.HasTrailers)
+        {
+            // A second HEADERS frame, after the last DATA. No pseudo-headers — the status was
+            // settled by the first one.
+            var trailers = new List<HeaderField>(response.Trailers.Count);
+
+            foreach (var (name, values) in response.Trailers)
+            {
+                if (IsConnectionSpecific(name))
+                    continue;
+
+                foreach (var value in values)
+                {
+                    if (value is not null)
+                        trailers.Add(new HeaderField(name.ToLowerInvariant(), value));
+                }
+            }
+
+            if (trailers.Count > 0)
+                await this.WriteHeaderFrameAsync(trailers, cancellationToken).ConfigureAwait(false);
+        }
 
         // The end of the body is the end of the stream in one direction. QUIC carries that as a
         // FIN, so there is no terminating frame to write.

@@ -65,6 +65,39 @@ public sealed class HttpResponse
     public PipeWriter BodyWriter => this.control.Writer;
 
     /// <summary>
+    /// Headers sent <em>after</em> the body, which is the only way to report something you could not
+    /// know before you started writing — a checksum, a row count, or the status of an RPC whose
+    /// failure surfaced halfway through the stream. gRPC is built on them.
+    /// <para>
+    /// Unlike <see cref="Headers"/> these stay writable for the whole response and are read at
+    /// completion. They ride a trailing HEADERS frame on HTTP/2 and HTTP/3, and the terminating
+    /// chunk on HTTP/1.1 — which means <b>an HTTP/1.1 response that declared a Content-Length cannot
+    /// carry them</b>, since there is no chunk to attach them to. Leave the length unset when
+    /// trailers matter. Name them in <see cref="DeclareTrailer"/> so an HTTP/1.1 client knows to
+    /// keep reading.
+    /// </para>
+    /// </summary>
+    public HeaderDictionary Trailers => this.trailers ??= new HeaderDictionary(4);
+
+    HeaderDictionary? trailers;
+
+    /// <summary>True when any trailer has been set, without allocating the collection to find out.</summary>
+    internal bool HasTrailers => this.trailers is { Count: > 0 };
+
+    /// <summary>Appends a trailing header, preserving any existing values for the same name.</summary>
+    public void AppendTrailer(string name, string value) => this.Trailers.Append(name, value);
+
+    /// <summary>
+    /// Announces a trailer in the <c>Trailer</c> response header. Optional on HTTP/2 and HTTP/3,
+    /// but HTTP/1.1 intermediaries are entitled to drop trailers they were not told to expect.
+    /// </summary>
+    public void DeclareTrailer(string name)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        this.Headers.Append(HeaderNames.Trailer, name);
+    }
+
+    /// <summary>
     /// Flushes the status line and headers without writing any body. Useful for long-lived
     /// streaming responses (SSE, for example) where the client should see headers immediately.
     /// </summary>
@@ -202,5 +235,6 @@ public sealed class HttpResponse
         this.onStarting = null;
         this.control = NullResponseBodyControl.Instance;
         this.Headers.Reset();
+        this.trailers?.Reset();
     }
 }

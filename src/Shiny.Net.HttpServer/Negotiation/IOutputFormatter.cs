@@ -23,6 +23,17 @@ public interface IOutputFormatter
     /// </summary>
     int Priority { get; }
 
+    /// <summary>
+    /// The <c>charset</c> to advertise alongside the media type, or null for a format where the
+    /// question does not apply.
+    /// <para>
+    /// UTF-8 by default, which is right for every textual format here. A binary format returns null:
+    /// <c>application/msgpack; charset=utf-8</c> describes bytes that are not text in any encoding,
+    /// and a client that believed it would try to decode them as such.
+    /// </para>
+    /// </summary>
+    string? Charset => "utf-8";
+
     /// <summary>Whether this formatter can write the value at all.</summary>
     bool CanWrite(object? value);
 

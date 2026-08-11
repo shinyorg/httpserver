@@ -19,6 +19,12 @@
              host:port, so the tunnel owns a private loopback socket rather than making the app
              bind one of its own. -->
         <InternalsVisibleTo Include="Shiny.Net.HttpServer.Ssh"/>
+
+        <!-- WebDAV maps request paths onto a real directory, which is the same job the static file
+             handler and the file browser do. It reuses StaticFilePath rather than growing a second
+             traversal check: one implementation that everything goes through is the security model,
+             and a copy of it is a copy that will drift. -->
+        <InternalsVisibleTo Include="Shiny.Net.HttpServer.WebDav"/>
     </ItemGroup>
 
 </Project>

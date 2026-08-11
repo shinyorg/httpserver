@@ -28,9 +28,15 @@ public static class Results
     public static IResult Ok<T>(T value, JsonTypeInfo<T> typeInfo)
         => new JsonResult<T>(value, typeInfo, JsonContentType, StatusCodes.Status200OK);
 
-    /// <summary>200 with a JSON body, using metadata from <see cref="JsonTypeInfoRegistry"/>.</summary>
+    /// <summary>
+    /// 200 with the value serialized from metadata in <see cref="JsonTypeInfoRegistry"/>.
+    /// <para>
+    /// JSON, unless the app set <see cref="Negotiation.ContentNegotiationOptions.NegotiateByDefault"/>
+    /// — this overload names no format, so it is the one that can honour an <c>Accept</c> header.
+    /// </para>
+    /// </summary>
     public static IResult Ok<T>(T value)
-        => new RegistryJsonResult<T>(value, JsonContentType, StatusCodes.Status200OK);
+        => new RegistryJsonResult<T>(value, JsonContentType, StatusCodes.Status200OK, negotiable: true);
 
     public static IResult Json<T>(
         T value,

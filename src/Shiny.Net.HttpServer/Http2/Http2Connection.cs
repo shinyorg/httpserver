@@ -490,15 +490,36 @@ sealed class Http2Connection
         CancellationToken cancellationToken
     )
     {
-        // Client streams are odd and strictly increasing; anything else is a protocol error, and
-        // enforcing it is what stops a peer reusing an id whose state we already discarded.
-        if (streamId % 2 == 0 || streamId <= this.lastStreamId)
-            throw new Http2ConnectionException(Http2ErrorCode.ProtocolError, $"Invalid new stream id {streamId}.");
-
-        this.lastStreamId = streamId;
-
+        // Decoded before anything else is decided about the frame. HPACK is stateful: the dynamic
+        // table is shared by every header block on the connection, so a block we skip decoding
+        // leaves the decoder reading the next one against the wrong table.
         var fields = new List<HeaderField>(16);
         this.decoder.Decode(headerBlock.WrittenSpan, fields);
+
+        // A second HEADERS block on a live stream is request trailers, not a new request. Nothing
+        // here consumes them, but they do end the request body — and tearing the connection down
+        // over a legal frame would be worse than ignoring their content.
+        if (this.streams.TryGetValue(streamId, out var open))
+        {
+            if ((flags & Http2FrameFlags.EndStream) != 0)
+            {
+                open.State = Http2StreamState.HalfClosedRemote;
+                open.CompleteRequestBody();
+            }
+
+            return;
+        }
+
+        // Client streams are odd and strictly increasing; an even id is a protocol error. An id at
+        // or below the high-water mark belongs to a stream that has already been torn down, so its
+        // late frames are ignored the same way late DATA is.
+        if (streamId % 2 == 0)
+            throw new Http2ConnectionException(Http2ErrorCode.ProtocolError, $"Invalid new stream id {streamId}.");
+
+        if (streamId <= this.lastStreamId)
+            return;
+
+        this.lastStreamId = streamId;
 
         if (this.localSettings.MaxConcurrentStreams is { } max && this.streams.Count >= max)
         {
@@ -628,7 +649,37 @@ sealed class Http2Connection
             new(":status", response.StatusCode.ToString(System.Globalization.CultureInfo.InvariantCulture))
         };
 
-        foreach (var header in response.Headers)
+        AppendFields(fields, response.Headers);
+
+        // A response that ends here has no body, so there is no second HEADERS frame for trailers to
+        // ride on: they belong in this block. That shape has a name in gRPC — Trailers-Only — and it
+        // is how a call that failed before producing anything reports its status.
+        if (endStream && response.HasTrailers)
+            AppendFields(fields, response.Trailers);
+
+        response.Headers.IsReadOnly = true;
+
+        return this.WriteHeaderBlockAsync(stream, fields, endStream, cancellationToken);
+    }
+
+    /// <summary>
+    /// Writes the trailing HEADERS frame that closes a stream after its body.
+    /// <para>
+    /// No pseudo-headers: the status was settled by the first HEADERS frame, and a peer that finds
+    /// one here is required to treat the stream as malformed.
+    /// </para>
+    /// </summary>
+    internal ValueTask WriteTrailersAsync(Http2Stream stream, HeaderDictionary trailers, CancellationToken cancellationToken)
+    {
+        var fields = new List<HeaderField>(trailers.Count);
+        AppendFields(fields, trailers);
+
+        return this.WriteHeaderBlockAsync(stream, fields, endStream: true, cancellationToken);
+    }
+
+    static void AppendFields(List<HeaderField> fields, HeaderDictionary headers)
+    {
+        foreach (var header in headers)
         {
             // Connection-specific headers are forbidden in HTTP/2 and a peer may treat them as a
             // protocol error. The framing they describe does not exist here.
@@ -641,9 +692,15 @@ sealed class Http2Connection
                     fields.Add(new HeaderField(header.Key.ToLowerInvariant(), value));
             }
         }
+    }
 
-        response.Headers.IsReadOnly = true;
-
+    ValueTask WriteHeaderBlockAsync(
+        Http2Stream stream,
+        List<HeaderField> fields,
+        bool endStream,
+        CancellationToken cancellationToken
+    )
+    {
         return this.writer.WriteAsync(
             w =>
             {

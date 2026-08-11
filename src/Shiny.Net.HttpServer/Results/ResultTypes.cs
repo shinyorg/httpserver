@@ -1,5 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
+using Microsoft.Extensions.DependencyInjection;
+using Shiny.Net.HttpServer.Negotiation;
 
 namespace Shiny.Net.HttpServer;
 
@@ -27,10 +29,26 @@ sealed class JsonResult<T>(T value, JsonTypeInfo<T> typeInfo, string contentType
 /// The registry-backed sibling of <see cref="JsonResult{T}"/>: the static type is known, so the
 /// lookup happens once per closed generic rather than once per response.
 /// </summary>
-sealed class RegistryJsonResult<T>(T value, string contentType, int statusCode) : IActionResult
+/// <param name="negotiable">
+/// Whether this result may hand off to content negotiation when the app turned
+/// <see cref="ContentNegotiationOptions.NegotiateByDefault"/> on. True for <c>Results.Ok(value)</c>,
+/// which says nothing about a format; false for <c>Results.Json(value, 201)</c>, which does.
+/// </param>
+sealed class RegistryJsonResult<T>(T value, string contentType, int statusCode, bool negotiable = false)
+    : IActionResult
 {
     public async ValueTask ExecuteAsync(HttpContext context)
     {
+        if (negotiable
+            && context.RequestServices.GetService<ContentNegotiationOptions>() is { NegotiateByDefault: true } options)
+        {
+            await new NegotiatedResult(value, statusCode) { Options = options }
+                .ExecuteAsync(context)
+                .ConfigureAwait(false);
+
+            return;
+        }
+
         context.Response.StatusCode = statusCode;
 
         if (value is null)

@@ -23,10 +23,15 @@
     </Folder>
 
     <Project Path="src/Shiny.Net.HttpServer.AzureRelay/Shiny.Net.HttpServer.AzureRelay.csproj" />
+    <Project Path="src/Shiny.Net.HttpServer.DocumentDb/Shiny.Net.HttpServer.DocumentDb.csproj" />
+    <Project Path="src/Shiny.Net.HttpServer.Grpc/Shiny.Net.HttpServer.Grpc.csproj" />
     <Project Path="src/Shiny.Net.HttpServer.Jwt/Shiny.Net.HttpServer.Jwt.csproj" />
     <Project Path="src/Shiny.Net.HttpServer.Mcp/Shiny.Net.HttpServer.Mcp.csproj" />
+    <Project Path="src/Shiny.Net.HttpServer.Mediator/Shiny.Net.HttpServer.Mediator.csproj" />
+    <Project Path="src/Shiny.Net.HttpServer.Mediator.SourceGenerators/Shiny.Net.HttpServer.Mediator.SourceGenerators.csproj" />
     <Project Path="src/Shiny.Net.HttpServer.SourceGenerators/Shiny.Net.HttpServer.SourceGenerators.csproj" />
     <Project Path="src/Shiny.Net.HttpServer.Ssh/Shiny.Net.HttpServer.Ssh.csproj" />
+    <Project Path="src/Shiny.Net.HttpServer.WebDav/Shiny.Net.HttpServer.WebDav.csproj" />
     <Project Path="src/Shiny.Net.HttpServer/Shiny.Net.HttpServer.csproj" />
     <Project Path="tests/Shiny.Net.HttpServer.Tests/Shiny.Net.HttpServer.Tests.csproj" />
 

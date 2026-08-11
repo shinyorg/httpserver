@@ -42,11 +42,13 @@ public partial class ServerViewModel(
     [NotifyPropertyChangedFor(nameof(HasPublicUrl))]
     [NotifyPropertyChangedFor(nameof(CanStopSharing))]
     [NotifyPropertyChangedFor(nameof(McpUrl))]
+    [NotifyPropertyChangedFor(nameof(WebDavUrl))]
     string? publicUrl;
 
     /// <summary>The address on this Wi-Fi network. Works with no internet at all.</summary>
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(McpUrl))]
+    [NotifyPropertyChangedFor(nameof(WebDavUrl))]
     string? localUrl;
 
     [ObservableProperty]
@@ -72,6 +74,18 @@ public partial class ServerViewModel(
     /// </summary>
     public string? McpUrl => (this.PublicUrl ?? this.LocalUrl) is { Length: > 0 } url
         ? $"{url.TrimEnd('/')}/mcp"
+        : null;
+
+    /// <summary>
+    /// What to type into Finder's "Connect to Server" or Explorer's "Map network drive".
+    /// <para>
+    /// The LAN address first, the opposite way round from <see cref="McpUrl"/>. A mounted drive is
+    /// a long-lived connection that sends the password on every request, so the one that stays on
+    /// the Wi-Fi is the one to offer — the tunnel is cleartext HTTP to a shared host.
+    /// </para>
+    /// </summary>
+    public string? WebDavUrl => (this.LocalUrl ?? this.PublicUrl) is { Length: > 0 } url
+        ? $"{url.TrimEnd('/')}/dav"
         : null;
 
     /// <summary>

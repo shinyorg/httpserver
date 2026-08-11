@@ -153,20 +153,20 @@ public static class MediatorEndpointExtensions
 
         return endpoints.Map(method, pattern, async ctx =>
         {
-            var (ok, request) = await EndpointBinder
-                .TryReadJsonBodyAsync<TRequest>(ctx)
+            var body = await EndpointBinder
+                .TryReadBodyAsync<TRequest>(ctx)
                 .ConfigureAwait(false);
 
-            if (!ok || request is null)
+            if (!body.Success || body.Value is null)
             {
                 await EndpointBinder
-                    .BindFailedAsync(ctx, "request", EndpointBinder.Source.Body, typeof(TRequest).Name)
+                    .BodyReadFailedAsync(ctx, "request", body.Status, typeof(TRequest).Name)
                     .ConfigureAwait(false);
 
                 return;
             }
 
-            await MediatorDispatch.RequestAsync<TResult>(ctx, request).ConfigureAwait(false);
+            await MediatorDispatch.RequestAsync<TResult>(ctx, body.Value).ConfigureAwait(false);
         });
     }
 
@@ -181,20 +181,20 @@ public static class MediatorEndpointExtensions
 
         return endpoints.Map(method, pattern, async ctx =>
         {
-            var (ok, command) = await EndpointBinder
-                .TryReadJsonBodyAsync<TCommand>(ctx)
+            var body = await EndpointBinder
+                .TryReadBodyAsync<TCommand>(ctx)
                 .ConfigureAwait(false);
 
-            if (!ok || command is null)
+            if (!body.Success || body.Value is null)
             {
                 await EndpointBinder
-                    .BindFailedAsync(ctx, "command", EndpointBinder.Source.Body, typeof(TCommand).Name)
+                    .BodyReadFailedAsync(ctx, "command", body.Status, typeof(TCommand).Name)
                     .ConfigureAwait(false);
 
                 return;
             }
 
-            await MediatorDispatch.SendAsync(ctx, command, successStatusCode).ConfigureAwait(false);
+            await MediatorDispatch.SendAsync(ctx, body.Value, successStatusCode).ConfigureAwait(false);
         });
     }
 

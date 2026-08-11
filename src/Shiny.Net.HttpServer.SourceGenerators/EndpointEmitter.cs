@@ -309,17 +309,28 @@ static class EndpointEmitter
                 return;
 
             case BindingSource.Body:
-                writer.Line($"var (__ok_{name}, __body_{name}) = await {Binder}");
+                // TryReadBodyAsync rather than TryReadJsonBodyAsync: the format comes from the
+                // request's Content-Type and the app's registered input formatters, so registering
+                // the XML or MessagePack formatters makes every [FromBody] parameter accept them
+                // without regenerating anything.
+                writer.Line($"var __body_{name} = await {Binder}");
                 writer.Indent();
-                writer.Line($".TryReadJsonBodyAsync<{type}>(__ctx)");
+                writer.Line($".TryReadBodyAsync<{type}>(__ctx)");
                 writer.Line(".ConfigureAwait(false);");
                 writer.Outdent();
-                writer.Line($"if (!__ok_{name})");
+                writer.Line($"if (!__body_{name}.Success)");
                 writer.OpenBrace();
-                WriteBindFailure(writer, parameter);
+                writer.Line($"await {Binder}");
+                writer.Indent();
+                writer.Line(
+                    $".BodyReadFailedAsync(__ctx, \"{parameter.BindingKey}\", __body_{name}.Status, " +
+                    $"\"{parameter.TypeDisplay}\")"
+                );
+                writer.Line(".ConfigureAwait(false);");
+                writer.Outdent();
                 writer.Line("return;");
                 writer.CloseBrace();
-                writer.Line($"var {name} = __body_{name}!;");
+                writer.Line($"var {name} = __body_{name}.Value!;");
                 writer.Blank();
                 return;
         }

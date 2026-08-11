@@ -48,6 +48,8 @@ public static class HeaderNames
     public const string SecWebSocketVersion = "Sec-WebSocket-Version";
     public const string Server = "Server";
     public const string SetCookie = "Set-Cookie";
+    public const string TE = "TE";
+    public const string Trailer = "Trailer";
     public const string TransferEncoding = "Transfer-Encoding";
     public const string Upgrade = "Upgrade";
     public const string UserAgent = "User-Agent";

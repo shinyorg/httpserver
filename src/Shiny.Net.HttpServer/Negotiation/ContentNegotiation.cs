@@ -2,7 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace Shiny.Net.HttpServer.Negotiation;
 
-/// <summary>Which representations the server can produce, and what to do when none fit.</summary>
+/// <summary>Which representations the server can produce and consume, and what to do when none fit.</summary>
 public sealed class ContentNegotiationOptions
 {
     /// <summary>
@@ -15,6 +15,15 @@ public sealed class ContentNegotiationOptions
     public IList<IOutputFormatter> Formatters { get; } = [new JsonOutputFormatter(), new PlainTextOutputFormatter()];
 
     /// <summary>
+    /// Formatters for request bodies, selected by <c>Content-Type</c> rather than by preference —
+    /// the client is stating a fact about what it sent, not expressing a wish.
+    /// <para>
+    /// JSON is registered by default and also claims bodies that arrive with no <c>Content-Type</c>.
+    /// </para>
+    /// </summary>
+    public IList<IInputFormatter> InputFormatters { get; } = [new JsonInputFormatter()];
+
+    /// <summary>
     /// Answers 406 when the client accepts nothing the server can produce.
     /// <para>
     /// On by default, because the alternative is sending a body in a format the caller told you it
@@ -23,6 +32,20 @@ public sealed class ContentNegotiationOptions
     /// </para>
     /// </summary>
     public bool ReturnNotAcceptable { get; set; } = true;
+
+    /// <summary>
+    /// Makes <c>Results.Ok(value)</c> — and therefore every generated endpoint that returns a value
+    /// — negotiate its representation instead of always writing JSON.
+    /// <para>
+    /// Off by default, and the default is the interesting part: turning it on means an endpoint's
+    /// response format depends on a request header, so a client that starts sending
+    /// <c>Accept: text/plain</c> silently changes what it gets. That is exactly what you want for an
+    /// API serving browsers, scripts and clients alike, and exactly what you do not want for one
+    /// whose contract says JSON. <c>Results.Json(...)</c> is unaffected either way — the name says
+    /// JSON, so it writes JSON.
+    /// </para>
+    /// </summary>
+    public bool NegotiateByDefault { get; set; }
 
     /// <summary>Adds a formatter built from a delegate.</summary>
     public ContentNegotiationOptions AddFormatter(
@@ -33,6 +56,30 @@ public sealed class ContentNegotiationOptions
     )
     {
         this.Formatters.Add(new DelegateOutputFormatter(mediaType, write, priority, canWrite));
+        return this;
+    }
+
+    /// <summary>Adds an input formatter built from a delegate.</summary>
+    public ContentNegotiationOptions AddInputFormatter(
+        string mediaType,
+        Func<HttpContext, Type, CancellationToken, ValueTask<InputFormatterResult>> read,
+        int priority = 50,
+        Func<Type, bool>? canRead = null
+    )
+    {
+        this.InputFormatters.Add(new DelegateInputFormatter(mediaType, read, priority, canRead));
+        return this;
+    }
+
+    /// <summary>Registers a formatter for both directions.</summary>
+    public ContentNegotiationOptions Add(IOutputFormatter output, IInputFormatter input)
+    {
+        ArgumentNullException.ThrowIfNull(output);
+        ArgumentNullException.ThrowIfNull(input);
+
+        this.Formatters.Add(output);
+        this.InputFormatters.Add(input);
+
         return this;
     }
 
@@ -82,6 +129,52 @@ public sealed class ContentNegotiationOptions
 
         return best;
     }
+
+    /// <summary>
+    /// Picks the formatter for an incoming body, or null when nothing reads this <c>Content-Type</c>
+    /// into this type — which the caller turns into a 415.
+    /// </summary>
+    public IInputFormatter? SelectInput(HttpRequest request, Type targetType)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(targetType);
+
+        var mediaType = BareMediaType(request.ContentType);
+
+        IInputFormatter? best = null;
+
+        foreach (var formatter in this.InputFormatters)
+        {
+            if (!formatter.CanRead(mediaType, targetType))
+                continue;
+
+            if (best is null || formatter.Priority > best.Priority)
+                best = formatter;
+        }
+
+        return best;
+    }
+
+    /// <summary>
+    /// Strips parameters and case from a <c>Content-Type</c>: <c>application/json; charset=utf-8</c>
+    /// is a statement about a format and an encoding, and only the format picks a formatter.
+    /// </summary>
+    internal static string BareMediaType(string? contentType)
+    {
+        if (string.IsNullOrWhiteSpace(contentType))
+            return string.Empty;
+
+        var semicolon = contentType.IndexOf(';');
+        var span = semicolon >= 0 ? contentType.AsSpan(0, semicolon) : contentType.AsSpan();
+
+        return span.Trim().ToString();
+    }
+
+    /// <summary>
+    /// The formatters used when an app never called <c>AddContentNegotiation</c>. JSON in both
+    /// directions, which is the behaviour this server had before formatters existed.
+    /// </summary>
+    internal static ContentNegotiationOptions Default { get; } = new();
 }
 
 /// <summary>
@@ -107,7 +200,7 @@ public sealed class NegotiatedResult(object? value, int statusCode = StatusCodes
 
         var options = this.Options
             ?? context.RequestServices.GetService<ContentNegotiationOptions>()
-            ?? DefaultOptions;
+            ?? ContentNegotiationOptions.Default;
 
         var formatter = options.Select(context.Request, this.Value);
 
@@ -131,7 +224,9 @@ public sealed class NegotiatedResult(object? value, int statusCode = StatusCodes
         }
 
         context.Response.StatusCode = this.StatusCode;
-        context.Response.ContentType = formatter.MediaType + "; charset=utf-8";
+        context.Response.ContentType = formatter.Charset is { } charset
+            ? $"{formatter.MediaType}; charset={charset}"
+            : formatter.MediaType;
 
         // Announced whether or not it varied this time: a shared cache that stored the JSON copy
         // without it would serve JSON to a client that asked for text.
@@ -139,8 +234,6 @@ public sealed class NegotiatedResult(object? value, int statusCode = StatusCodes
 
         await formatter.WriteAsync(context, this.Value, context.RequestAborted).ConfigureAwait(false);
     }
-
-    static readonly ContentNegotiationOptions DefaultOptions = new();
 }
 
 /// <summary>Registering content negotiation.</summary>

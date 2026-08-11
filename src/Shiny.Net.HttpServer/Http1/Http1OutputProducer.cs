@@ -328,9 +328,23 @@ sealed class Http1OutputProducer : IResponseBodyControl
 
         if (this.chunked && !this.suppressBody)
         {
-            var terminator = this.pipe.GetSpan(5);
-            "0\r\n\r\n"u8.CopyTo(terminator);
-            this.pipe.Advance(5);
+            if (this.response.HasTrailers)
+            {
+                // The trailer section hangs off the zero-length chunk: "0" CRLF, the trailer lines,
+                // then the blank line that ends the message. Only chunked responses have anywhere to
+                // put it — a Content-Length body ends at its last byte, with nothing after it.
+                var terminator = this.pipe.GetSpan(3);
+                "0\r\n"u8.CopyTo(terminator);
+                this.pipe.Advance(3);
+
+                WriteHeaders(this.pipe, this.response.Trailers);
+            }
+            else
+            {
+                var terminator = this.pipe.GetSpan(5);
+                "0\r\n\r\n"u8.CopyTo(terminator);
+                this.pipe.Advance(5);
+            }
         }
 
         var shortfall = this.declaredLength is { } declared && this.bytesWritten < declared;

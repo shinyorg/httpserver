@@ -10,6 +10,14 @@ public static class StatusCodes
     public const int Status202Accepted = 202;
     public const int Status204NoContent = 204;
     public const int Status206PartialContent = 206;
+
+    /// <summary>
+    /// One status per resource rather than one for the request. RFC 4918 — what a WebDAV
+    /// <c>PROPFIND</c>, <c>PROPPATCH</c>, <c>COPY</c>, <c>MOVE</c> or <c>DELETE</c> answers when the
+    /// operation spanned more than one resource and they did not all end the same way.
+    /// </summary>
+    public const int Status207MultiStatus = 207;
+
     public const int Status301MovedPermanently = 301;
     public const int Status302Found = 302;
     public const int Status303SeeOther = 303;
@@ -25,12 +33,35 @@ public static class StatusCodes
     public const int Status408RequestTimeout = 408;
     public const int Status409Conflict = 409;
     public const int Status411LengthRequired = 411;
+
+    /// <summary>The <c>If-Match</c> / <c>If-None-Match</c> the caller supplied did not hold.</summary>
+    public const int Status412PreconditionFailed = 412;
+
     public const int Status413PayloadTooLarge = 413;
     public const int Status414UriTooLong = 414;
     public const int Status415UnsupportedMediaType = 415;
     public const int Status416RangeNotSatisfiable = 416;
     public const int Status422UnprocessableEntity = 422;
+
+    /// <summary>
+    /// The resource is write-locked and the request did not present the token. RFC 4918.
+    /// </summary>
+    public const int Status423Locked = 423;
+
+    /// <summary>
+    /// The request failed because a different one it depended on did. RFC 4918 — the status a
+    /// multi-resource operation reports for the members it never got to.
+    /// </summary>
+    public const int Status424FailedDependency = 424;
+
     public const int Status426UpgradeRequired = 426;
+
+    /// <summary>
+    /// The request must be conditional. RFC 6585 — what a resource answers when it refuses a blind
+    /// overwrite and wants an <c>If-Match</c> carrying the version the caller read.
+    /// </summary>
+    public const int Status428PreconditionRequired = 428;
+
     public const int Status429TooManyRequests = 429;
     public const int Status431RequestHeaderFieldsTooLarge = 431;
     public const int Status500InternalServerError = 500;
@@ -39,6 +70,12 @@ public static class StatusCodes
     public const int Status503ServiceUnavailable = 503;
     public const int Status504GatewayTimeout = 504;
     public const int Status505HttpVersionNotSupported = 505;
+
+    /// <summary>
+    /// There is no room to store what the request carried. RFC 4918 — the honest answer from a
+    /// server whose storage is a phone's.
+    /// </summary>
+    public const int Status507InsufficientStorage = 507;
 
     /// <summary>
     /// Returns the standard reason phrase, or "Unknown" for codes we do not recognise. Callers can
@@ -55,6 +92,7 @@ public static class StatusCodes
         204 => "No Content",
         205 => "Reset Content",
         206 => "Partial Content",
+        207 => "Multi-Status",
         300 => "Multiple Choices",
         301 => "Moved Permanently",
         302 => "Found",
@@ -83,6 +121,8 @@ public static class StatusCodes
         418 => "I'm a teapot",
         421 => "Misdirected Request",
         422 => "Unprocessable Content",
+        423 => "Locked",
+        424 => "Failed Dependency",
         426 => "Upgrade Required",
         428 => "Precondition Required",
         429 => "Too Many Requests",

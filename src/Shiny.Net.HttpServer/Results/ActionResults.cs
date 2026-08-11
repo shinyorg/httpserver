@@ -1,4 +1,6 @@
 using System.Text.Json;
+using Microsoft.Extensions.DependencyInjection;
+using Shiny.Net.HttpServer.Negotiation;
 
 namespace Shiny.Net.HttpServer;
 
@@ -95,6 +97,13 @@ public class ObjectResult(object? value, int statusCode = StatusCodes.Status200O
                 this.ContentType ?? TextContentType,
                 context.RequestAborted
             );
+
+        // The IActionResult spelling of Results.Ok, so it negotiates on the same terms — two
+        // spellings of the same intent must not disagree about what they send. An explicit
+        // ContentType is an intent of its own and opts out.
+        if (this.ContentType is null
+            && context.RequestServices.GetService<ContentNegotiationOptions>() is { NegotiateByDefault: true } options)
+            return new NegotiatedResult(this.Value, this.StatusCode) { Options = options }.ExecuteAsync(context);
 
         var typeInfo = JsonTypeInfoRegistry.GetRequired(this.Value.GetType());
         var bytes = JsonSerializer.SerializeToUtf8Bytes(this.Value, typeInfo);

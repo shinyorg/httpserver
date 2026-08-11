@@ -21,6 +21,9 @@ JWT, OpenAPI, HPACK, QPACK — is built on what is in the box.
 | [Shiny.Net.HttpServer.Ssh](https://www.nuget.org/packages/Shiny.Net.HttpServer.Ssh) | SSH remote-forwarding tunnel provider, including zero-account quick tunnels |
 | [Shiny.Net.HttpServer.Mcp](https://www.nuget.org/packages/Shiny.Net.HttpServer.Mcp) | Model Context Protocol (Streamable HTTP) transport — host an MCP server without ASP.NET Core, including inside a MAUI app |
 | [Shiny.Net.HttpServer.Mediator](https://www.nuget.org/packages/Shiny.Net.HttpServer.Mediator) | Publishes Shiny.Mediator requests, commands and streams as endpoints generated at compile time. Generator included |
+| [Shiny.Net.HttpServer.DocumentDb](https://www.nuget.org/packages/Shiny.Net.HttpServer.DocumentDb) | Publishes a Shiny.DocumentDb type as a REST resource — list, by-id, count, CRUD, merge-patch and a live SSE tail |
+| [Shiny.Net.HttpServer.WebDav](https://www.nuget.org/packages/Shiny.Net.HttpServer.WebDav) | A WebDAV (RFC 4918) class 1 & 2 server over a directory — mount an app's storage in Finder, Windows Explorer or any WebDAV client |
+| [Shiny.Net.HttpServer.Grpc](https://www.nuget.org/packages/Shiny.Net.HttpServer.Grpc) | gRPC and gRPC-Web — unary, streaming and bidirectional methods over the same HTTP/2 stack, with serialization you supply |
 
 ## Getting Started
 
@@ -76,14 +79,18 @@ is built on the one below and they compose in the same app.
 
 | | |
 | --- | --- |
-| **Core** | Routing with constraints and runtime-mutable routes, ASP.NET-shaped middleware, a real `IServiceScope` per request, results in both `Results.*` and `IActionResult` spellings, content negotiation, RFC 9457 problem details and an exception-handler chain |
-| **Protocols** | HTTP/1.1, HTTP/2 (own HPACK), HTTP/3 (own QPACK), WebSockets, Server-Sent Events. Never guessed — ALPN over TLS, connection preface over cleartext |
+| **Core** | Routing with constraints and runtime-mutable routes, ASP.NET-shaped middleware, a real `IServiceScope` per request, results in both `Results.*` and `IActionResult` spellings, RFC 9457 problem details and an exception-handler chain |
+| **Formats** | Content negotiation in both directions — responses chosen from `Accept`, request bodies from `Content-Type`. JSON out of the box; XML, MessagePack and protobuf are one line each, and a format of your own is an `IOutputFormatter`/`IInputFormatter` pair. XML and MessagePack need no dependency and no attributes on your DTOs: they read the same `JsonTypeInfo` the JSON path reads, which is what keeps them AOT-clean where `XmlSerializer` cannot be |
+| **Protocols** | HTTP/1.1, HTTP/2 (own HPACK), HTTP/3 (own QPACK), WebSockets, Server-Sent Events, trailing headers on all three versions. Never guessed — ALPN over TLS, connection preface over cleartext |
 | **Content** | Static files from disk *or* embedded resources, a published Blazor WebAssembly app, streaming multipart uploads, downloads with byte ranges and conditional GETs, a file browser over a directory, and brotli/gzip/deflate compression |
 | **Security** | Authentication and authorization split ASP.NET-style, with Basic, API key, cookie and JWT schemes; policies, roles and claims; CORS, rate limiting and IP filtering, all with per-endpoint policies |
 | **TLS** | Several endpoints with per-endpoint TLS, self-signed certificates generated in managed code (iOS and Android included), client certificates, and SPKI pinning for the app's own `HttpClient` |
 | **OpenAPI** | An OpenAPI 3.0.3 document built entirely from compile-time metadata and your `JsonSerializerContext` — no reflection, no document object model |
 | **Tunnelling** | A pluggable `ITunnelProvider`, the reference relay (both ends), SSH remote forwarding, zero-account quick tunnels, and Azure Relay |
 | **Mediator** | Shiny.Mediator handlers published as endpoints — requests as JSON, commands as a status code, stream requests as Server-Sent Events, all bound at compile time |
+| **DocumentDb** | A document type as a complete HTTP resource, with filtering, cursor paging, sparse fieldsets, ETag/If-Match, RFC 7396 merge-patch, a live SSE tail, and server-side scopes enforced on both sides of a write |
+| **gRPC** | Unary, client-streaming, server-streaming and bidirectional methods, deadlines, per-message compression and status in trailers — plus gRPC-Web for browsers and anything on HTTP/1.1. Marshalling is yours, so nothing reflects over your messages |
+| **WebDAV** | RFC 4918 classes 1 and 2 over a directory — `PROPFIND`, `PROPPATCH`, `MKCOL`, `COPY`, `MOVE`, `LOCK`/`UNLOCK`, the `If` header and dead properties — so an app's storage mounts as a drive with no client to write |
 | **Lifecycle** | Start, stop and restart at runtime, serialized and idempotent, with an observable state — an embedded server gets toggled, not just booted |
 
 Everything shipping targets `net10.0` with the trim, AOT and single-file analyzers enabled, so

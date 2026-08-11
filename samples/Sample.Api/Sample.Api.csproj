@@ -14,6 +14,7 @@
     <ItemGroup>
         <ProjectReference Include="../../src/Shiny.Net.HttpServer/Shiny.Net.HttpServer.csproj"/>
         <ProjectReference Include="../../src/Shiny.Net.HttpServer.Jwt/Shiny.Net.HttpServer.Jwt.csproj"/>
+        <ProjectReference Include="../../src/Shiny.Net.HttpServer.WebDav/Shiny.Net.HttpServer.WebDav.csproj"/>
         <ProjectReference Include="../../src/Shiny.Net.HttpServer.SourceGenerators/Shiny.Net.HttpServer.SourceGenerators.csproj"
                           OutputItemType="Analyzer"
                           ReferenceOutputAssembly="false"/>

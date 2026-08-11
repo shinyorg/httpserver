@@ -34,6 +34,10 @@
     <!-- The MCP tests drive the endpoint with the SDK's own client, so the SDK is a test
          dependency in its own right and not just a transitive one. -->
     <PackageReference Include="ModelContextProtocol" />
+
+    <!-- The gRPC tests drive the endpoints with Google's own client, which is the only way to know
+         the wire format is right rather than merely self-consistent. -->
+    <PackageReference Include="Grpc.Net.Client" />
   </ItemGroup>
 
   <!-- Content for the embedded static-file source. Serving assets out of the assembly is the
@@ -44,11 +48,19 @@
 
   <ItemGroup>
     <ProjectReference Include="../../src/Shiny.Net.HttpServer/Shiny.Net.HttpServer.csproj" />
+    <ProjectReference Include="../../src/Shiny.Net.HttpServer.Grpc/Shiny.Net.HttpServer.Grpc.csproj" />
     <ProjectReference Include="../../src/Shiny.Net.HttpServer.Jwt/Shiny.Net.HttpServer.Jwt.csproj" />
     <ProjectReference Include="../../src/Shiny.Net.HttpServer.AzureRelay/Shiny.Net.HttpServer.AzureRelay.csproj" />
     <ProjectReference Include="../../src/Shiny.Net.HttpServer.Mcp/Shiny.Net.HttpServer.Mcp.csproj" />
     <ProjectReference Include="../../src/Shiny.Net.HttpServer.Ssh/Shiny.Net.HttpServer.Ssh.csproj" />
+    <ProjectReference Include="../../src/Shiny.Net.HttpServer.WebDav/Shiny.Net.HttpServer.WebDav.csproj" />
     <ProjectReference Include="../../src/Shiny.Net.HttpServer.Mediator/Shiny.Net.HttpServer.Mediator.csproj" />
+    <ProjectReference Include="../../src/Shiny.Net.HttpServer.DocumentDb/Shiny.Net.HttpServer.DocumentDb.csproj" />
+
+    <!-- A real store behind the document endpoints, so the tests exercise the engine rather than a
+         stand-in. Test-only, and pinned in lockstep with the engine in Directory.Packages.props: a
+         provider compiled against a different engine build is a runtime mismatch, not a build error. -->
+    <PackageReference Include="Shiny.DocumentDb.Sqlite" />
 
     <!-- The mediator generator reaches a consumer through the NuGet package's analyzers/ folder.
          Analyzers do not flow across a ProjectReference, so referencing it in-repo takes the

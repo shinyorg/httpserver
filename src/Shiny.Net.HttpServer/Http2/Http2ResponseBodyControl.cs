@@ -57,6 +57,16 @@ sealed class Http2ResponseBodyControl(Http2Connection connection, Http2Stream st
             return;
         }
 
+        if (response.HasTrailers)
+        {
+            // The trailing HEADERS frame carries END_STREAM, so the last DATA frame must not: two
+            // frames claiming to end the same stream is a protocol error.
+            await this.FlushAsync(endStream: false, cancellationToken).ConfigureAwait(false);
+            await connection.WriteTrailersAsync(stream, response.Trailers, cancellationToken).ConfigureAwait(false);
+
+            return;
+        }
+
         await this.FlushAsync(endStream: true, cancellationToken).ConfigureAwait(false);
     }
 

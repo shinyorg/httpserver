@@ -51,6 +51,12 @@
                     <Label Text="{Binding McpUrl, TargetNullValue='Server not started'}"
                            LineBreakMode="CharacterWrap" />
 
+                    <!-- The WebDAV mount. Finder: Go → Connect to Server. Explorer: Map network
+                         drive. Same server, same password — the app's storage as a drive. -->
+                    <Label Text="WebDAV mount" TextColor="Gray" Margin="0,6,0,0" />
+                    <Label Text="{Binding WebDavUrl, TargetNullValue='Server not started'}"
+                           LineBreakMode="CharacterWrap" />
+
                     <HorizontalStackLayout Spacing="8" Margin="0,6,0,0">
                         <Label Text="Requests served:" />
                         <Label Text="{Binding RequestCount}" FontAttributes="Bold" />

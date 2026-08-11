@@ -5,9 +5,14 @@
             "src\\Shiny.Net.HttpServer\\Shiny.Net.HttpServer.csproj",
             "src\\Shiny.Net.HttpServer.SourceGenerators\\Shiny.Net.HttpServer.SourceGenerators.csproj",
             "src\\Shiny.Net.HttpServer.Jwt\\Shiny.Net.HttpServer.Jwt.csproj",
+            "src\\Shiny.Net.HttpServer.Grpc\\Shiny.Net.HttpServer.Grpc.csproj",
             "src\\Shiny.Net.HttpServer.AzureRelay\\Shiny.Net.HttpServer.AzureRelay.csproj",
             "src\\Shiny.Net.HttpServer.Mcp\\Shiny.Net.HttpServer.Mcp.csproj",
-            "src\\Shiny.Net.HttpServer.Ssh\\Shiny.Net.HttpServer.Ssh.csproj"
+            "src\\Shiny.Net.HttpServer.Ssh\\Shiny.Net.HttpServer.Ssh.csproj",
+            "src\\Shiny.Net.HttpServer.WebDav\\Shiny.Net.HttpServer.WebDav.csproj",
+            "src\\Shiny.Net.HttpServer.DocumentDb\\Shiny.Net.HttpServer.DocumentDb.csproj",
+            "src\\Shiny.Net.HttpServer.Mediator\\Shiny.Net.HttpServer.Mediator.csproj",
+            "src\\Shiny.Net.HttpServer.Mediator.SourceGenerators\\Shiny.Net.HttpServer.Mediator.SourceGenerators.csproj"
         ]
     }
 }
