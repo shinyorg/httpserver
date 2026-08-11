@@ -65,6 +65,44 @@ public class RouteConstraintTests
     [InlineData("minlength(3)", "ab", false)]
     [InlineData("maxlength(3)", "abcd", false)]
     [InlineData("length(3)", "abc", true)]
+
+    // A narrower integer width is a real filter, not a synonym for int.
+    [InlineData("short", "32767", true)]
+    [InlineData("short", "32768", false)]
+    [InlineData("short", "-32768", true)]
+    [InlineData("byte", "255", true)]
+    [InlineData("byte", "256", false)]
+    [InlineData("byte", "-1", false)]
+    [InlineData("long", "9223372036854775807", true)]
+    [InlineData("long", "9223372036854775808", false)]
+
+    [InlineData("float", "1.5", true)]
+    [InlineData("float", "abc", false)]
+
+    // Temporal, invariant culture — a route means the same thing wherever the server runs.
+    [InlineData("datetime", "2026-08-11", true)]
+    [InlineData("datetime", "2026-08-11T14:30:00", true)]
+    [InlineData("datetime", "notadate", false)]
+    [InlineData("dateonly", "2026-08-11", true)]
+    [InlineData("dateonly", "2026-13-40", false)]
+    [InlineData("timeonly", "14:30", true)]
+    [InlineData("timeonly", "99:99", false)]
+    [InlineData("timespan", "1.02:03:04", true)]
+    [InlineData("timespan", "nope", false)]
+
+    // Bounds on the value, as opposed to the length of the text.
+    [InlineData("min(10)", "10", true)]
+    [InlineData("min(10)", "9", false)]
+    [InlineData("min(-5)", "-5", true)]
+    [InlineData("min(-5)", "-6", false)]
+    [InlineData("max(10)", "10", true)]
+    [InlineData("max(10)", "11", false)]
+    [InlineData("range(1,100)", "1", true)]
+    [InlineData("range(1,100)", "100", true)]
+    [InlineData("range(1,100)", "0", false)]
+    [InlineData("range(1,100)", "101", false)]
+    [InlineData("range(1,100)", "abc", false)]
+    [InlineData("range(-10,-1)", "-5", true)]
     public void Matches_expected_values(string constraint, string value, bool expected)
     {
         var parsed = RouteConstraint.Parse(constraint);
@@ -77,8 +115,31 @@ public class RouteConstraintTests
     [InlineData("minlength(-1)")]
     [InlineData("minlength(x)")]
     [InlineData("minlength(3")]
+    [InlineData("length(-2)")]
+    [InlineData("min(x)")]
+    [InlineData("range(1)")]
+    [InlineData("range(1,x)")]
+
+    // An inverted range matches nothing, which is never what someone meant to type.
+    [InlineData("range(100,1)")]
+
+    // No regex constraint, by design — see the note on RouteConstraint.
+    [InlineData("regex(^a.*$)")]
     public void Rejects_unknown_constraints(string constraint)
         => Assert.Null(RouteConstraint.Parse(constraint));
+
+    /// <summary>
+    /// A constraint filters the route; it does not convert anything. Declaring <c>{id:int}</c> on a
+    /// handler that takes a <c>long</c> is legal and does exactly what it says.
+    /// </summary>
+    [Theory]
+    [InlineData("min(1)", "min(1)")]
+    [InlineData("max(1)", "max(1)")]
+    [InlineData("range(1,2)", "range(1,2)")]
+    [InlineData("short", "short")]
+    [InlineData("datetime", "datetime")]
+    public void Round_trips_through_ToString(string constraint, string expected)
+        => Assert.Equal(expected, RouteConstraint.Parse(constraint)!.ToString());
 }
 
 public class RouterTests

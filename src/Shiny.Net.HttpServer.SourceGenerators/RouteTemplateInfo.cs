@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 
 namespace Shiny.Net.HttpServer.SourceGenerators;
@@ -156,6 +157,12 @@ public sealed class RouteTemplateInfo
         return new RouteTemplateInfo("/" + normalized, names);
     }
 
+    /// <summary>
+    /// The constraint vocabulary, which must stay identical to
+    /// <c>Shiny.Net.HttpServer.Routing.RouteConstraint.Parse</c>. Anything accepted here and
+    /// rejected there is a route that compiles and never matches; the reverse is a route the
+    /// generator refuses for no reason. Parity is covered by tests.
+    /// </summary>
     static bool IsKnownConstraint(string constraint)
     {
         var paren = constraint.IndexOf('(');
@@ -163,13 +170,20 @@ public sealed class RouteTemplateInfo
         {
             switch (constraint.ToLowerInvariant())
             {
+                case "byte":
+                case "short":
                 case "int":
                 case "long":
-                case "guid":
-                case "bool":
+                case "float":
                 case "double":
                 case "decimal":
+                case "bool":
+                case "guid":
                 case "alpha":
+                case "datetime":
+                case "dateonly":
+                case "timeonly":
+                case "timespan":
                     return true;
                 default:
                     return false;
@@ -180,11 +194,43 @@ public sealed class RouteTemplateInfo
             return false;
 
         var name = constraint.Substring(0, paren).ToLowerInvariant();
-        var argument = constraint.Substring(paren + 1, constraint.Length - paren - 2);
+        var arguments = constraint.Substring(paren + 1, constraint.Length - paren - 2);
 
-        if (!int.TryParse(argument, out var value) || value < 0)
+        var comma = arguments.IndexOf(',');
+        if (comma < 0)
+        {
+            if (!TryParseArgument(arguments, out var value))
+                return false;
+
+            switch (name)
+            {
+                // A length cannot be negative; a bound on a value very much can.
+                case "minlength":
+                case "maxlength":
+                case "length":
+                    return value >= 0;
+
+                case "min":
+                case "max":
+                    return true;
+
+                default:
+                    return false;
+            }
+        }
+
+        if (name != "range")
             return false;
 
-        return name is "minlength" or "maxlength" or "length";
+        return TryParseArgument(arguments.Substring(0, comma), out var low)
+            && TryParseArgument(arguments.Substring(comma + 1), out var high)
+            && low <= high;
     }
+
+    static bool TryParseArgument(string text, out long value) => long.TryParse(
+        text.Trim(),
+        NumberStyles.Integer,
+        CultureInfo.InvariantCulture,
+        out value
+    );
 }

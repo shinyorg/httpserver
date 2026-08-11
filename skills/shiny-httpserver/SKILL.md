@@ -540,9 +540,15 @@ app.MapGeneratedMediatorEndpoints();       // or Map{Handler}MediatorEndpoints()
 
 1. **Prefer tier 3** for anything with typed parameters; tier 1 for small servers.
 2. **Always declare a `JsonSerializerContext`** and never use the reflection JSON overloads.
-3. **Route constraints are a closed set** — `int`, `long`, `guid`, `bool`, `double`, `decimal`,
-   `alpha`, `minlength(n)`, `maxlength(n)`, `length(n)`. Validate anything else in the handler so it
-   can return a meaningful error instead of a 404.
+3. **Route constraints are a closed set** — `byte`, `short`, `int`, `long`, `float`, `double`,
+   `decimal`, `bool`, `guid`, `alpha`, `datetime`, `dateonly`, `timeonly`, `timespan`,
+   `minlength(n)`, `maxlength(n)`, `length(n)`, `min(n)`, `max(n)`, `range(a,b)`. There is **no
+   `regex`** — validate anything richer in the handler so it can return a meaningful error instead of
+   a 404. Length constraints count characters; `min`/`max`/`range` compare the value and may take
+   negative arguments.
+   A constraint only decides whether the route **matches** — it converts nothing, and the binder
+   handles every `IParsable<T>` regardless. So `{id:int}` on a handler taking a `long` is fine, a
+   refused segment is a **404**, and a matched-but-unparseable one is a **400**.
 4. **Segments are literal or a parameter, never mixed** (`v{version}` is rejected at registration).
 5. **Register middleware before starting**; register routes whenever you like.
 6. **Put auth in front of static files** when they are not public.
