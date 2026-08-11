@@ -177,7 +177,7 @@ For a phone that needs to hand someone a link, none of the setup above is requir
 
 ```csharp
 builder.Services.AddHttpServer(configureServer: s => s.MapGet("/", …), autoStart: false);
-builder.Services.AddQuickTunnel();          // localhost.run by default; nothing to sign up for
+builder.Services.AddQuickTunnel();          // pinggy by default; nothing to sign up for
 ```
 
 `QuickTunnel` implements `INotifyPropertyChanged`, so a view binds straight to it:
@@ -221,10 +221,31 @@ For a console app or a sample:
 await app.RunQuickTunnelAsync(url => Console.WriteLine($"Reachable at {url}"));
 ```
 
-Three hosts are preset. `QuickTunnelHost.LocalhostRun` needs nothing at all;
-`QuickTunnelHost.Sish` derives the subdomain from your key, so the same key gets the same address —
-worth having if the URL goes on a label or into someone's bookmarks. Pass a `subdomain` to request
-one.
+Four hosts are preset, and they are not interchangeable:
+
+| Host | Needs |
+| --- | --- |
+| `QuickTunnelHost.Pinggy` (default) | Nothing. It wants a key but not a registered one, so `UseEphemeralKey` generates one in memory. Anonymous tunnels expire after 60 minutes; pass an access token as the `subdomain` argument to lift that |
+| `QuickTunnelHost.Sish` | A key **enrolled at pico.sh**, which `tuns.sh` checks — an unknown key is refused. Derives the subdomain from the key, so the same key gets the same address: worth having if the URL goes on a label or into someone's bookmarks |
+| `QuickTunnelHost.LocalhostRun` | A localhost.run account with a custom domain, set as `PublicUrl` — see below |
+| `QuickTunnelHost.Serveo` | A key, and luck: it is frequently unreachable for days at a time |
+
+**`StartAsync` returns null when the tunnel came up without an address.** Check for it and show
+`LastError` — a non-throwing call is not the same as a working link.
+
+### localhost.run cannot report its own address here
+
+It never confirms the SSH session request that carries the assigned URL. The `ssh` binary does not
+wait for that confirmation and prints the address anyway; SSH.NET does wait, and the channel types
+needed to skip the wait are internal to it. So this preset is only usable when you already know
+where it answers:
+
+```csharp
+builder.Services.AddQuickTunnel(
+    QuickTunnelHost.LocalhostRun,
+    configure: o => o.PublicUrl = "https://my-device.example.com"
+);
+```
 
 **What you are accepting.** These hosts publish no stable key to pin, so `AcceptAnyHostKey` is on,
 and your traffic passes through someone else's server. That is the trade for zero setup. For
@@ -236,10 +257,33 @@ anything you would mind being logged, run your own sish or use the VPS setup bel
 Nothing to run, a URL assigned to you, and traffic through a third party. Fine for development, a
 demo, or a webhook you are debugging. For anything you would be upset to see logged, run your own.
 
+### pinggy
+
+No account and no key to provision — it takes any key, and `UseEphemeralKey` makes one:
+
+```csharp
+var tunnel = new SshTunnelProvider(new SshTunnelOptions
+{
+    Host = "a.pinggy.io",
+    Port = 443,
+    Username = "a",                     // or your access token
+    UseEphemeralKey = true,
+    RemoteBindAddress = "localhost",
+    RemotePort = 0,                     // it assigns the port as well as the name
+    CaptureUrlFromSession = true,
+    UrlPattern = new Regex(@"https://[a-z0-9.-]+\.(?:free\.pinggy\.net|pinggy-free\.link)"),
+    AcceptAnyHostKey = true
+});
+
+await tunnel.BindAsync(token);
+Console.WriteLine(tunnel.PublicUrl);    // https://xxxxx-1-2-3-4.free.pinggy.net
+```
+
 ### sish
 
-Public instance at `tuns.sh`, or self-host the container. Takes any key and derives your subdomain
-from it, so the same key gets the same URL:
+Public instance at `tuns.sh`, which is run by pico.sh and needs a key **enrolled there** — an unknown
+key is refused outright. Self-host the container and it takes any key. Either way it derives your
+subdomain from the key, so the same key gets the same URL:
 
 ```csharp
 var tunnel = new SshTunnelProvider(new SshTunnelOptions
@@ -259,7 +303,8 @@ Console.WriteLine(tunnel.PublicUrl);    // https://device-1.tuns.sh
 
 ### localhost.run
 
-Authenticates nobody and assigns the URL:
+Authenticates nobody, and — as above — will not tell *this library* the URL it assigned. Give it one
+you already own:
 
 ```csharp
 new SshTunnelOptions
@@ -268,8 +313,8 @@ new SshTunnelOptions
     Username = "nokey",
     RemoteBindAddress = "localhost",
     RemotePort = 80,
-    CaptureUrlFromSession = true,
-    AcceptAnyHostKey = true             // no stable key to pin
+    PublicUrl = "https://my-device.example.com",   // your localhost.run custom domain
+    AcceptAnyHostKey = true                       // no stable key to pin
 }
 ```
 
@@ -287,12 +332,21 @@ new SshTunnelOptions
 }
 ```
 
-`CaptureUrlFromSession` is how you learn where you landed: all three print the URL on the session
-channel once forwarding is up, and there is no other way to know — the address is the server's to
-choose. The channel is left open afterwards, because some providers tear the forward down with it.
-If nothing matches within `UrlCaptureTimeout` (15s), `PublicUrl` falls back to the forwarded port and
-a warning is logged. Adjust `UrlPattern` if a provider prints several URLs and you want a specific
-one.
+`CaptureUrlFromSession` is how you learn where you landed: these providers print the URL on the
+session channel once forwarding is up, and there is no other way to know — the address is the
+server's to choose. The channel is left open afterwards, because some providers tear the forward down
+with it.
+
+**Anchor `UrlPattern` to the provider's own tunnel domain.** The built-in default takes the first
+`https://` in the output, which is fine for a provider that prints one line and wrong for every
+provider that greets you first: they open with links to their documentation, dashboard and social
+media, and on localhost.run that greeting arrives on the channel's *error* stream, ahead of the
+address and in the same read. Each `QuickTunnelHost` preset ships a pattern for its own domain.
+
+`UrlCaptureTimeout` (15s) bounds the whole capture, including opening the session channel — which is
+a blocking call SSH.NET holds until the server confirms the request. If nothing matches in that
+window `PublicUrl` stays **null** and a warning is logged; it is not filled in with a guess, because
+for a hosted tunnel `http://{host}:{port}` is a link to the provider's own front page.
 
 Pin fingerprints for these too where the provider publishes them. `AcceptAnyHostKey` means anything
 on the path can pose as the tunnel and read everything going through it.

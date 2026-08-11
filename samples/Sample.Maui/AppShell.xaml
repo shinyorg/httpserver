@@ -1,7 +1,28 @@
 <?xml version="1.0" encoding="utf-8" ?>
-<Shell xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
-       xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
-       xmlns:local="clr-namespace:Sample.Maui"
-       x:Class="Sample.Maui.AppShell"
-       FlyoutBehavior="Disabled"
-       Title="Shiny HTTP Server" />
+<!-- ShinyShell rather than Shell: it is what assigns the first page's binding context through
+     Shell's own navigation lifecycle, so the tab that is already on screen at launch behaves the
+     same as every tab reached later. The Route on each tab is the name the view models declare in
+     [ShellMap], which is also what INavigator.SetTabBadge resolves against. -->
+<shiny:ShinyShell xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+                  xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+                  xmlns:shiny="clr-namespace:Shiny;assembly=Shiny.Maui.Shell"
+                  xmlns:pages="clr-namespace:Sample.Maui.Pages"
+                  x:Class="Sample.Maui.AppShell"
+                  FlyoutBehavior="Disabled"
+                  Title="Shiny HTTP Server">
+
+    <TabBar>
+        <ShellContent Title="Server"
+                      Route="Server"
+                      ContentTemplate="{DataTemplate pages:ServerPage}" />
+
+        <ShellContent Title="Traffic"
+                      Route="Traffic"
+                      ContentTemplate="{DataTemplate pages:TrafficPage}" />
+
+        <ShellContent Title="Access"
+                      Route="Access"
+                      ContentTemplate="{DataTemplate pages:AccessPage}" />
+    </TabBar>
+
+</shiny:ShinyShell>

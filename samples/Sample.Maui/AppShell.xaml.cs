@@ -1,13 +1,8 @@
 namespace Sample.Maui;
 
-public partial class AppShell : Shell
+public partial class AppShell : ShinyShell
 {
-    // The page comes from the container rather than being newed up in XAML: it needs the view
-    // model, which needs the server and the tunnel.
-    public AppShell(MainPage page)
-    {
-        this.InitializeComponent();
-
-        this.Items.Add(new ShellContent { Content = page, Title = "Share" });
-    }
+    // No constructor injection any more: pages come from the container when the tab is realised,
+    // and Shiny Shell attaches the view model registered against each one.
+    public AppShell() => this.InitializeComponent();
 }

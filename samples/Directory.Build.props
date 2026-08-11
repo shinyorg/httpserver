@@ -6,6 +6,12 @@
     <TargetFramework>net10.0</TargetFramework>
     <OutputType>Exe</OutputType>
     <IsPackable>false</IsPackable>
+
+    <!-- The repo root turns GeneratePackageOnBuild on for every Release build. IsPackable=false is
+         not enough to undo it here: ILCompiler hard-errors on the raw property, so any sample with
+         PublishAot fails to publish. Samples ship nothing, so switch it off outright. -->
+    <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+
     <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
 

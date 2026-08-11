@@ -210,16 +210,27 @@ public sealed class SshTunnelProvider : ITunnelProvider
             this.PublicUrl = this.options.PublicUrl
                 ?? (this.options.CaptureUrlFromSession
                     ? await this.CaptureUrlAsync(sshClient, cancellationToken).ConfigureAwait(false)
-                    : null)
-                ?? this.DeriveUrl();
+                    // Deriving the address is only honest for a forward whose public face you
+                    // already know. A hosted tunnel picks the address itself, so guessing one there
+                    // hands the app a link that cannot work — worse than admitting there isn't one.
+                    : this.DeriveUrl());
 
-            this.logger.LogInformation(
-                "SSH tunnel up: {RemoteBind}:{RemotePort} -> {Local}, public at {Url}",
-                this.options.RemoteBindAddress,
-                this.RemotePort,
-                local,
-                this.PublicUrl
-            );
+            if (this.PublicUrl is null)
+                this.logger.LogWarning(
+                    "The forward to {RemoteBind}:{RemotePort} is up, but no public address is known. "
+                        + "Set {PublicUrl} if you know where this endpoint answers.",
+                    this.options.RemoteBindAddress,
+                    this.RemotePort,
+                    nameof(SshTunnelOptions.PublicUrl)
+                );
+            else
+                this.logger.LogInformation(
+                    "SSH tunnel up: {RemoteBind}:{RemotePort} -> {Local}, public at {Url}",
+                    this.options.RemoteBindAddress,
+                    this.RemotePort,
+                    local,
+                    this.PublicUrl
+                );
 
             this.ConnectivityChanged?.Invoke(this, true);
         }
@@ -293,43 +304,76 @@ public sealed class SshTunnelProvider : ITunnelProvider
     /// </summary>
     async Task<string?> CaptureUrlAsync(SshClient sshClient, CancellationToken cancellationToken)
     {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(this.options.UrlCaptureTimeout);
+
+        var capture = Task.Run(() => this.ReadUrlAsync(sshClient, timeout.Token), CancellationToken.None);
+
+        // Once abandoned below, nobody is left to await this — and a blocking SSH call that throws
+        // after that would surface as an unobserved exception rather than the warning it deserves.
+        _ = capture.ContinueWith(
+            static t => t.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default
+        );
+
         try
         {
-            var shell = sshClient.CreateShellStreamNoTerminal(bufferSize: 4096);
-            this.session = shell;
-
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeout.CancelAfter(this.options.UrlCaptureTimeout);
-
-            var buffer = new byte[1024];
-            var text = new StringBuilder();
-
-            while (!timeout.IsCancellationRequested)
-            {
-                var read = await shell.ReadAsync(buffer, timeout.Token).ConfigureAwait(false);
-                if (read == 0)
-                    break;
-
-                text.Append(Encoding.UTF8.GetString(buffer, 0, read));
-
-                var match = this.options.UrlPattern.Match(text.ToString());
-                if (match.Success)
-                {
-                    var url = match.Value.TrimEnd('.', ',', ';');
-                    this.logger.LogInformation("The SSH endpoint assigned {Url}", url);
-
-                    return url;
-                }
-            }
-
+            // The hard bound, and the reason the capture runs on its own task at all. Opening the
+            // session channel is a *blocking* call inside SSH.NET that waits for the server to
+            // confirm the shell request, and a server that never confirms one would otherwise hold
+            // BindAsync for the whole ConnectTimeout rather than UrlCaptureTimeout. Whatever
+            // happens in there, the caller gets an answer on schedule.
+            return await capture.WaitAsync(this.options.UrlCaptureTimeout, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is TimeoutException or OperationCanceledException)
+        {
+            // The abandoned read closes over its own stream and tidies up after itself; it is left
+            // running because some providers tear the forward down when the session channel closes.
             this.logger.LogWarning(
-                "No URL appeared in the session output within {Timeout}; falling back to the forwarded port",
-                this.options.UrlCaptureTimeout
+                "No URL appeared within {Timeout}. Some hosted endpoints — localhost.run among them — "
+                    + "never confirm the session request that carries it, in which case the address "
+                    + "cannot be read at all and {PublicUrl} has to be set explicitly.",
+                this.options.UrlCaptureTimeout,
+                nameof(SshTunnelOptions.PublicUrl)
             );
         }
-        catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException or SshException)
+        catch (Exception ex) when (ex is ObjectDisposedException or SshException)
         {
             this.logger.LogWarning(ex, "Could not read the assigned URL from the session");
+        }
+
+        return null;
+    }
+
+    /// <summary>Opens the session channel and reads until the URL turns up or the token trips.</summary>
+    async Task<string?> ReadUrlAsync(SshClient sshClient, CancellationToken cancellationToken)
+    {
+        var shell = sshClient.CreateShellStreamNoTerminal(bufferSize: 4096);
+        this.session = shell;
+
+        var buffer = new byte[1024];
+        var text = new StringBuilder();
+
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            var read = await shell.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+            if (read == 0)
+                break;
+
+            text.Append(Encoding.UTF8.GetString(buffer, 0, read));
+
+            var match = this.options.UrlPattern.Match(text.ToString());
+            if (match.Success)
+            {
+                // A URL in prose brings the punctuation around it along: providers print theirs
+                // inside brackets, in quotes, or at the end of a sentence.
+                var url = match.Value.TrimEnd('.', ',', ';', ':', ')', ']', '}', '>', '"', '\'');
+                this.logger.LogInformation("The SSH endpoint assigned {Url}", url);
+
+                return url;
+            }
         }
 
         return null;

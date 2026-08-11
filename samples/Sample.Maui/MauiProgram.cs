@@ -19,6 +19,12 @@ public static class MauiProgram
 
         builder
             .UseMauiApp<App>()
+
+            // Shiny.Maui.Shell owns the tabs: AddGeneratedMaps() is source-generated from the
+            // [ShellMap] attributes on the view models, so every page and view model is registered
+            // — and every route named — without a list here that drifts from the attributes.
+            .UseShinyShell(shell => shell.AddGeneratedMaps())
+
             .ConfigureFonts(fonts =>
             {
                 fonts.AddFont("OpenSans-Regular.ttf", "OpenSansRegular");
@@ -35,8 +41,13 @@ public static class MauiProgram
         JsonTypeInfoRegistry.Register(ApiJsonContext.Default);
 
         builder.Services.AddSingleton<NoteStore>();
-        builder.Services.AddSingleton<RequestCounter>();
+        builder.Services.AddSingleton<RequestLog>();
         builder.Services.AddSingleton<RequireAuthenticationMiddleware>();
+
+        // The badge on the Traffic tab has to keep counting while a different tab is on screen, so
+        // it is a service with a startup hook rather than anything the Traffic view model owns.
+        builder.Services.AddSingleton<TrafficBadge>();
+        builder.Services.AddSingleton<IMauiInitializeService>(sp => sp.GetRequiredService<TrafficBadge>());
 
         // The accounts live in the app's own storage and change from the settings screen, so the
         // validator is a service rather than a list handed over at startup.
@@ -83,7 +94,9 @@ public static class MauiProgram
             {
                 var services = server.Services!;
 
-                server.Use(services.GetRequiredService<RequestCounter>());
+                // First in the pipeline, ahead of authentication, so the Traffic tab shows the
+                // requests that were turned away as well as the ones that were answered.
+                server.Use(services.GetRequiredService<RequestLog>());
 
                 // Identify the caller, then insist on one. Both run before the static file handler,
                 // because that handler answers before routing and would otherwise serve the page to
@@ -121,10 +134,6 @@ public static class MauiProgram
         // localhost.run: no account, no key, nothing installed. The URL it assigns is what the app
         // shows on screen.
         builder.Services.AddQuickTunnel();
-
-        builder.Services.AddSingleton<ShareViewModel>();
-        builder.Services.AddSingleton<MainPage>();
-        builder.Services.AddSingleton<AppShell>();
 
         return builder.Build();
     }

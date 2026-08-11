@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
@@ -9,19 +10,35 @@ namespace Shiny.Net.HttpServer.Ssh;
 public enum QuickTunnelHost
 {
     /// <summary>
-    /// <c>localhost.run</c>. No account, no key, no signup — it authenticates nobody and hands back
-    /// a fresh <c>*.lhr.life</c> address each time.
+    /// <c>pinggy.io</c>, and the default: no account, no signup, and it reports the address it
+    /// assigns in a way this library can actually read. A key is required but not registered, so
+    /// <see cref="SshTunnelOptions.UseEphemeralKey"/> generates one and nothing has to be
+    /// provisioned. Anonymous tunnels are capped at 60 minutes; pass an access token as the
+    /// <c>subdomain</c> argument to lift that.
+    /// </summary>
+    Pinggy,
+
+    /// <summary>
+    /// <c>localhost.run</c>. Forwards fine, but <b>cannot report its own address here</b>: it never
+    /// confirms the session request that carries the URL, and SSH.NET — unlike the <c>ssh</c>
+    /// binary — waits for that confirmation. Usable only with a localhost.run account whose custom
+    /// domain you already know, set as <see cref="SshTunnelOptions.PublicUrl"/>. Without one, use
+    /// <see cref="Pinggy"/>.
     /// </summary>
     LocalhostRun,
 
     /// <summary>
-    /// The public <c>sish</c> instance at <c>tuns.sh</c>. Derives the subdomain from your key, so
-    /// the same key gets the same address — which is what you want if the URL goes on a label or
-    /// into a customer's bookmark.
+    /// The public <c>sish</c> instance at <c>tuns.sh</c>, which is run by pico.sh and needs a
+    /// <b>registered</b> key — connecting with an unknown one is refused outright. Point
+    /// <see cref="SshTunnelOptions.PrivateKeyPath"/> at the key you enrolled there, or at your own
+    /// sish deployment, which takes any key and derives the subdomain from it.
     /// </summary>
     Sish,
 
-    /// <summary><c>serveo.net</c>. Same idea, longest-running, and the least reliable of the three.</summary>
+    /// <summary>
+    /// <c>serveo.net</c>. Same idea and the longest-running, but frequently unreachable for days at
+    /// a time — do not build a demo on it.
+    /// </summary>
     Serveo
 }
 
@@ -69,7 +86,7 @@ public enum QuickTunnelState
 /// agent-based tunnel cannot.
 /// </para>
 /// </summary>
-public sealed class QuickTunnel : IAsyncDisposable, INotifyPropertyChanged
+public sealed partial class QuickTunnel : IAsyncDisposable, INotifyPropertyChanged
 {
     readonly HttpServer server;
     readonly SshTunnelOptions options;
@@ -95,12 +112,13 @@ public sealed class QuickTunnel : IAsyncDisposable, INotifyPropertyChanged
 
     /// <summary>Builds a tunnel against one of the public hosts.</summary>
     /// <param name="subdomain">
-    /// Requested name, where the host supports one. sish derives it from your key and honours this;
-    /// localhost.run ignores it and assigns its own.
+    /// Requested name, where the host supports one. sish and Serveo read it as the subdomain;
+    /// Pinggy has no notion of one and reads it as an access token instead, which is what buys a
+    /// tunnel that outlives the 60-minute anonymous cap; localhost.run ignores it entirely.
     /// </param>
     public static QuickTunnel For(
         HttpServer server,
-        QuickTunnelHost host = QuickTunnelHost.LocalhostRun,
+        QuickTunnelHost host = QuickTunnelHost.Pinggy,
         string? subdomain = null,
         Action<SshTunnelOptions>? configure = null,
         ILoggerFactory? loggerFactory = null
@@ -181,6 +199,27 @@ public sealed class QuickTunnel : IAsyncDisposable, INotifyPropertyChanged
                 this.State = QuickTunnelState.Failed;
 
                 throw;
+            }
+
+            // A forward with no address to hand anyone is not a success here, whatever the SSH
+            // layer thinks. This class exists to put a URL on a screen, so it says so plainly
+            // rather than reporting Connected against a link nobody can use.
+            if (tunnelProvider.PublicUrl is not { Length: > 0 })
+            {
+                tunnelProvider.PublicUrlChanged -= this.OnPublicUrlChanged;
+                tunnelProvider.ConnectivityChanged -= this.OnConnectivityChanged;
+
+                await tunnelProvider.DisposeAsync().ConfigureAwait(false);
+
+                this.PublicUrl = null;
+                this.LastError =
+                    "The tunnel connected, but the endpoint never reported a public address. "
+                    + "Set SshTunnelOptions.PublicUrl if you know where it answers, or use "
+                    + $"{nameof(QuickTunnelHost)}.{nameof(QuickTunnelHost.Pinggy)}.";
+
+                this.State = QuickTunnelState.Failed;
+
+                return null;
             }
 
             var cts = new CancellationTokenSource();
@@ -268,12 +307,34 @@ public sealed class QuickTunnel : IAsyncDisposable, INotifyPropertyChanged
 
         switch (host)
         {
+            case QuickTunnelHost.Pinggy:
+                options.Host = "a.pinggy.io";
+                options.Port = 443;
+
+                // pinggy carries the access token in the username; "a" is the anonymous account.
+                options.Username = subdomain is { Length: > 0 } ? subdomain : "a";
+                options.RemoteBindAddress = "localhost";
+
+                // It assigns the port as well as the name; asking for 80 is refused.
+                options.RemotePort = 0;
+
+                // It wants a key but does not care which, and will not accept "none".
+                options.UseEphemeralKey = true;
+                options.UrlPattern = PinggyUrl();
+                break;
+
             case QuickTunnelHost.LocalhostRun:
                 options.Host = "localhost.run";
 
                 // It authenticates nobody; the name is a convention, not a credential.
                 options.Username = "nokey";
                 options.RemoteBindAddress = "localhost";
+                options.UrlPattern = LocalhostRunUrl();
+
+                // Capture stays on so this starts working the day the endpoint answers a session
+                // request, but it is expected to fail today — so it fails quickly rather than
+                // making the caller wait out the full window for a foregone conclusion.
+                options.UrlCaptureTimeout = TimeSpan.FromSeconds(5);
                 break;
 
             case QuickTunnelHost.Sish:
@@ -282,12 +343,16 @@ public sealed class QuickTunnel : IAsyncDisposable, INotifyPropertyChanged
 
                 // sish reads the requested subdomain from the bind address.
                 options.RemoteBindAddress = subdomain is { Length: > 0 } ? subdomain : "localhost";
+                options.UseEphemeralKey = true;
+                options.UrlPattern = SishUrl();
                 break;
 
             case QuickTunnelHost.Serveo:
                 options.Host = "serveo.net";
                 options.Username = subdomain is { Length: > 0 } ? subdomain : "shiny";
                 options.RemoteBindAddress = subdomain is { Length: > 0 } ? subdomain : "localhost";
+                options.UseEphemeralKey = true;
+                options.UrlPattern = ServeoUrl();
                 break;
 
             default:
@@ -296,6 +361,23 @@ public sealed class QuickTunnel : IAsyncDisposable, INotifyPropertyChanged
 
         return options;
     }
+
+    // Each host gets a pattern that only its own tunnel addresses can satisfy. The generic
+    // "first https:// you see" default is wrong here: these endpoints print a welcome banner full
+    // of links to their own documentation, dashboard and social media, and it arrives on the
+    // channel's error stream *ahead* of the address — so the loose pattern reliably captured
+    // something like https://admin.localhost.run/ and reported it as the tunnel.
+    [GeneratedRegex(@"https://[a-z0-9.-]+\.(?:free\.pinggy\.net|pinggy-free\.link|pinggy\.link|pinggy\.online)", RegexOptions.IgnoreCase)]
+    private static partial Regex PinggyUrl();
+
+    [GeneratedRegex(@"https://[a-z0-9-]+\.lhr\.life", RegexOptions.IgnoreCase)]
+    private static partial Regex LocalhostRunUrl();
+
+    [GeneratedRegex(@"https://[a-z0-9.-]+\.tuns\.sh", RegexOptions.IgnoreCase)]
+    private static partial Regex SishUrl();
+
+    [GeneratedRegex(@"https://[a-z0-9.-]+\.serveo\.net", RegexOptions.IgnoreCase)]
+    private static partial Regex ServeoUrl();
 
     void OnPublicUrlChanged(object? sender, string? url)
     {
@@ -373,7 +455,7 @@ public static class QuickTunnelExtensions
     /// </param>
     public static IServiceCollection AddQuickTunnel(
         this IServiceCollection services,
-        QuickTunnelHost host = QuickTunnelHost.LocalhostRun,
+        QuickTunnelHost host = QuickTunnelHost.Pinggy,
         string? subdomain = null,
         Action<SshTunnelOptions>? configure = null,
         bool autoStart = false
@@ -405,7 +487,7 @@ public static class QuickTunnelExtensions
     public static async Task RunQuickTunnelAsync(
         this HttpServer server,
         Action<string?>? onUrl = null,
-        QuickTunnelHost host = QuickTunnelHost.LocalhostRun,
+        QuickTunnelHost host = QuickTunnelHost.Pinggy,
         string? subdomain = null,
         CancellationToken cancellationToken = default
     )

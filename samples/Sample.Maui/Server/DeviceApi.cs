@@ -68,24 +68,6 @@ public sealed class NoteStore
     public event EventHandler<Note>? Changed;
 }
 
-/// <summary>Counts requests, so the UI can show that something is actually reaching the phone.</summary>
-public sealed class RequestCounter : IHttpMiddleware
-{
-    int count;
-
-    public int Count => Volatile.Read(ref this.count);
-
-    public event EventHandler<int>? Counted;
-
-    public async ValueTask InvokeAsync(HttpContext context, RequestDelegate next)
-    {
-        var total = Interlocked.Increment(ref this.count);
-        this.Counted?.Invoke(this, total);
-
-        await next(context).ConfigureAwait(false);
-    }
-}
-
 /// <summary>The endpoints this app serves.</summary>
 public static class DeviceApi
 {

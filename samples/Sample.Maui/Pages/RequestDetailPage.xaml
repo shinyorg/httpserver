@@ -1,0 +1,127 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             xmlns:vm="clr-namespace:Sample.Maui.ViewModels"
+             xmlns:server="clr-namespace:Sample.Maui.Server"
+             x:Class="Sample.Maui.Pages.RequestDetailPage"
+             x:DataType="vm:RequestDetailViewModel"
+             Title="Request">
+
+    <ContentPage.ToolbarItems>
+        <ToolbarItem Text="Copy" Command="{Binding CopyCommand}" />
+    </ContentPage.ToolbarItems>
+
+    <ScrollView>
+        <VerticalStackLayout Padding="24" Spacing="18">
+
+            <!-- The log keeps the last 200 requests, so a deep-linked or long-parked page can
+                 outlive the entry it was opened for. -->
+            <Label Text="This request has scrolled out of the log."
+                   IsVisible="{Binding Missing}"
+                   TextColor="Gray" />
+
+            <VerticalStackLayout Spacing="18" IsVisible="{Binding Found}">
+
+                <VerticalStackLayout Spacing="6">
+                    <Label Text="{Binding Entry.Summary}"
+                           FontSize="20"
+                           FontAttributes="Bold"
+                           LineBreakMode="CharacterWrap" />
+
+                    <HorizontalStackLayout Spacing="10">
+                        <Label Text="{Binding Entry.StatusText}"
+                               TextColor="{Binding Entry.StatusColor}"
+                               FontAttributes="Bold" />
+                        <Label Text="{Binding Entry.Duration}" TextColor="Gray" />
+                        <Label Text="{Binding Entry.Protocol}" TextColor="Gray" />
+                    </HorizontalStackLayout>
+
+                    <Label Text="{Binding Entry.Error}"
+                           TextColor="#D9534F"
+                           IsVisible="{Binding Entry.HasError}" />
+                </VerticalStackLayout>
+
+                <!-- Who called, from where, as whom -->
+                <Border Stroke="{AppThemeBinding Light=#E5E5EA, Dark=#2C2C32}"
+                        StrokeThickness="1"
+                        Padding="16"
+                        StrokeShape="RoundRectangle 12">
+                    <Grid ColumnDefinitions="110,*" RowSpacing="6" ColumnSpacing="10"
+                          RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto">
+
+                        <Label Grid.Row="0" Grid.Column="0" Text="When" TextColor="Gray" />
+                        <Label Grid.Row="0" Grid.Column="1" Text="{Binding Entry.LocalDateTime}" />
+
+                        <Label Grid.Row="1" Grid.Column="0" Text="From" TextColor="Gray" />
+                        <Label Grid.Row="1" Grid.Column="1" Text="{Binding Entry.Peer}" />
+
+                        <Label Grid.Row="2" Grid.Column="0" Text="Arrived via" TextColor="Gray" />
+                        <Label Grid.Row="2" Grid.Column="1" Text="{Binding Entry.Origin}" />
+
+                        <Label Grid.Row="3" Grid.Column="0" Text="Host" TextColor="Gray" />
+                        <Label Grid.Row="3" Grid.Column="1"
+                               Text="{Binding Entry.Host, TargetNullValue='—'}"
+                               LineBreakMode="CharacterWrap" />
+
+                        <Label Grid.Row="4" Grid.Column="0" Text="Signed in as" TextColor="Gray" />
+                        <Label Grid.Row="4" Grid.Column="1" Text="{Binding Entry.User}" />
+
+                        <Label Grid.Row="5" Grid.Column="0" Text="User agent" TextColor="Gray" />
+                        <Label Grid.Row="5" Grid.Column="1"
+                               Text="{Binding Entry.UserAgent, TargetNullValue='Not sent'}"
+                               LineBreakMode="CharacterWrap" />
+                    </Grid>
+                </Border>
+
+                <!-- What arrived -->
+                <Label Text="Request headers" FontAttributes="Bold" />
+                <VerticalStackLayout Spacing="6"
+                                     BindableLayout.ItemsSource="{Binding Entry.RequestHeaders}">
+                    <BindableLayout.ItemTemplate>
+                        <DataTemplate x:DataType="server:HeaderLine">
+                            <Grid ColumnDefinitions="140,*" ColumnSpacing="10">
+                                <Label Grid.Column="0"
+                                       Text="{Binding Name}"
+                                       TextColor="Gray"
+                                       FontSize="12"
+                                       LineBreakMode="CharacterWrap" />
+                                <Label Grid.Column="1"
+                                       Text="{Binding Value}"
+                                       FontSize="12"
+                                       LineBreakMode="CharacterWrap" />
+                            </Grid>
+                        </DataTemplate>
+                    </BindableLayout.ItemTemplate>
+                </VerticalStackLayout>
+
+                <!-- What went back -->
+                <Label Text="Response headers" FontAttributes="Bold" Margin="0,6,0,0" />
+                <VerticalStackLayout Spacing="6"
+                                     BindableLayout.ItemsSource="{Binding Entry.ResponseHeaders}">
+                    <BindableLayout.ItemTemplate>
+                        <DataTemplate x:DataType="server:HeaderLine">
+                            <Grid ColumnDefinitions="140,*" ColumnSpacing="10">
+                                <Label Grid.Column="0"
+                                       Text="{Binding Name}"
+                                       TextColor="Gray"
+                                       FontSize="12"
+                                       LineBreakMode="CharacterWrap" />
+                                <Label Grid.Column="1"
+                                       Text="{Binding Value}"
+                                       FontSize="12"
+                                       LineBreakMode="CharacterWrap" />
+                            </Grid>
+                        </DataTemplate>
+                    </BindableLayout.ItemTemplate>
+                </VerticalStackLayout>
+
+                <Label Text="Bodies are not captured: the pipeline streams them straight to and from the socket, and buffering a file upload on a phone to show it on a screen is the wrong trade. Authorization and cookie values are redacted."
+                       TextColor="Gray"
+                       FontSize="11"
+                       Margin="0,6,0,0" />
+
+            </VerticalStackLayout>
+        </VerticalStackLayout>
+    </ScrollView>
+
+</ContentPage>

@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="utf-8" ?>
 <ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
              xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
-             x:Class="Sample.Maui.MainPage"
-             Title="Shiny HTTP Server">
+             xmlns:vm="clr-namespace:Sample.Maui.ViewModels"
+             x:Class="Sample.Maui.Pages.ServerPage"
+             x:DataType="vm:ServerViewModel"
+             Title="Server">
 
     <ScrollView>
         <VerticalStackLayout Padding="24" Spacing="18">
@@ -49,95 +51,43 @@
                     <Label Text="{Binding McpUrl, TargetNullValue='Server not started'}"
                            LineBreakMode="CharacterWrap" />
 
+                    <HorizontalStackLayout Spacing="8" Margin="0,6,0,0">
+                        <Label Text="Requests served:" />
+                        <Label Text="{Binding RequestCount}" FontAttributes="Bold" />
+                        <Label Text="— see the Traffic tab" TextColor="Gray" />
+                    </HorizontalStackLayout>
+
                 </VerticalStackLayout>
             </Border>
 
             <!-- Actions -->
             <VerticalStackLayout Spacing="10">
                 <Button Text="Share publicly"
-                        Clicked="OnShareClicked"
+                        Command="{Binding ShareCommand}"
                         IsEnabled="{Binding NotBusy}" />
 
                 <Button Text="Start on this network only"
-                        Clicked="OnStartLocalClicked"
+                        Command="{Binding StartLocalCommand}"
                         IsEnabled="{Binding NotBusy}" />
 
                 <Grid ColumnDefinitions="*,*" ColumnSpacing="10">
                     <Button Grid.Column="0"
                             Text="Copy link"
-                            Clicked="OnCopyClicked"
+                            Command="{Binding CopyLinkCommand}"
                             IsEnabled="{Binding HasPublicUrl}" />
                     <Button Grid.Column="1"
                             Text="Open"
-                            Clicked="OnOpenClicked"
+                            Command="{Binding OpenLinkCommand}"
                             IsEnabled="{Binding HasPublicUrl}" />
                 </Grid>
 
+                <!-- Enabled while the tunnel is still opening, not just once it has an address.
+                     Opening one takes seconds and can fail; without this the screen locks itself
+                     out of every action for the duration of its own waiting. -->
                 <Button Text="Stop sharing"
-                        Clicked="OnStopClicked"
-                        IsEnabled="{Binding HasPublicUrl}" />
+                        Command="{Binding StopSharingCommand}"
+                        IsEnabled="{Binding CanStopSharing}" />
             </VerticalStackLayout>
-
-            <!-- The account a visitor has to present. Changeable here, and in force on the very
-                 next request — the validator reads these values rather than a startup copy. -->
-            <Border Stroke="{AppThemeBinding Light=#E5E5EA, Dark=#2C2C32}"
-                    StrokeThickness="1"
-                    Padding="16"
-                    StrokeShape="RoundRectangle 12">
-                <VerticalStackLayout Spacing="10">
-                    <Label Text="Access" TextColor="Gray" />
-                    <Label Text="Anyone opening the link is asked for these."
-                           TextColor="Gray"
-                           FontSize="12" />
-
-                    <Entry Placeholder="Username"
-                           Text="{Binding UsernameInput}"
-                           IsSpellCheckEnabled="False"
-                           IsTextPredictionEnabled="False" />
-
-                    <!-- Deliberately not masked: on a device you are handing a link to, someone has
-                         to read this out. A product with real accounts would not show it. -->
-                    <Entry Placeholder="Password"
-                           Text="{Binding PasswordInput}"
-                           IsSpellCheckEnabled="False"
-                           IsTextPredictionEnabled="False" />
-
-                    <Grid ColumnDefinitions="*,*" ColumnSpacing="10">
-                        <Button Grid.Column="0"
-                                Text="Save"
-                                Clicked="OnSaveCredentialsClicked"
-                                IsEnabled="{Binding NotBusy}" />
-                        <Button Grid.Column="1"
-                                Text="New password"
-                                Clicked="OnRegenerateClicked"
-                                IsEnabled="{Binding NotBusy}" />
-                    </Grid>
-
-                    <Label Text="{Binding CredentialStatus}"
-                           TextColor="Gray"
-                           FontSize="12" />
-                </VerticalStackLayout>
-            </Border>
-
-            <!-- Live traffic, so it is obvious the requests are landing here -->
-            <Border Stroke="{AppThemeBinding Light=#E5E5EA, Dark=#2C2C32}"
-                    StrokeThickness="1"
-                    Padding="16"
-                    StrokeShape="RoundRectangle 12">
-                <VerticalStackLayout Spacing="8">
-                    <Label Text="Traffic" TextColor="Gray" />
-
-                    <HorizontalStackLayout Spacing="8">
-                        <Label Text="Requests served:" />
-                        <Label Text="{Binding RequestCount}" FontAttributes="Bold" />
-                    </HorizontalStackLayout>
-
-                    <HorizontalStackLayout Spacing="8">
-                        <Label Text="Last note posted:" />
-                        <Label Text="{Binding LastNote}" FontAttributes="Bold" LineBreakMode="TailTruncation" />
-                    </HorizontalStackLayout>
-                </VerticalStackLayout>
-            </Border>
 
             <Label Text="Endpoints: /  ·  /api/device  ·  /api/notes  ·  /files (browse app storage)  ·  /mcp (4 tools, for an AI client) — all behind the password. /ping is open."
                    TextColor="Gray"

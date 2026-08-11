@@ -11,6 +11,15 @@
          `dotnet test` and running the executable directly do exactly the same thing. -->
     <UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>
     <TestingPlatformDotnetTestSupport>true</TestingPlatformDotnetTestSupport>
+
+    <!-- Shiny.Mediator ships a generator that turns a contract carrying [Get]/[Post]/[Put]/
+         [Patch]/[Delete] into a typed HTTP *client*. It matches those attributes by simple name
+         with no namespace check, so it also fires on this server's own minimal-endpoint attributes
+         and reports SHINYMED_HTTP001 against every one of them. The two features are unrelated;
+         this project uses both, so the client generator's opinion about our attributes is turned
+         off. Any app that mixes minimal endpoints with the mediator package needs the same line —
+         it is called out in the mediator docs page. -->
+    <NoWarn>$(NoWarn);SHINYMED_HTTP001</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
@@ -39,6 +48,14 @@
     <ProjectReference Include="../../src/Shiny.Net.HttpServer.AzureRelay/Shiny.Net.HttpServer.AzureRelay.csproj" />
     <ProjectReference Include="../../src/Shiny.Net.HttpServer.Mcp/Shiny.Net.HttpServer.Mcp.csproj" />
     <ProjectReference Include="../../src/Shiny.Net.HttpServer.Ssh/Shiny.Net.HttpServer.Ssh.csproj" />
+    <ProjectReference Include="../../src/Shiny.Net.HttpServer.Mediator/Shiny.Net.HttpServer.Mediator.csproj" />
+
+    <!-- The mediator generator reaches a consumer through the NuGet package's analyzers/ folder.
+         Analyzers do not flow across a ProjectReference, so referencing it in-repo takes the
+         explicit route the package does for everyone else. -->
+    <ProjectReference Include="../../src/Shiny.Net.HttpServer.Mediator.SourceGenerators/Shiny.Net.HttpServer.Mediator.SourceGenerators.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
 
     <!-- Both an analyzer and a referenced assembly: the tests exercise the generated output *and*
          the generator's own route-template parser, which has to agree with the runtime one. -->

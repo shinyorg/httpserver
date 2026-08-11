@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using Renci.SshNet;
 using Shiny.Net.HttpServer.Ssh;
 
 namespace Shiny.Net.HttpServer.Tests;
@@ -155,8 +156,141 @@ public class SshUrlCaptureTests
         => Assert.DoesNotMatch(Pattern, "Welcome. Your key is not authorized for this account.\r\n");
 }
 
+/// <summary>
+/// The banner every hosted tunnel prints before the address, and the reason the generic
+/// "first https:// wins" pattern is not good enough.
+/// <para>
+/// These are the real greetings, trimmed. Both arrive on the session channel ahead of the assigned
+/// URL — localhost.run's on the channel's error stream, which lands in the same read — and both open
+/// with links to the provider's own site. A loose pattern captured those and reported them as the
+/// tunnel, so the app displayed a working-looking link to somebody else's dashboard.
+/// </para>
+/// </summary>
+public class QuickTunnelUrlPatternTests
+{
+    const string LocalhostRunBanner = """
+        ===============================================================================
+        Welcome to localhost.run!
+
+        Follow your favourite reverse tunnel at [https://twitter.com/localhost_run].
+
+        To set up and manage custom domains go to https://admin.localhost.run/
+
+        More details on custom domains (and how to enable subdomains of your custom
+        domain) at https://localhost.run/docs/custom-domains
+
+        To explore using localhost.run visit the documentation site:
+        https://localhost.run/docs/
+        ===============================================================================
+        authenticated as anonymous user
+        1e50baebe27f62.lhr.life tunneled with tls termination, https://1e50baebe27f62.lhr.life
+        create an account and add your key for a longer lasting domain name. see
+        https://localhost.run/docs/forever-free/ for more information.
+        """;
+
+    const string PinggyBanner = """
+        You are not authenticated.
+        Your tunnel will expire in 60 minutes. Upgrade to Pinggy Pro to get unrestricted tunnels. https://dashboard.pinggy.io
+        https://tbxhk-99-231-206-87.run.pinggy-free.link
+        https://vdtwz-99-231-206-87.free.pinggy.net
+        """;
+
+    [Fact]
+    public void Ignores_everything_in_the_localhost_run_banner_but_the_tunnel()
+    {
+        var pattern = QuickTunnel.BuildOptions(QuickTunnelHost.LocalhostRun).UrlPattern;
+
+        Assert.Equal("https://1e50baebe27f62.lhr.life", pattern.Match(LocalhostRunBanner).Value);
+    }
+
+    [Fact]
+    public void Ignores_the_pinggy_dashboard_link()
+    {
+        var pattern = QuickTunnel.BuildOptions(QuickTunnelHost.Pinggy).UrlPattern;
+        var match = pattern.Match(PinggyBanner);
+
+        Assert.True(match.Success);
+        Assert.DoesNotContain("dashboard", match.Value);
+        Assert.EndsWith(".pinggy-free.link", match.Value);
+    }
+
+    /// <summary>The provider strips what the sentence around a URL leaves attached to it.</summary>
+    [Theory]
+    [InlineData("Forwarding to https://abc.lhr.life.", "https://abc.lhr.life")]
+    [InlineData("Open [https://abc.lhr.life] on your phone", "https://abc.lhr.life")]
+    [InlineData("url is \"https://abc.lhr.life\"", "https://abc.lhr.life")]
+    public void Strips_the_punctuation_a_provider_wraps_the_url_in(string line, string expected)
+    {
+        var match = QuickTunnel.BuildOptions(QuickTunnelHost.LocalhostRun).UrlPattern.Match(line);
+
+        Assert.Equal(expected, match.Value.TrimEnd('.', ',', ';', ':', ')', ']', '}', '>', '"', '\''));
+    }
+
+    [Fact]
+    public void Finds_nothing_when_the_endpoint_only_greeted_us()
+    {
+        var pattern = QuickTunnel.BuildOptions(QuickTunnelHost.Pinggy).UrlPattern;
+
+        Assert.DoesNotMatch(pattern, "You are not authenticated. https://dashboard.pinggy.io\n");
+    }
+}
+
 public class QuickTunnelOptionTests
 {
+    /// <summary>
+    /// The default, and the only preset that works with nothing provisioned. It wants a key but not
+    /// a registered one, so the options generate one rather than asking the app for it.
+    /// </summary>
+    [Fact]
+    public void Builds_pinggy_as_the_default()
+    {
+        var options = QuickTunnel.BuildOptions(QuickTunnelHost.Pinggy);
+
+        Assert.Equal("a.pinggy.io", options.Host);
+        Assert.Equal(443, options.Port);
+        Assert.Equal("a", options.Username);
+        Assert.True(options.UseEphemeralKey);
+
+        // pinggy assigns the port as well as the name.
+        Assert.Equal(0, options.RemotePort);
+        Assert.True(options.CaptureUrlFromSession);
+    }
+
+    [Fact]
+    public void Reads_the_pinggy_subdomain_argument_as_an_access_token()
+    {
+        var options = QuickTunnel.BuildOptions(QuickTunnelHost.Pinggy, "tok_abc123");
+
+        Assert.Equal("tok_abc123", options.Username);
+    }
+
+    /// <summary>A generated key is made once, so a reconnect presents the same identity.</summary>
+    [Fact]
+    public void Reuses_the_key_it_generated()
+    {
+        var options = QuickTunnel.BuildOptions(QuickTunnelHost.Pinggy);
+
+        var first = options.CreateConnectionInfo();
+        var second = options.CreateConnectionInfo();
+
+        var firstKey = Assert.IsType<PrivateKeyAuthenticationMethod>(Assert.Single(first.AuthenticationMethods));
+        var secondKey = Assert.IsType<PrivateKeyAuthenticationMethod>(Assert.Single(second.AuthenticationMethods));
+
+        Assert.Same(Assert.Single(firstKey.KeyFiles), Assert.Single(secondKey.KeyFiles));
+    }
+
+    /// <summary>An explicit credential is never displaced by a generated one.</summary>
+    [Fact]
+    public void Prefers_a_supplied_key_over_a_generated_one()
+    {
+        var options = QuickTunnel.BuildOptions(QuickTunnelHost.Pinggy);
+        options.Password = "hunter2";
+
+        var info = options.CreateConnectionInfo();
+
+        Assert.IsType<PasswordAuthenticationMethod>(Assert.Single(info.AuthenticationMethods));
+    }
+
     [Fact]
     public void Builds_localhost_run_with_no_credentials_at_all()
     {
@@ -304,6 +438,68 @@ public class QuickTunnelNotificationTests(SshdFixture sshd) : IClassFixture<Sshd
         var second = await tunnel.StartAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal(first, second);
+    }
+
+    /// <summary>
+    /// A tunnel that cannot report its address hands control back on schedule and admits it.
+    /// <para>
+    /// Both halves matter and both were wrong. The capture used to be bounded only from the point
+    /// the session channel opened, and opening it is a blocking call SSH.NET holds until the server
+    /// confirms the request — so an endpoint that never confirms one (localhost.run does not) held
+    /// the caller for the whole connect timeout. Then, having failed, it reported
+    /// <c>http://{host}:{port}</c> as the public address, which for a hosted tunnel is a link to
+    /// the provider's own front page. A UI showed that as "Shared".
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task Gives_up_on_the_url_within_the_capture_window_and_reports_none()
+    {
+        Assert.SkipWhen(sshd.SkipReason is not null, sshd.SkipReason ?? "");
+
+        var options = this.LocalOptions(SshdFixture.FreePort());
+        options.CaptureUrlFromSession = true;
+
+        // A plain sshd announces nothing, so nothing can ever match — the capture window is the
+        // only thing that ends this.
+        options.UrlPattern = new Regex(@"https://[a-z0-9-]+\.example\.invalid");
+        options.UrlCaptureTimeout = TimeSpan.FromSeconds(3);
+
+        var provider = new SshTunnelProvider(options);
+
+        await using (provider)
+        {
+            var elapsed = System.Diagnostics.Stopwatch.StartNew();
+            await provider.BindAsync(TestContext.Current.CancellationToken);
+            elapsed.Stop();
+
+            Assert.Null(provider.PublicUrl);
+            Assert.True(
+                elapsed.Elapsed < options.ConnectTimeout,
+                $"BindAsync took {elapsed.Elapsed}, which is past the capture window it should be bounded by."
+            );
+        }
+    }
+
+    /// <summary>
+    /// And the QuickTunnel above it refuses to call that connected — the whole class exists to put
+    /// an address on a screen.
+    /// </summary>
+    [Fact]
+    public async Task Fails_when_the_tunnel_is_up_but_nameless()
+    {
+        Assert.SkipWhen(sshd.SkipReason is not null, sshd.SkipReason ?? "");
+
+        var options = this.LocalOptions(SshdFixture.FreePort());
+        options.CaptureUrlFromSession = true;
+        options.UrlPattern = new Regex(@"https://[a-z0-9-]+\.example\.invalid");
+        options.UrlCaptureTimeout = TimeSpan.FromSeconds(3);
+
+        await using var tunnel = new QuickTunnel(new HttpServer(), options);
+
+        Assert.Null(await tunnel.StartAsync(TestContext.Current.CancellationToken));
+        Assert.Equal(QuickTunnelState.Failed, tunnel.State);
+        Assert.NotNull(tunnel.LastError);
+        Assert.Null(tunnel.PublicUrl);
     }
 
     /// <summary>A UI needs something to show when it fails, not just an exception in a log.</summary>

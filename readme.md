@@ -20,6 +20,7 @@ JWT, OpenAPI, HPACK, QPACK — is built on what is in the box.
 | [Shiny.Net.HttpServer.AzureRelay](https://www.nuget.org/packages/Shiny.Net.HttpServer.AzureRelay) | Azure Relay tunnel provider |
 | [Shiny.Net.HttpServer.Ssh](https://www.nuget.org/packages/Shiny.Net.HttpServer.Ssh) | SSH remote-forwarding tunnel provider, including zero-account quick tunnels |
 | [Shiny.Net.HttpServer.Mcp](https://www.nuget.org/packages/Shiny.Net.HttpServer.Mcp) | Model Context Protocol (Streamable HTTP) transport — host an MCP server without ASP.NET Core, including inside a MAUI app |
+| [Shiny.Net.HttpServer.Mediator](https://www.nuget.org/packages/Shiny.Net.HttpServer.Mediator) | Publishes Shiny.Mediator requests, commands and streams as endpoints generated at compile time. Generator included |
 
 ## Getting Started
 
@@ -82,6 +83,7 @@ is built on the one below and they compose in the same app.
 | **TLS** | Several endpoints with per-endpoint TLS, self-signed certificates generated in managed code (iOS and Android included), client certificates, and SPKI pinning for the app's own `HttpClient` |
 | **OpenAPI** | An OpenAPI 3.0.3 document built entirely from compile-time metadata and your `JsonSerializerContext` — no reflection, no document object model |
 | **Tunnelling** | A pluggable `ITunnelProvider`, the reference relay (both ends), SSH remote forwarding, zero-account quick tunnels, and Azure Relay |
+| **Mediator** | Shiny.Mediator handlers published as endpoints — requests as JSON, commands as a status code, stream requests as Server-Sent Events, all bound at compile time |
 | **Lifecycle** | Start, stop and restart at runtime, serialized and idempotent, with an observable state — an embedded server gets toggled, not just booted |
 
 Everything shipping targets `net10.0` with the trim, AOT and single-file analyzers enabled, so

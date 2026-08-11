@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2009/xaml"
+             xmlns:vm="clr-namespace:Sample.Maui.ViewModels"
+             xmlns:server="clr-namespace:Sample.Maui.Server"
+             x:Class="Sample.Maui.Pages.TrafficPage"
+             x:DataType="vm:TrafficViewModel"
+             Title="Traffic">
+
+    <ContentPage.ToolbarItems>
+        <ToolbarItem Text="Clear" Command="{Binding ClearCommand}" />
+    </ContentPage.ToolbarItems>
+
+    <Grid RowDefinitions="Auto,*">
+
+        <VerticalStackLayout Grid.Row="0" Padding="24,18,24,10" Spacing="4">
+            <Label Text="Everything the server has answered" FontSize="18" FontAttributes="Bold" />
+            <Label TextColor="Gray" FontSize="12">
+                <Label.FormattedText>
+                    <FormattedString>
+                        <Span Text="{Binding Total}" />
+                        <Span Text=" request(s) since launch. Tap one to see both sides of it." />
+                    </FormattedString>
+                </Label.FormattedText>
+            </Label>
+        </VerticalStackLayout>
+
+        <CollectionView Grid.Row="1"
+                        ItemsSource="{Binding Requests}"
+                        SelectionMode="None">
+
+            <CollectionView.EmptyView>
+                <VerticalStackLayout Padding="24" Spacing="8">
+                    <Label Text="Nothing yet."
+                           FontAttributes="Bold" />
+                    <Label Text="Open the link from the Server tab — this fills up as requests land, including the ones that fail the password prompt."
+                           TextColor="Gray"
+                           FontSize="12" />
+                </VerticalStackLayout>
+            </CollectionView.EmptyView>
+
+            <CollectionView.ItemTemplate>
+                <DataTemplate x:DataType="server:RequestLogEntry">
+                    <Grid Padding="24,10"
+                          ColumnDefinitions="52,*,Auto"
+                          ColumnSpacing="12"
+                          RowDefinitions="Auto,Auto">
+
+                        <!-- The whole row is the target: a CollectionView selection would have to be
+                             cleared again after every tap, and this reads the same in XAML. -->
+                        <Grid.GestureRecognizers>
+                            <TapGestureRecognizer
+                                Command="{Binding OpenCommand, Source={RelativeSource AncestorType={x:Type vm:TrafficViewModel}}}"
+                                CommandParameter="{Binding .}" />
+                        </Grid.GestureRecognizers>
+
+                        <Label Grid.Row="0"
+                               Grid.RowSpan="2"
+                               Grid.Column="0"
+                               Text="{Binding StatusText}"
+                               TextColor="{Binding StatusColor}"
+                               FontAttributes="Bold"
+                               VerticalOptions="Center" />
+
+                        <Label Grid.Row="0"
+                               Grid.Column="1"
+                               Text="{Binding Summary}"
+                               LineBreakMode="TailTruncation" />
+
+                        <Label Grid.Row="1"
+                               Grid.Column="1"
+                               TextColor="Gray"
+                               FontSize="11"
+                               LineBreakMode="TailTruncation">
+                            <Label.FormattedText>
+                                <FormattedString>
+                                    <Span Text="{Binding Peer}" />
+                                    <Span Text="  ·  " />
+                                    <Span Text="{Binding User}" />
+                                    <Span Text="  ·  " />
+                                    <Span Text="{Binding Duration}" />
+                                </FormattedString>
+                            </Label.FormattedText>
+                        </Label>
+
+                        <Label Grid.Row="0"
+                               Grid.RowSpan="2"
+                               Grid.Column="2"
+                               Text="{Binding LocalTime}"
+                               TextColor="Gray"
+                               FontSize="11"
+                               VerticalOptions="Center" />
+                    </Grid>
+                </DataTemplate>
+            </CollectionView.ItemTemplate>
+        </CollectionView>
+    </Grid>
+
+</ContentPage>

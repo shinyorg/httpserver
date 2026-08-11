@@ -1,14 +1,11 @@
 <Project>
-
     <PropertyGroup>
         <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
         <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
     </PropertyGroup>
-
     <ItemGroup>
         <PackageVersion Include="Nerdbank.GitVersioning" Version="3.10.91"/>
     </ItemGroup>
-
     <ItemGroup>
         <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.10"/>
         <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.10"/>
@@ -22,33 +19,29 @@
         <PackageVersion Include="Microsoft.Extensions.Options" Version="10.0.10"/>
         <PackageVersion Include="Microsoft.Extensions.Primitives" Version="10.0.10"/>
     </ItemGroup>
-
     <ItemGroup>
         <PackageVersion Include="Microsoft.CodeAnalysis.CSharp" Version="4.11.0"/>
         <PackageVersion Include="Microsoft.CodeAnalysis.Analyzers" Version="3.11.0"/>
-        <PackageVersion Include="PolySharp" Version="1.15.0"/>
+        <PackageVersion Include="PolySharp" Version="1.16.0"/>
     </ItemGroup>
-
     <ItemGroup>
         <PackageVersion Include="Microsoft.Azure.Relay" Version="3.1.1"/>
-    </ItemGroup>
-
-    <ItemGroup>
         <PackageVersion Include="SSH.NET" Version="2026.0.0"/>
-    </ItemGroup>
 
-    <!-- The MCP SDK. ModelContextProtocol is the DI/hosting layer over ModelContextProtocol.Core;
-         neither references ASP.NET Core, which is the whole reason the MCP transport can live here.
-         It does pull Microsoft.Extensions.AI.Abstractions, so it stays its own package. -->
-    <ItemGroup>
-        <PackageVersion Include="ModelContextProtocol" Version="2.0.0"/>
+        <!-- The mediator integration takes the published package rather than a project reference:
+             this repo ships the HTTP-server side of it, and the mediator itself is versioned and
+             released independently. -->
+        <PackageVersion Include="Shiny.Mediator" Version="6.8.0"/>
+        <PackageVersion Include="ModelContextProtocol" Version="2.1.0"/>
     </ItemGroup>
-
     <ItemGroup>
-        <PackageVersion Include="xunit.v3" Version="3.1.0"/>
+        <PackageVersion Include="xunit.v3" Version="3.2.2"/>
         <PackageVersion Include="Microsoft.Testing.Extensions.CodeCoverage" Version="18.0.0"/>
-        <!-- Keep in lockstep with the Microsoft.Testing.Platform version xunit.v3 resolves (1.8.4). -->
-        <PackageVersion Include="Microsoft.Testing.Extensions.TrxReport" Version="1.8.4"/>
+        <!-- Keep in lockstep with the Microsoft.Testing.Platform version xunit.v3 resolves (1.9.1).
+             This is the package that decides it: everything else in the platform arrives
+             transitively at xunit's version, and a trx writer from a newer line drags the platform
+             assembly up with it while xunit's adapter stays compiled against the old one. The
+             result is a MissingMethodException on the first line of output, before any test runs. -->
+        <PackageVersion Include="Microsoft.Testing.Extensions.TrxReport" Version="1.9.1"/>
     </ItemGroup>
-
 </Project>

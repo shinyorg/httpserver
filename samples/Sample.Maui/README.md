@@ -17,8 +17,19 @@ infrastructure.
    │    /api/device   model, OS, battery     │
    │    /api/notes    GET and POST           │
    │    /files        browse app storage     │
+   │    /mcp          4 tools, for AI clients│
    └─────────────────────────────────────────┘
+             │
+             └──► every request lands on the Traffic tab, both directions
 ```
+
+Three tabs:
+
+| Tab | What it is |
+| --- | --- |
+| **Server** | Status, the LAN and public URLs, and the buttons that start and share |
+| **Traffic** | Every request the server has answered, newest first — tap one for both sides of it |
+| **Access** | The username and password visitors are asked for |
 
 ## Running it
 
@@ -28,18 +39,33 @@ dotnet build samples/Sample.Maui/Sample.Maui.csproj -t:Run -f net10.0-android
 dotnet build samples/Sample.Maui/Sample.Maui.csproj -t:Run -f net10.0-ios
 ```
 
-The local server starts with the page — that only exposes the app to the Wi-Fi it is already on.
+The local server starts with the app — that only exposes it to the Wi-Fi it is already on.
 **Share publicly** is a deliberate tap, because it puts the device on the public internet.
 
 ## What to look at
 
 **`MauiProgram.cs`** — the whole wiring, about twenty lines. The server binds `IPAddress.Any` on port
 0 so another device on the network can reach it and two copies of the app never collide. It is
-registered with `autoStart: false`; the page starts it.
+registered with `autoStart: false`; the Server tab starts it.
 
-**`ShareViewModel.cs`** — the part worth copying. `QuickTunnel` raises its changes **on a background
-thread**, because a reconnect happens whenever the network does, and MAUI will not marshal that for
-you. Every `MainThread` hop in that file is for that reason.
+**`Server/RequestLog.cs`** — the part that makes the Traffic tab possible, and the shortest useful
+`IHttpMiddleware` in the repo. Two things in it are worth copying:
+
+- It goes in **first, ahead of authentication**, so requests that fail the password prompt are
+  recorded too. Those are usually the ones you want to see.
+- Every field is **copied out** of the `HttpContext` rather than referenced. Contexts are pooled and
+  reset for the next request on the same connection, so a screen holding one would be showing
+  whatever request is in flight when you look at it.
+
+What it captures: timestamp, method, path and query, protocol, status, duration, the peer address and
+port, whether the connection arrived through the tunnel, the authenticated user, and **every header
+in both directions** — with `Authorization` and cookie values redacted. Bodies are not captured; the
+pipeline streams those straight to and from the socket, and buffering an upload on a phone to render
+it on a screen is the wrong trade.
+
+**`ViewModels/ServerViewModel.cs`** — the threading. `QuickTunnel` raises its changes **on a
+background thread**, because a reconnect happens whenever the network does, and MAUI will not marshal
+that for you. Every `IMainThread` hop in that file is for that reason.
 
 The other half of the same point: the view binds to `PublicUrl` rather than reading it once. A free
 tunnel hands out a **different address on every reconnect**, so an app that captured the first URL
@@ -55,12 +81,31 @@ to fall back on.
 **`wwwroot/index.html`** — served straight out of the assembly with `UseEmbeddedFiles`. A packaged
 app has no `wwwroot` on disk to point at, so the file travels inside the DLL.
 
+## The UI half
+
+The screens use [`Shiny.Maui.Shell`](https://shinylib.net/maui) and `CommunityToolkit.Mvvm`. Neither
+is needed to host a server — they are here because showing live traffic needs more than one screen,
+and the alternative was hand-rolled navigation and `INotifyPropertyChanged` boilerplate in a sample
+that is supposed to be about HTTP.
+
+- `AppShell.xaml` is a `ShinyShell` with a `TabBar`; each tab's `Route` is the name its view model
+  declares in `[ShellMap]`.
+- `UseShinyShell(x => x.AddGeneratedMaps())` in `MauiProgram.cs` is the only registration. The maps
+  are source-generated from those attributes, so pages, view models and routes cannot drift apart.
+- Tapping a request calls `navigator.NavigateToRequestDetail(id)` — also generated, from the
+  `[ShellProperty]` on `RequestDetailViewModel.RequestId`. The **id** travels, not the entry: the log
+  keeps the last 200 requests, and a page that outlives its entry says so rather than showing stale
+  data.
+- `Server/TrafficBadge.cs` puts the unseen count on the Traffic tab. It is a service with an
+  `IMauiInitializeService` hook rather than part of the Traffic view model, because the whole point of
+  the badge is to say something while that tab is *not* the one on screen.
+
 ## The password
 
 Everything except `/ping` needs one. A password is generated on first run — a well-known default on
-something reachable from the internet is the same as no password — and the **Access** box on screen
-lets you change the username and password, or generate a new one, which locks out anyone still using
-the old link. Changes take effect on the very next request: the app implements
+something reachable from the internet is the same as no password — and the **Access** tab lets you
+change the username and password, or generate a new one, which locks out anyone still using the old
+link. It is five characters because this is a sample you read out loud; a real one would not be. Changes take effect on the very next request: the app implements
 `IBasicCredentialValidator`, so the server asks it each time rather than copying credentials at
 startup.
 
@@ -111,7 +156,8 @@ for a demo, a webhook, or handing a colleague a link. For anything you would min
 same `QuickTunnel` API points at a self-hosted sish or your own VPS; see the
 [SSH package README](../../src/Shiny.Net.HttpServer.Ssh/README.md).
 
-There is also no authentication on these endpoints. The moment you tap **Share publicly**, anyone
-with the URL can read the device info and post notes. Real apps want something in front of anything
-that matters — `AddBasic` is one line and gives a browser a password prompt, `AddApiKey` suits a
-script, and `AddJwtBearer` suits a fleet.
+The one account here is Basic auth over a plain-HTTP tunnel, which is fine for handing a colleague a
+link and wrong for anything else: `AddApiKey` suits a script, and `AddJwtBearer` suits a fleet.
+
+The Traffic tab is a debugging aid, not an audit log. It lives in memory, holds the last 200
+requests, and is gone when the app is.

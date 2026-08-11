@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.RegularExpressions;
 using Renci.SshNet;
 
@@ -38,6 +40,22 @@ public sealed partial class SshTunnelOptions
 
     /// <summary>Passphrase for an encrypted private key.</summary>
     public string? PrivateKeyPassPhrase { get; set; }
+
+    /// <summary>
+    /// Authenticates with a key generated on first connect and kept in memory, when no other
+    /// credential is set.
+    /// <para>
+    /// For the hosted tunnels that will hand a key-less client nothing: most of them do not care
+    /// *which* key you present, only that you present one, and asking an app to ship or provision a
+    /// key for that is ceremony with no security value. The key is generated once and reused for
+    /// the life of these options, so a reconnect presents the same identity — which matters on a
+    /// host like sish that derives your subdomain from the key. It does not survive a restart, so
+    /// a host that keys your address off it will assign a new address each run; set
+    /// <see cref="PrivateKey"/> or <see cref="PrivateKeyPath"/> from somewhere durable when the
+    /// address has to stay put.
+    /// </para>
+    /// </summary>
+    public bool UseEphemeralKey { get; set; }
 
     /// <summary>
     /// Interface the SSH server should bind the forwarded port on.
@@ -167,9 +185,12 @@ public sealed partial class SshTunnelOptions
         if (this.Password is not null)
             methods.Add(new PasswordAuthenticationMethod(this.Username, this.Password));
 
-        // Hosted tunnels take any key, and some take none at all — localhost.run authenticates
-        // nobody. An empty method list is not an error there, so "none" is offered rather than
-        // refused.
+        // Nothing was supplied. A generated key satisfies the hosts that want any key at all, and
+        // "none" covers the ones that authenticate nobody — offered in that order because a server
+        // that wants a key answers "none" with a permission denied, and the reverse costs nothing.
+        if (methods.Count == 0 && this.UseEphemeralKey)
+            methods.Add(new PrivateKeyAuthenticationMethod(this.Username, this.EphemeralKey()));
+
         if (methods.Count == 0)
             methods.Add(new NoneAuthenticationMethod(this.Username));
 
@@ -178,6 +199,28 @@ public sealed partial class SshTunnelOptions
             Timeout = this.ConnectTimeout
         };
     }
+
+    /// <summary>
+    /// The generated key, made once and kept.
+    /// <para>
+    /// RSA rather than Ed25519 only because .NET can export it in a PEM SSH.NET parses without
+    /// hand-rolling the OpenSSH key format. Generation costs a couple of hundred milliseconds on a
+    /// phone, and it happens on the connect path rather than at startup so an app that never opens
+    /// a tunnel never pays it.
+    /// </para>
+    /// </summary>
+    PrivateKeyFile EphemeralKey()
+    {
+        if (this.ephemeralKey is not null)
+            return this.ephemeralKey;
+
+        using var rsa = RSA.Create(2048);
+        using var stream = new MemoryStream(Encoding.ASCII.GetBytes(rsa.ExportRSAPrivateKeyPem()));
+
+        return this.ephemeralKey = new PrivateKeyFile(stream);
+    }
+
+    PrivateKeyFile? ephemeralKey;
 
     static PrivateKeyFile LoadKey(string path, string? passPhrase) =>
         passPhrase is { Length: > 0 } ? new PrivateKeyFile(path, passPhrase) : new PrivateKeyFile(path);

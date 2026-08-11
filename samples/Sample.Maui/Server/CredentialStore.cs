@@ -125,19 +125,18 @@ public sealed class CredentialStore : IBasicCredentialValidator
     );
 
     /// <summary>
-    /// A readable password from a cryptographic source — this gets read aloud and typed on a phone,
-    /// so the alphabet leaves out the characters people confuse.
+    /// A short readable password from a cryptographic source — this is a sample, so five characters
+    /// is plenty; the alphabet still leaves out the characters people confuse when typing it on a phone.
     /// </summary>
     static string GeneratePassword()
     {
         const string alphabet = "abcdefghijkmnpqrstuvwxyz23456789";
-        var chars = new char[16];
+        var chars = new char[5];
 
         for (var i = 0; i < chars.Length; i++)
             chars[i] = alphabet[RandomNumberGenerator.GetInt32(alphabet.Length)];
 
-        // Grouped so it is possible to say out loud without losing your place.
-        return string.Concat(new string(chars, 0, 4), "-", new string(chars, 4, 4), "-", new string(chars, 8, 4), "-", new string(chars, 12, 4));
+        return new string(chars);
     }
 
     async Task<string?> ReadPasswordAsync()

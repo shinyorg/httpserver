@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Shiny.Net.HttpServer.Mediator</RootNamespace>
+    <Description>Shiny.Mediator integration for Shiny.Net.HttpServer. Publishes mediator requests, commands and streams as HTTP endpoints generated at compile time — the Shiny.Mediator.AspNet shape, without ASP.NET Core and without reflection, so it runs in a .NET MAUI app.</Description>
+  </PropertyGroup>
+
+  <!-- Analyzers on, like every other shipping project. The mediator's own contracts are plain
+       interfaces and the dispatch here is closed over concrete types by the generator, so nothing
+       in this package needs reflection or dynamic code. -->
+
+  <ItemGroup>
+    <PackageReference Include="Shiny.Mediator" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Shiny.Net.HttpServer/Shiny.Net.HttpServer.csproj" />
+  </ItemGroup>
+
+  <!-- The generator ships inside this package rather than beside it. The attributes below and the
+       generator that reads them are one feature, and a user who referenced only half of it would
+       get attributes that silently do nothing. -->
+  <ItemGroup>
+    <ProjectReference Include="../Shiny.Net.HttpServer.Mediator.SourceGenerators/Shiny.Net.HttpServer.Mediator.SourceGenerators.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false"
+                      PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="../Shiny.Net.HttpServer.Mediator.SourceGenerators/bin/$(Configuration)/netstandard2.0/Shiny.Net.HttpServer.Mediator.SourceGenerators.dll"
+          Pack="true"
+          PackagePath="analyzers/dotnet/cs"
+          Visible="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Shiny.Net.HttpServer.Tests" />
+  </ItemGroup>
+
+</Project>

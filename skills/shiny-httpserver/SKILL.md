@@ -60,12 +60,22 @@ triggers:
 - RelayServer
 - AddSshTunnel
 - QuickTunnel
+- QuickTunnelHost
 - AddQuickTunnel
+- UseEphemeralKey
+- CaptureUrlFromSession
 - AddAzureRelayTunnel
 - MapMcp
 - Shiny.Net.HttpServer.Mcp
+- Shiny.Net.HttpServer.Mediator
+- MediatorHttpGroup
+- MediatorHttpGet
+- MediatorHttpPost
+- MapGeneratedMediatorEndpoints
+- MediatorDispatch
 - SWS001
 - SWS006
+- SWM003
 ---
 
 # Shiny HTTP Server Skill
@@ -398,8 +408,8 @@ app.OnGet("/events", ctx => ctx.SendEventsAsync(async stream =>
 ## Tunnelling
 
 ```csharp
-// Zero-account public HTTPS from a phone
-builder.Services.AddQuickTunnel(QuickTunnelHost.Sish, subdomain: "my-device");
+// Zero-account public HTTPS from a phone — pinggy by default, nothing to configure
+builder.Services.AddQuickTunnel();
 // then, from a button: await tunnel.StartAsync();
 
 // A host you own
@@ -417,6 +427,22 @@ await app.RunTunnelAsync(provider, logger, ct);
 - `QuickTunnel` is `INotifyPropertyChanged` — **bind** to `PublicUrl`, never read it once: a free
   tunnel reassigns the address on every reconnect. Its events fire on a background thread; marshal to
   the UI thread in MAUI.
+- `StartAsync` **can return null** — the tunnel connected but never learned an address. Check for it
+  and show `LastError`; do not treat a non-throwing call as success. It takes a cancellation token,
+  and a UI must leave the user a way to cancel rather than disabling every control behind one
+  `IsBusy` flag while a network round trip is in flight.
+- Host presets are not interchangeable, and only the default works with nothing provisioned:
+  - `QuickTunnelHost.Pinggy` (**default**) — no account. Generates its own key via `UseEphemeralKey`.
+    Anonymous tunnels expire after 60 minutes; pass an access token as the `subdomain` argument.
+  - `QuickTunnelHost.Sish` — `tuns.sh` needs a key **enrolled at pico.sh**; an unknown key is
+    refused. Use it when the address must stay stable, since it follows the key.
+  - `QuickTunnelHost.LocalhostRun` — **cannot report its own address** through this library: it never
+    confirms the session request carrying the URL, and SSH.NET waits for that confirmation where the
+    `ssh` binary does not. Only usable with a known custom domain set as `PublicUrl`.
+  - `QuickTunnelHost.Serveo` — frequently unreachable; do not suggest it for a demo.
+- Writing `UrlPattern` for a provider of your own: anchor it to that provider's tunnel domain. Never
+  "first `https://` in the output" — providers print a welcome banner full of links to their own site
+  before announcing your address.
 - Always put authentication in front of anything exposed by a tunnel.
 - `AzureRelay` is deliberately **not** AOT-clean; do not suggest it for a trimmed/AOT app.
 - There is no ngrok/Cloudflare provider by design — they need an agent process, impossible on
@@ -440,6 +466,49 @@ app.MapMcp();          // POST/GET/DELETE/OPTIONS on /mcp
 - Never generate `WithToolsFromAssembly()` / `WithPromptsFromAssembly()` / the `IEnumerable<Type>`
   overloads — they scan at runtime and are `RequiresUnreferencedCode`.
 - `AllowedOrigins` is empty by default and should stay that way unless a browser client needs it.
+
+## Shiny.Mediator
+
+`Shiny.Net.HttpServer.Mediator` publishes mediator handlers as endpoints. Same shape as
+`Shiny.Mediator.AspNet`; the generator ships **inside** the package, so there is no second reference.
+
+```csharp
+[MediatorHttpGroup("/api/widgets", Tags = ["Widgets"], RequiresAuthorization = true)]
+public class WidgetHandlers : IRequestHandler<GetWidget, Widget>, ICommandHandler<DeleteWidget>
+{
+    [MediatorHttpGet("/{id:int}")]
+    public Task<Widget> Handle(GetWidget request, IMediatorContext ctx, CancellationToken ct) => …;
+
+    [MediatorHttpDelete("/{id:int}")]      // ICommand -> 204, or SuccessStatusCode = 202
+    public Task Handle(DeleteWidget command, IMediatorContext ctx, CancellationToken ct) => …;
+}
+
+app.MapGeneratedMediatorEndpoints();       // or Map{Handler}MediatorEndpoints()
+```
+
+- **Binding is decided by the verb, and it is not configurable.** `GET`/`DELETE` bind each contract
+  member from a route token (matched by name) or the query string. `POST`/`PUT`/`PATCH` read the
+  whole contract from the JSON body, then apply any route token over the top — so `PUT /widgets/{id}`
+  works, and the URL wins over the body.
+- A member bound from route/query must be `IParsable<T>`, an enum, a string, or an array of those —
+  otherwise **SWM003** at build time. Nullable members and members with defaults are optional.
+- A route token applied to a body-bound contract needs a record (`with`) or a settable property;
+  init-only on a non-record is **SWM008**.
+- `IStreamRequest<T>` becomes Server-Sent Events and **must be GET** (SWM007). `EventName` sets the
+  SSE `event:` field.
+- Contracts and results still need `[JsonSerializable]` — **SWM006** warns when a context misses one.
+- Prefer the attributes. `MapMediatorPost<TRequest,TResult>(pattern)` etc. exist for runtime routes;
+  the `GET`/`DELETE` overloads take a `bind` delegate because there is no reflection to fall back on.
+
+**Two integration gotchas — mention both when generating this:**
+
+1. `Shiny.Mediator`'s own generator turns a contract with `[Get]`/`[Post]`/`[Put]`/`[Patch]`/
+   `[Delete]` into an HTTP *client*, and matches those attributes **by simple name with no namespace
+   check** — so it errors (`SHINYMED_HTTP001`) on this server's minimal-endpoint attributes. A
+   project using both needs `<NoWarn>$(NoWarn);SHINYMED_HTTP001</NoWarn>`.
+2. Stream requests need an `IConfiguration` in the container (`AddShinyMediator` registers a
+   timer-refresh stream middleware that takes one). A generic host has it; a hand-built
+   `ServiceCollection` does not, and the failure lands *after* the SSE headers have gone out.
 
 ## MAUI specifics
 
