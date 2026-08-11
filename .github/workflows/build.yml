@@ -37,16 +37,15 @@ jobs:
       with:
           dotnet-version: '10.0.x'
 
-    # build.slnf leaves out Sample.Maui - the MAUI head needs the workloads installed and proves
-    # nothing the other samples do not already prove about the library itself.
     - name: Build
       run: dotnet build build.slnf /restore -m -property:Configuration=Release -property:PublicRelease=true
 
+    # No --no-build: build.slnf deliberately excludes the test project, so the previous step never
+    # produced its output. xunit v3 runs on Microsoft.Testing.Platform, so trx comes from
+    # --report-trx (the VSTest "--logger trx" spelling is silently ignored here).
     - name: Test
-      run: dotnet test tests/Shiny.Net.HttpServer.Tests/Shiny.Net.HttpServer.Tests.csproj --configuration Release --no-build --logger "trx;LogFileName=test-results.trx"
+      run: dotnet test tests/Shiny.Net.HttpServer.Tests/Shiny.Net.HttpServer.Tests.csproj --configuration Release -- --report-trx --report-trx-filename test-results.trx
 
-    # Runs the real ILC compiler over the library. Catches trim/AOT breaks the Roslyn analyzers cannot
-    # see - warnings out of dependencies, and anything only reachable through a call graph.
     - name: Verify Native AOT
       run: dotnet publish samples/Sample.Api/Sample.Api.csproj -r osx-arm64 --configuration Release
 

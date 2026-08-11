@@ -47,6 +47,8 @@
     <ItemGroup>
         <PackageVersion Include="xunit.v3" Version="3.1.0"/>
         <PackageVersion Include="Microsoft.Testing.Extensions.CodeCoverage" Version="18.0.0"/>
+        <!-- Keep in lockstep with the Microsoft.Testing.Platform version xunit.v3 resolves (1.8.4). -->
+        <PackageVersion Include="Microsoft.Testing.Extensions.TrxReport" Version="1.8.4"/>
     </ItemGroup>
 
 </Project>
