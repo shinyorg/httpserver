@@ -1,60 +1,52 @@
 <Project>
 
-  <PropertyGroup>
-    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
-    <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
-  </PropertyGroup>
+    <PropertyGroup>
+        <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+        <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
+    </PropertyGroup>
 
-  <ItemGroup>
-    <PackageVersion Include="Nerdbank.GitVersioning" Version="3.10.91" />
-  </ItemGroup>
+    <ItemGroup>
+        <PackageVersion Include="Nerdbank.GitVersioning" Version="3.10.91"/>
+    </ItemGroup>
 
-  <!-- 10.0.10 rather than 10.0.0: the MCP SDK requires the servicing build, and with transitive
-       pinning on, one package asking for a newer patch makes every older pin a downgrade error. -->
-  <ItemGroup>
-    <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.10" />
-    <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.10" />
-    <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.10" />
-    <PackageVersion Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.10" />
-    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.10" />
-    <PackageVersion Include="Microsoft.Extensions.Logging.Console" Version="10.0.10" />
-    <PackageVersion Include="Microsoft.Extensions.Configuration" Version="10.0.10" />
-    <PackageVersion Include="Microsoft.Extensions.Configuration.CommandLine" Version="10.0.10" />
-    <PackageVersion Include="Microsoft.Extensions.Configuration.EnvironmentVariables" Version="10.0.10" />
-    <PackageVersion Include="Microsoft.Extensions.Options" Version="10.0.10" />
-    <PackageVersion Include="Microsoft.Extensions.Primitives" Version="10.0.10" />
-  </ItemGroup>
+    <ItemGroup>
+        <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.10"/>
+        <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.10"/>
+        <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.10"/>
+        <PackageVersion Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.10"/>
+        <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.10"/>
+        <PackageVersion Include="Microsoft.Extensions.Logging.Console" Version="10.0.10"/>
+        <PackageVersion Include="Microsoft.Extensions.Configuration" Version="10.0.10"/>
+        <PackageVersion Include="Microsoft.Extensions.Configuration.CommandLine" Version="10.0.10"/>
+        <PackageVersion Include="Microsoft.Extensions.Configuration.EnvironmentVariables" Version="10.0.10"/>
+        <PackageVersion Include="Microsoft.Extensions.Options" Version="10.0.10"/>
+        <PackageVersion Include="Microsoft.Extensions.Primitives" Version="10.0.10"/>
+    </ItemGroup>
 
-  <!-- Source generator toolchain. Deliberately an older Roslyn than the SDK ships:
-       a generator compiled against 4.11 loads fine in newer hosts, not vice versa. -->
-  <ItemGroup>
-    <PackageVersion Include="Microsoft.CodeAnalysis.CSharp" Version="4.11.0" />
-    <PackageVersion Include="Microsoft.CodeAnalysis.Analyzers" Version="3.11.0" />
-    <PackageVersion Include="PolySharp" Version="1.15.0" />
-  </ItemGroup>
+    <ItemGroup>
+        <PackageVersion Include="Microsoft.CodeAnalysis.CSharp" Version="4.11.0"/>
+        <PackageVersion Include="Microsoft.CodeAnalysis.Analyzers" Version="3.11.0"/>
+        <PackageVersion Include="PolySharp" Version="1.15.0"/>
+    </ItemGroup>
 
-  <!-- Azure Relay drags in Azure.Identity, MSAL and IdentityModel. That weight is exactly why the
-       Azure Relay provider is its own package rather than part of the core server. -->
-  <ItemGroup>
-    <PackageVersion Include="Microsoft.Azure.Relay" Version="3.1.1" />
-  </ItemGroup>
+    <ItemGroup>
+        <PackageVersion Include="Microsoft.Azure.Relay" Version="3.1.1"/>
+    </ItemGroup>
 
-  <!-- SSH.NET pulls in BouncyCastle for the algorithms .NET does not ship. Far lighter than the
-       Azure Relay stack, but still not trim-clean, so it stays its own package too. -->
-  <ItemGroup>
-    <PackageVersion Include="SSH.NET" Version="2026.0.0" />
-  </ItemGroup>
+    <ItemGroup>
+        <PackageVersion Include="SSH.NET" Version="2026.0.0"/>
+    </ItemGroup>
 
-  <!-- The MCP SDK. ModelContextProtocol is the DI/hosting layer over ModelContextProtocol.Core;
-       neither references ASP.NET Core, which is the whole reason the MCP transport can live here.
-       It does pull Microsoft.Extensions.AI.Abstractions, so it stays its own package. -->
-  <ItemGroup>
-    <PackageVersion Include="ModelContextProtocol" Version="2.0.0" />
-  </ItemGroup>
+    <!-- The MCP SDK. ModelContextProtocol is the DI/hosting layer over ModelContextProtocol.Core;
+         neither references ASP.NET Core, which is the whole reason the MCP transport can live here.
+         It does pull Microsoft.Extensions.AI.Abstractions, so it stays its own package. -->
+    <ItemGroup>
+        <PackageVersion Include="ModelContextProtocol" Version="2.0.0"/>
+    </ItemGroup>
 
-  <ItemGroup>
-    <PackageVersion Include="xunit.v3" Version="3.1.0" />
-    <PackageVersion Include="Microsoft.Testing.Extensions.CodeCoverage" Version="18.0.0" />
-  </ItemGroup>
+    <ItemGroup>
+        <PackageVersion Include="xunit.v3" Version="3.1.0"/>
+        <PackageVersion Include="Microsoft.Testing.Extensions.CodeCoverage" Version="18.0.0"/>
+    </ItemGroup>
 
 </Project>

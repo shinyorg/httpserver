@@ -7,11 +7,7 @@
             "src\\Shiny.Net.HttpServer.Jwt\\Shiny.Net.HttpServer.Jwt.csproj",
             "src\\Shiny.Net.HttpServer.AzureRelay\\Shiny.Net.HttpServer.AzureRelay.csproj",
             "src\\Shiny.Net.HttpServer.Mcp\\Shiny.Net.HttpServer.Mcp.csproj",
-            "src\\Shiny.Net.HttpServer.Ssh\\Shiny.Net.HttpServer.Ssh.csproj",
-            "samples\\Sample.Api\\Sample.Api.csproj",
-            "samples\\Sample.Relay\\Sample.Relay.csproj",
-            "samples\\Sample.Mcp\\Sample.Mcp.csproj",
-            "tests\\Shiny.Net.HttpServer.Tests\\Shiny.Net.HttpServer.Tests.csproj"
+            "src\\Shiny.Net.HttpServer.Ssh\\Shiny.Net.HttpServer.Ssh.csproj"
         ]
     }
 }

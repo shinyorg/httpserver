@@ -17,7 +17,8 @@
 
        What does not survive trimming is JSON schema generation for a tool's parameter and return
        types, which needs a source-generated JsonSerializerContext. That failure is the caller's to
-       make and used to surface as a 500 on the first request; MapMcp() now catches it at startup. -->
+       make, and it already arrived at MapMcp() — as a bare NotSupportedException thrown from deep
+       inside the container. MapMcp() now catches it and says what to add. -->
 
   <ItemGroup>
     <PackageReference Include="ModelContextProtocol" />

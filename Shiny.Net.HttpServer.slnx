@@ -1,31 +1,33 @@
 <Solution>
 
-  <Folder Name="/solution items/">
-    <File Path="build.slnf" />
-    <File Path="CLAUDE.md" />
-    <File Path="Directory.Build.props" />
-    <File Path="Directory.Packages.props" />
-    <File Path="readme.md" />
-    <File Path="version.json" />
-  </Folder>
+    <Folder Name="/.Solution/">
+        <File Path=".github\FUNDING.yml" />
+        <File Path=".github\ISSUE_TEMPLATE\bug_report.yml" />
+        <File Path=".github\ISSUE_TEMPLATE\config.yml" />
+        <File Path=".github\ISSUE_TEMPLATE\feature_request.yml" />
+        <File Path=".github\PULL_REQUEST_TEMPLATE.md" />
+        <File Path=".github\workflows\build.yml" />
+        <File Path="build.slnf" />
+        <File Path="CLAUDE.md" />
+        <File Path="Directory.Build.props" />
+        <File Path="Directory.Packages.props" />
+        <File Path="readme.md" />
+        <File Path="version.json" />
+    </Folder>
 
-  <Folder Name="/src/" />
+    <Folder Name="/Samples/">
+        <Project Path="samples/Sample.Api/Sample.Api.csproj" />
+        <Project Path="samples/Sample.Relay/Sample.Relay.csproj" />
+        <Project Path="samples/Sample.Maui/Sample.Maui.csproj" />
+        <Project Path="samples/Sample.Mcp/Sample.Mcp.csproj" />
+    </Folder>
 
-  <Folder Name="/samples/">
-    <Project Path="samples/Sample.Api/Sample.Api.csproj" />
-    <Project Path="samples/Sample.Relay/Sample.Relay.csproj" />
-    <Project Path="samples/Sample.Maui/Sample.Maui.csproj" />
-    <Project Path="samples/Sample.Mcp/Sample.Mcp.csproj" />
-  </Folder>
-
-  <Folder Name="/tests/">
+    <Project Path="src/Shiny.Net.HttpServer.AzureRelay/Shiny.Net.HttpServer.AzureRelay.csproj" />
+    <Project Path="src/Shiny.Net.HttpServer.Jwt/Shiny.Net.HttpServer.Jwt.csproj" />
+    <Project Path="src/Shiny.Net.HttpServer.Mcp/Shiny.Net.HttpServer.Mcp.csproj" />
+    <Project Path="src/Shiny.Net.HttpServer.SourceGenerators/Shiny.Net.HttpServer.SourceGenerators.csproj" />
+    <Project Path="src/Shiny.Net.HttpServer.Ssh/Shiny.Net.HttpServer.Ssh.csproj" />
+    <Project Path="src/Shiny.Net.HttpServer/Shiny.Net.HttpServer.csproj" />
     <Project Path="tests/Shiny.Net.HttpServer.Tests/Shiny.Net.HttpServer.Tests.csproj" />
-  </Folder>
-  <Project Path="src/Shiny.Net.HttpServer.AzureRelay/Shiny.Net.HttpServer.AzureRelay.csproj" />
-  <Project Path="src/Shiny.Net.HttpServer.Jwt/Shiny.Net.HttpServer.Jwt.csproj" />
-  <Project Path="src/Shiny.Net.HttpServer.Mcp/Shiny.Net.HttpServer.Mcp.csproj" />
-  <Project Path="src/Shiny.Net.HttpServer.SourceGenerators/Shiny.Net.HttpServer.SourceGenerators.csproj" />
-  <Project Path="src/Shiny.Net.HttpServer.Ssh/Shiny.Net.HttpServer.Ssh.csproj" />
-  <Project Path="src/Shiny.Net.HttpServer/Shiny.Net.HttpServer.csproj" />
 
 </Solution>
