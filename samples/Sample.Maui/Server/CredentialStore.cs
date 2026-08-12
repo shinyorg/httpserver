@@ -6,7 +6,7 @@ using Shiny.Net.HttpServer.Security;
 namespace Sample.Maui.Server;
 
 /// <summary>
-/// The one account this device accepts, changeable from the settings screen.
+/// The one account this device accepts, changeable from the Server screen.
 /// <para>
 /// This is what <see cref="IBasicCredentialValidator"/> is for: the accounts are not in
 /// configuration, they are in whatever the app already uses to remember things — so the validator
@@ -33,7 +33,7 @@ public sealed class CredentialStore : IBasicCredentialValidator
     public string Username => this.username;
 
     /// <summary>
-    /// The current password, so the settings screen can show what visitors need to be told. A real
+    /// The current password, so the Server screen can show what visitors need to be told. A real
     /// product would not display it; a device you are handing a link to is exactly the case where
     /// someone has to read it out.
     /// </summary>

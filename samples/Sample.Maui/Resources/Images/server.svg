@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Two rack units with a status light. Drawn as holes rather than white shapes so the platform's
+     tab tint colours the whole glyph without filling the cut-outs back in. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+  <path fill="#000000" fill-rule="evenodd" d="M4 3h16a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zm2.5 2.5a1 1 0 1 0 0 2 1 1 0 0 0 0-2zM10 5.5a.75.75 0 0 0 0 1.5h3a.75.75 0 0 0 0-1.5h-3zM4 14h16a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2zm2.5 2.5a1 1 0 1 0 0 2 1 1 0 0 0 0-2zM10 16.5a.75.75 0 0 0 0 1.5h3a.75.75 0 0 0 0-1.5h-3z"/>
+</svg>

@@ -543,6 +543,9 @@ app.MapWebDav("/dav", o =>
   small tree.
 - Dead properties (`PROPPATCH`) are held in memory. Assign `PropertyStore` to keep them across
   restarts.
+- A browser `GET` on a collection returns an HTML listing whose entries — and the link back to the
+  parent — are absolute, so the tree is walkable from a plain browser with or without a trailing
+  slash on the mount URL. `DirectoryBrowsing = false` turns it off.
 - The mount is excluded from the OpenAPI document — do not try to describe it.
 
 ## Realtime

@@ -30,6 +30,10 @@
   button { padding: .6rem 1rem; font: inherit; font-weight: 600; color: #fff; background: var(--accent);
            border: 0; border-radius: 9px; cursor: pointer; }
   button:disabled { opacity: .5; cursor: default; }
+  a { color: var(--accent); }
+  .big { font-size: 1.05rem; font-weight: 600; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85em; }
+  p.note { color: #8e8e93; font-size: .8rem; margin: .5rem 0 0; }
 </style>
 </head>
 <body>
@@ -49,6 +53,17 @@
       <input id="text" placeholder="Add a note" autocomplete="off" required>
       <button type="submit">Add</button>
     </form>
+  </section>
+
+  <!-- GET on a WebDAV collection is not something RFC 4918 defines; the mount answers it with an
+       HTML listing whose links walk the whole tree, so the storage is browsable from here. The
+       trailing slash is the collection URL, and it is what the listing's own links resolve against. -->
+  <section>
+    <h2>Storage</h2>
+    <p class="big"><a href="dav/">Browse this device's files →</a></p>
+    <p class="note">The same directory over WebDAV. Point Finder's <em>Go → Connect to Server</em> or
+      Explorer's <em>Map network drive</em> at <code>/dav</code> on this address, sign in with the
+      account you just used, and it mounts as a drive.</p>
   </section>
 </main>
 

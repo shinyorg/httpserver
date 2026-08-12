@@ -329,6 +329,46 @@ public class WebDavTests
     }
 
     [Fact]
+    public async Task Get_on_a_collection_links_its_members_by_absolute_href()
+    {
+        using var root = new ContentRoot()
+            .With("notes.txt", "hello")
+            .With("my docs/readme.md", "# hi");
+
+        await using var server = await StartAsync(root);
+
+        var html = await server.Client.GetStringAsync("/dav", TestContext.Current.CancellationToken);
+
+        // Absolute, because a browser at "/dav" resolves a relative href against "/".
+        Assert.Contains("href=\"/dav/notes.txt\"", html, StringComparison.Ordinal);
+        Assert.Contains("href=\"/dav/my%20docs/\"", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Get_on_a_nested_collection_links_its_members_and_its_parent()
+    {
+        using var root = new ContentRoot().With("docs/sub/b.md", "b");
+        await using var server = await StartAsync(root);
+
+        var html = await server.Client.GetStringAsync("/dav/docs/sub", TestContext.Current.CancellationToken);
+
+        Assert.Contains("href=\"/dav/docs/sub/b.md\"", html, StringComparison.Ordinal);
+        Assert.Contains("href=\"/dav/docs/\"", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Get_on_the_mount_root_links_a_child_of_the_root_collection()
+    {
+        using var root = new ContentRoot().With("docs/a.md", "a");
+        await using var server = await StartAsync(root);
+
+        var html = await server.Client.GetStringAsync("/dav/docs/", TestContext.Current.CancellationToken);
+
+        // The parent of a first-level collection is the mount root itself.
+        Assert.Contains("href=\"/dav/\"", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Mkcol_creates_a_collection_and_refuses_to_create_it_twice()
     {
         using var root = new ContentRoot();

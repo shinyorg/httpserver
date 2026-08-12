@@ -145,8 +145,19 @@ sealed partial class WebDavHandler
         builder.Append(System.Net.WebUtility.HtmlEncode(title));
         builder.Append("</h1><ul>");
 
+        // Absolute hrefs, the same ones PROPFIND reports. A relative one would resolve against the
+        // request URL, and a browser that arrived at the collection without a trailing slash — which
+        // is how anyone types a mount URL — resolves it against the *parent*, so every link in the
+        // listing lands a directory short.
         if (!path.IsRoot)
-            builder.Append("<li><a href=\"../\">../</a></li>");
+        {
+            var cut = path.Relative.LastIndexOf('/');
+            var parent = cut < 0 ? string.Empty : path.Relative[..cut];
+
+            builder.Append("<li><a href=\"");
+            builder.Append(System.Net.WebUtility.HtmlEncode(this.HrefFor(parent, isCollection: true)));
+            builder.Append("\">../</a></li>");
+        }
 
         foreach (var child in this.Children(path))
         {
@@ -154,7 +165,7 @@ sealed partial class WebDavHandler
             var name = child.Name + (isCollection ? "/" : string.Empty);
 
             builder.Append("<li><a href=\"");
-            builder.Append(System.Net.WebUtility.HtmlEncode(Uri.EscapeDataString(child.Name) + (isCollection ? "/" : string.Empty)));
+            builder.Append(System.Net.WebUtility.HtmlEncode(this.HrefFor(Join(path.Relative, child.Name), isCollection)));
             builder.Append("\">");
             builder.Append(System.Net.WebUtility.HtmlEncode(name));
             builder.Append("</a></li>");

@@ -50,7 +50,7 @@ public static class MauiProgram
         builder.Services.AddSingleton<TrafficBadge>();
         builder.Services.AddSingleton<IMauiInitializeService>(sp => sp.GetRequiredService<TrafficBadge>());
 
-        // The accounts live in the app's own storage and change from the settings screen, so the
+        // The accounts live in the app's own storage and change from the Server screen, so the
         // validator is a service rather than a list handed over at startup.
         builder.Services.AddAuthentication().AddBasic<CredentialStore>(o => o.Realm = "Shiny device");
 

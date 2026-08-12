@@ -11,18 +11,19 @@
                   FlyoutBehavior="Disabled"
                   Title="Shiny HTTP Server">
 
+    <!-- The icons are SVGs under Resources/Images, referenced by the .png the build produces from
+         them. Single-colour on purpose: Shell tints a tab icon with TabBarForegroundColor and
+         TabBarUnselectedColor, so the glyph follows the theme instead of fighting it. -->
     <TabBar>
         <ShellContent Title="Server"
                       Route="Server"
+                      Icon="server.png"
                       ContentTemplate="{DataTemplate pages:ServerPage}" />
 
         <ShellContent Title="Traffic"
                       Route="Traffic"
+                      Icon="traffic.png"
                       ContentTemplate="{DataTemplate pages:TrafficPage}" />
-
-        <ShellContent Title="Access"
-                      Route="Access"
-                      ContentTemplate="{DataTemplate pages:AccessPage}" />
     </TabBar>
 
 </shiny:ShinyShell>
