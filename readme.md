@@ -14,8 +14,7 @@ JWT, OpenAPI, HPACK, QPACK — is built on what is in the box.
 
 | Package | Description |
 | --- | --- |
-| [Shiny.Net.HttpServer](https://www.nuget.org/packages/Shiny.Net.HttpServer) | The server: HTTP/1.1, HTTP/2 & HTTP/3, routing, middleware, DI scopes, static files, WebSockets, SSE, sessions, OpenAPI, CORS, rate limiting, IP filtering, tunnelling |
-| [Shiny.Net.HttpServer.SourceGenerators](https://www.nuget.org/packages/Shiny.Net.HttpServer.SourceGenerators) | Compile-time typed endpoints — route registration, parameter binding, OpenAPI. Zero reflection |
+| [Shiny.Net.HttpServer](https://www.nuget.org/packages/Shiny.Net.HttpServer) | The server: HTTP/1.1, HTTP/2 & HTTP/3, routing, middleware, DI scopes, static files, WebSockets, SSE, sessions, OpenAPI, CORS, rate limiting, IP filtering, tunnelling. Includes the typed-endpoint source generator |
 | [Shiny.Net.HttpServer.Jwt](https://www.nuget.org/packages/Shiny.Net.HttpServer.Jwt) | JWT authentication on in-box crypto — no `Microsoft.IdentityModel` dependency |
 | [Shiny.Net.HttpServer.AzureRelay](https://www.nuget.org/packages/Shiny.Net.HttpServer.AzureRelay) | Azure Relay tunnel provider |
 | [Shiny.Net.HttpServer.Ssh](https://www.nuget.org/packages/Shiny.Net.HttpServer.Ssh) | SSH remote-forwarding tunnel provider, including zero-account quick tunnels |

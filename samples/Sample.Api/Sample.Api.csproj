@@ -15,6 +15,9 @@
         <ProjectReference Include="../../src/Shiny.Net.HttpServer/Shiny.Net.HttpServer.csproj"/>
         <ProjectReference Include="../../src/Shiny.Net.HttpServer.Jwt/Shiny.Net.HttpServer.Jwt.csproj"/>
         <ProjectReference Include="../../src/Shiny.Net.HttpServer.WebDav/Shiny.Net.HttpServer.WebDav.csproj"/>
+        <!-- The endpoint generator reaches a consumer through the Shiny.Net.HttpServer package's
+             analyzers/ folder. Analyzers do not flow across a ProjectReference, so referencing it
+             in-repo takes the explicit route the package does for everyone else. -->
         <ProjectReference Include="../../src/Shiny.Net.HttpServer.SourceGenerators/Shiny.Net.HttpServer.SourceGenerators.csproj"
                           OutputItemType="Analyzer"
                           ReferenceOutputAssembly="false"/>

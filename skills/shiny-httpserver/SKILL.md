@@ -184,8 +184,7 @@ must hold that line, or it fails on a trimmed device build.
 ### Packages
 
 ```bash
-dotnet add package Shiny.Net.HttpServer                  # the server
-dotnet add package Shiny.Net.HttpServer.SourceGenerators # typed endpoints (analyzer)
+dotnet add package Shiny.Net.HttpServer                  # the server + the typed-endpoint generator
 dotnet add package Shiny.Net.HttpServer.Jwt              # JWT auth
 dotnet add package Shiny.Net.HttpServer.Ssh              # SSH + quick tunnels
 dotnet add package Shiny.Net.HttpServer.AzureRelay       # Azure Relay tunnel (NOT AOT-clean)

@@ -20,7 +20,7 @@ body:
         - Azure Relay (Shiny.Net.HttpServer.AzureRelay)
         - MCP (Shiny.Net.HttpServer.Mcp)
         - SSH Tunnel (Shiny.Net.HttpServer.Ssh)
-        - Source Generator (Shiny.Net.HttpServer.SourceGenerators)
+        - Source Generator (typed endpoints, in Shiny.Net.HttpServer)
         - Other
     validations:
       required: true

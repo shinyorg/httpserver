@@ -12,6 +12,24 @@
         <PackageReference Include="Microsoft.Extensions.Primitives"/>
     </ItemGroup>
 
+    <!-- The typed-endpoint generator ships inside this package rather than beside it. The [Route],
+         [Get], [Post] … attributes live here, and the generator is what turns them into a
+         MapXxxEndpoints() call — one feature in one package, so there is no second reference to
+         forget and no way to end up with attributes that silently do nothing. -->
+    <ItemGroup>
+        <ProjectReference Include="../Shiny.Net.HttpServer.SourceGenerators/Shiny.Net.HttpServer.SourceGenerators.csproj"
+                          OutputItemType="Analyzer"
+                          ReferenceOutputAssembly="false"
+                          PrivateAssets="all"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <None Include="../Shiny.Net.HttpServer.SourceGenerators/bin/$(Configuration)/netstandard2.0/Shiny.Net.HttpServer.SourceGenerators.dll"
+              Pack="true"
+              PackagePath="analyzers/dotnet/cs"
+              Visible="false"/>
+    </ItemGroup>
+
     <ItemGroup>
         <InternalsVisibleTo Include="Shiny.Net.HttpServer.Tests"/>
 

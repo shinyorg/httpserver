@@ -5,23 +5,23 @@
          which is netstandard2.0, not into the app being compiled. -->
     <TargetFramework>netstandard2.0</TargetFramework>
     <RootNamespace>Shiny.Net.HttpServer.SourceGenerators</RootNamespace>
-    <Description>Source generator for Shiny.Net.HttpServer typed endpoints.</Description>
 
     <IsRoslynComponent>true</IsRoslynComponent>
     <EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>
     <!-- RS2008 wants AnalyzerReleases.*.md release-tracking files, which only earn their keep for
          an analyzer package with a public support contract. -->
     <NoWarn>$(NoWarn);RS2008</NoWarn>
+
+    <!-- Not a package of its own: Shiny.Net.HttpServer packs this output under analyzers/dotnet/cs.
+         The [Route]/[Get]/[Post] attributes and the generator that reads them are one feature, and
+         shipping them separately only creates a way to reference half of it — a user with the
+         attributes and no generator gets endpoint classes that silently never map. -->
+    <IsPackable>false</IsPackable>
     <IncludeBuildOutput>false</IncludeBuildOutput>
     <DevelopmentDependency>true</DevelopmentDependency>
-
-    <!-- The build output ships under analyzers/dotnet/cs, not lib/, which is exactly what NU5128
-         complains about. With no lib/ assembly there is also nothing for a symbol package to carry,
-         and an empty .snupkg is a hard pack error (NU5017) - so the Release symbol/source settings
-         from the root Directory.Build.props are turned back off here. -->
-    <NoWarn>$(NoWarn);NU5128</NoWarn>
     <IncludeSymbols>false</IncludeSymbols>
     <IncludeSource>false</IncludeSource>
+    <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
   </PropertyGroup>
 
   <!-- The trim/AOT analyzers inherited from src/Directory.Build.props do not apply to a
@@ -37,10 +37,6 @@
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" PrivateAssets="all" />
     <PackageReference Include="Microsoft.CodeAnalysis.Analyzers" PrivateAssets="all" />
     <PackageReference Include="PolySharp" PrivateAssets="all" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <None Include="$(OutputPath)$(AssemblyName).dll" Pack="true" PackagePath="analyzers/dotnet/cs" Visible="false" />
   </ItemGroup>
 
 </Project>
