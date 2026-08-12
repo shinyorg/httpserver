@@ -10,7 +10,7 @@ namespace Shiny.Net.HttpServer.Cors;
 /// });
 ///
 /// app.UseCors();
-/// app.OnGet("/status", Handler).RequireCors("public");
+/// app.MapGet("/status", Handler).RequireCors("public");
 /// </code>
 /// </summary>
 public sealed class CorsOptions

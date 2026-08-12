@@ -15,7 +15,7 @@ public class TrailerTests
     [Fact]
     public async Task Http1_writes_trailers_after_the_terminating_chunk()
     {
-        await using var server = await TestServer.StartAsync(app => app.OnGet("/stream", async ctx =>
+        await using var server = await TestServer.StartAsync(app => app.MapGet("/stream", async ctx =>
         {
             ctx.Response.DeclareTrailer("X-Checksum");
 
@@ -38,7 +38,7 @@ public class TrailerTests
     public async Task Http1_still_terminates_cleanly_without_trailers()
     {
         await using var server = await TestServer.StartAsync(
-            app => app.OnGet("/stream", async ctx => await ctx.Response.Body.WriteAsync("hello"u8.ToArray(), Token))
+            app => app.MapGet("/stream", async ctx => await ctx.Response.Body.WriteAsync("hello"u8.ToArray(), Token))
         );
 
         var raw = await ReadWholeResponseAsync(server.Port, "/stream");
@@ -49,7 +49,7 @@ public class TrailerTests
     [Fact]
     public async Task Http2_sends_trailers_in_a_trailing_headers_frame()
     {
-        await using var server = await TestServer.StartAsync(app => app.OnGet("/stream", async ctx =>
+        await using var server = await TestServer.StartAsync(app => app.MapGet("/stream", async ctx =>
         {
             await ctx.Response.WriteTextAsync("hello", cancellationToken: Token);
             ctx.Response.AppendTrailer("x-checksum", "abc123");
@@ -65,7 +65,7 @@ public class TrailerTests
     [Fact]
     public async Task Http2_folds_trailers_into_the_headers_of_an_empty_response()
     {
-        await using var server = await TestServer.StartAsync(app => app.OnGet("/empty", ctx =>
+        await using var server = await TestServer.StartAsync(app => app.MapGet("/empty", ctx =>
         {
             // Nothing written at all: there is no second frame to hang trailers off, so they belong
             // in the one header block the response does send.
@@ -84,13 +84,13 @@ public class TrailerTests
     {
         await using var server = await TestServer.StartAsync(app =>
         {
-            app.OnGet("/with", async ctx =>
+            app.MapGet("/with", async ctx =>
             {
                 await ctx.Response.WriteTextAsync("first", cancellationToken: Token);
                 ctx.Response.AppendTrailer("x-only-here", "yes");
             });
 
-            app.OnGet("/without", ctx => ctx.Response.WriteTextAsync("second", cancellationToken: Token));
+            app.MapGet("/without", ctx => ctx.Response.WriteTextAsync("second", cancellationToken: Token));
         });
 
         using var client = CreateHttp2Client(server.Port);

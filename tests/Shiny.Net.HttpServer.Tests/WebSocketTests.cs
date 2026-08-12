@@ -22,7 +22,7 @@ public class WebSocketTests
         Action<ClientWebSocket>? configureClient = null
     )
     {
-        var server = await TestServer.StartAsync(app => app.OnGet("/ws", async ctx =>
+        var server = await TestServer.StartAsync(app => app.MapGet("/ws", async ctx =>
         {
             if (!ctx.Request.IsWebSocketRequest())
             {
@@ -282,7 +282,7 @@ public class WebSocketTests
     [Fact]
     public async Task Rejects_a_plain_get_on_a_websocket_route()
     {
-        await using var server = await TestServer.StartAsync(app => app.OnGet("/ws", async ctx =>
+        await using var server = await TestServer.StartAsync(app => app.MapGet("/ws", async ctx =>
         {
             if (!ctx.Request.IsWebSocketRequest())
             {
@@ -334,8 +334,8 @@ public class WebSocketTests
     {
         await using var server = await TestServer.StartAsync(app =>
         {
-            app.OnGet("/ping", ctx => ctx.Response.WriteAsync("pong"));
-            app.OnGet("/ws", async ctx =>
+            app.MapGet("/ping", ctx => ctx.Response.WriteAsync("pong"));
+            app.MapGet("/ws", async ctx =>
             {
                 await using var socket = await ctx.AcceptWebSocketAsync(cancellationToken: ctx.RequestAborted);
                 await socket.SendAsync("hi", CancellationToken.None);

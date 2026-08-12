@@ -300,7 +300,7 @@ public class CertificatePinningTests
     public async Task A_pinned_handler_reaches_the_server_a_default_client_cannot()
     {
         await using var server = await TlsTestServer.StartAsync(
-            app => app.OnGet("/ping", ctx => ctx.Response.WriteAsync("pong"))
+            app => app.MapGet("/ping", ctx => ctx.Response.WriteAsync("pong"))
         );
 
         Assert.Equal("pong", await server.Client.GetStringAsync("/ping", Token));

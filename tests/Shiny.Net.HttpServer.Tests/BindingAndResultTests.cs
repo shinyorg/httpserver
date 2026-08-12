@@ -86,7 +86,7 @@ public class ResultTests
 
     static async Task<(int Status, string Body, string? ContentType)> ExecuteAsync(IResult result)
     {
-        await using var server = await TestServer.StartAsync(app => app.OnGet("/x", _ => result));
+        await using var server = await TestServer.StartAsync(app => app.MapGet("/x", _ => result));
 
         var response = await server.Client.GetAsync("/x", Token);
 
@@ -169,7 +169,7 @@ public class ResultTests
     public async Task Created_sets_a_Location_header()
     {
         await using var server = await TestServer.StartAsync(
-            app => app.OnGet("/x", _ => Results.Created("/things/1"))
+            app => app.MapGet("/x", _ => Results.Created("/things/1"))
         );
 
         var response = await server.Client.GetAsync("/x", Token);
@@ -183,8 +183,8 @@ public class ResultTests
     {
         await using var server = await TestServer.StartAsync(app =>
         {
-            app.OnGet("/temp", _ => Results.Redirect("/there"));
-            app.OnGet("/perm", _ => Results.Redirect("/there", permanent: true, preserveMethod: true));
+            app.MapGet("/temp", _ => Results.Redirect("/there"));
+            app.MapGet("/perm", _ => Results.Redirect("/there", permanent: true, preserveMethod: true));
         });
 
         using var noRedirects = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false })

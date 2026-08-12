@@ -28,7 +28,7 @@ JWT, OpenAPI, HPACK, QPACK — is built on what is in the box.
 
 ```csharp
 var server = new HttpServer(new HttpServerOptions { Port = 8080 });
-server.OnGet("/ping", ctx => ctx.Response.WriteAsync("pong"));
+server.MapGet("/ping", ctx => ctx.Response.WriteAsync("pong"));
 await server.RunAsync();
 ```
 

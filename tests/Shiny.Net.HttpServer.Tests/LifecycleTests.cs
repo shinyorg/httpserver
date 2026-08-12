@@ -15,7 +15,7 @@ public class LifecycleTests
     static HttpServer Create()
     {
         var server = new HttpServer(new HttpServerOptions { Port = 0, Address = IPAddress.Loopback });
-        server.OnGet("/ping", ctx => ctx.Response.WriteAsync("pong"));
+        server.MapGet("/ping", ctx => ctx.Response.WriteAsync("pong"));
         return server;
     }
 
@@ -168,7 +168,7 @@ public class LifecycleTests
         var port = new Uri(occupier.ListenUrl!).Port;
 
         await using var contender = new HttpServer(new HttpServerOptions { Port = port, Address = IPAddress.Loopback });
-        contender.OnGet("/ping", ctx => ctx.Response.WriteAsync("pong"));
+        contender.MapGet("/ping", ctx => ctx.Response.WriteAsync("pong"));
 
         await Assert.ThrowsAsync<IOException>(async () => await contender.StartAsync(Token));
 

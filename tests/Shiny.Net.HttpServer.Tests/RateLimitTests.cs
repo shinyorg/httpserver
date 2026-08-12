@@ -200,7 +200,7 @@ public class RateLimitMiddlewareTests
         => TestServer.StartAsync(app =>
         {
             app.UseRateLimiter(policy);
-            app.OnGet("/x", ctx => ctx.Response.WriteAsync("ok"));
+            app.MapGet("/x", ctx => ctx.Response.WriteAsync("ok"));
         });
 
     static RateLimitPolicy Global(int permits)
@@ -242,7 +242,7 @@ public class RateLimitMiddlewareTests
         await using var server = await TestServer.StartAsync(app =>
         {
             app.UseRateLimiter(Global(1));
-            app.OnGet("/x", ctx => { calls++; return ctx.Response.WriteAsync("ok"); });
+            app.MapGet("/x", ctx => { calls++; return ctx.Response.WriteAsync("ok"); });
         });
 
         await server.Client.GetAsync("/x", Token);
@@ -271,7 +271,7 @@ public class RateLimitMiddlewareTests
             {
                 Partitioner = RateLimitPartitioners.ByHeader("X-Api-Key")
             });
-            app.OnGet("/x", ctx => ctx.Response.WriteAsync("ok"));
+            app.MapGet("/x", ctx => ctx.Response.WriteAsync("ok"));
         });
 
         Assert.Equal(HttpStatusCode.OK, (await Send(server, "one")).StatusCode);
@@ -299,8 +299,8 @@ public class RateLimitMiddlewareTests
             app =>
             {
                 app.UseRateLimiter();
-                app.OnGet("/cheap", ctx => ctx.Response.WriteAsync("ok"));
-                app.OnPost("/upload", ctx => ctx.Response.WriteAsync("ok")).RequireRateLimiting("uploads");
+                app.MapGet("/cheap", ctx => ctx.Response.WriteAsync("ok"));
+                app.MapPost("/upload", ctx => ctx.Response.WriteAsync("ok")).RequireRateLimiting("uploads");
             },
             builder => builder.Services.AddRateLimiter(o =>
             {
@@ -326,8 +326,8 @@ public class RateLimitMiddlewareTests
             app =>
             {
                 app.UseRateLimiter();
-                app.OnGet("/x", ctx => ctx.Response.WriteAsync("ok"));
-                app.OnGet("/health", ctx => ctx.Response.WriteAsync("ok")).DisableRateLimiting();
+                app.MapGet("/x", ctx => ctx.Response.WriteAsync("ok"));
+                app.MapGet("/health", ctx => ctx.Response.WriteAsync("ok")).DisableRateLimiting();
             },
             builder => builder.Services.AddRateLimiter(o => o.GlobalPolicy = Global(1))
         );
@@ -346,7 +346,7 @@ public class RateLimitMiddlewareTests
             app =>
             {
                 app.UseRateLimiter();
-                app.OnGet("/x", ctx => ctx.Response.WriteAsync("ok"));
+                app.MapGet("/x", ctx => ctx.Response.WriteAsync("ok"));
             },
             builder => builder.Services.AddRateLimiter(o =>
             {
@@ -375,7 +375,7 @@ public class RateLimitMiddlewareTests
         await using var server = await TestServer.StartAsync(app =>
         {
             app.UseRateLimiter(new ConcurrencyRateLimitPolicy(1) { Partitioner = RateLimitPartitioners.Global });
-            app.OnGet("/slow", async ctx =>
+            app.MapGet("/slow", async ctx =>
             {
                 entered.TrySetResult();
                 await release.Task;
@@ -405,7 +405,7 @@ public class RateLimitMiddlewareTests
             app =>
             {
                 app.UseRateLimiter();
-                app.OnGet("/x", ctx => ctx.Response.WriteAsync("ok")).RequireRateLimiting("missing");
+                app.MapGet("/x", ctx => ctx.Response.WriteAsync("ok")).RequireRateLimiting("missing");
             },
             builder => builder.Services.AddRateLimiter(o => o.GlobalPolicy = Global(10))
         );
@@ -419,7 +419,7 @@ public class RateLimitMiddlewareTests
     [Fact]
     public async Task UseRateLimiter_without_a_policy_says_so()
     {
-        await using var server = await TestServer.StartAsync(app => app.OnGet("/x", ctx => ctx.Response.WriteAsync("ok")));
+        await using var server = await TestServer.StartAsync(app => app.MapGet("/x", ctx => ctx.Response.WriteAsync("ok")));
 
         var error = Assert.Throws<InvalidOperationException>(() => server.Server.UseRateLimiter());
         Assert.Contains("AddRateLimiter", error.Message);

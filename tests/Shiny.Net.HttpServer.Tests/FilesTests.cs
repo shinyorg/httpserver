@@ -137,7 +137,7 @@ public class DownloadTests : IDisposable
         var path = this.WriteFile("hello.txt", "hello world");
 
         await using var server = await TestServer.StartAsync(
-            app => app.OnGet("/file", _ => FileDownloadResult.FromFile(path))
+            app => app.MapGet("/file", _ => FileDownloadResult.FromFile(path))
         );
 
         var response = await server.Client.GetAsync("/file", Token);
@@ -155,7 +155,7 @@ public class DownloadTests : IDisposable
         var path = this.WriteFile("range.txt", "0123456789");
 
         await using var server = await TestServer.StartAsync(
-            app => app.OnGet("/file", _ => FileDownloadResult.FromFile(path))
+            app => app.MapGet("/file", _ => FileDownloadResult.FromFile(path))
         );
 
         var request = new HttpRequestMessage(HttpMethod.Get, "/file");
@@ -175,7 +175,7 @@ public class DownloadTests : IDisposable
         var path = this.WriteFile("suffix.txt", "0123456789");
 
         await using var server = await TestServer.StartAsync(
-            app => app.OnGet("/file", _ => FileDownloadResult.FromFile(path))
+            app => app.MapGet("/file", _ => FileDownloadResult.FromFile(path))
         );
 
         var request = new HttpRequestMessage(HttpMethod.Get, "/file");
@@ -193,7 +193,7 @@ public class DownloadTests : IDisposable
         var path = this.WriteFile("small.txt", "0123456789");
 
         await using var server = await TestServer.StartAsync(
-            app => app.OnGet("/file", _ => FileDownloadResult.FromFile(path))
+            app => app.MapGet("/file", _ => FileDownloadResult.FromFile(path))
         );
 
         var request = new HttpRequestMessage(HttpMethod.Get, "/file");
@@ -211,7 +211,7 @@ public class DownloadTests : IDisposable
         var path = this.WriteFile("cached.txt", "cache me");
 
         await using var server = await TestServer.StartAsync(
-            app => app.OnGet("/file", _ => FileDownloadResult.FromFile(path))
+            app => app.MapGet("/file", _ => FileDownloadResult.FromFile(path))
         );
 
         var first = await server.Client.GetAsync("/file", Token);
@@ -232,7 +232,7 @@ public class DownloadTests : IDisposable
         var path = this.WriteFile("changed.txt", "content");
 
         await using var server = await TestServer.StartAsync(
-            app => app.OnGet("/file", _ => FileDownloadResult.FromFile(path))
+            app => app.MapGet("/file", _ => FileDownloadResult.FromFile(path))
         );
 
         var request = new HttpRequestMessage(HttpMethod.Get, "/file");
@@ -250,7 +250,7 @@ public class DownloadTests : IDisposable
         var path = this.WriteFile("moved.txt", "0123456789");
 
         await using var server = await TestServer.StartAsync(
-            app => app.OnGet("/file", _ => FileDownloadResult.FromFile(path))
+            app => app.MapGet("/file", _ => FileDownloadResult.FromFile(path))
         );
 
         var request = new HttpRequestMessage(HttpMethod.Get, "/file");
@@ -270,7 +270,7 @@ public class DownloadTests : IDisposable
         var path = this.WriteFile("report.pdf", "%PDF-fake");
 
         await using var server = await TestServer.StartAsync(
-            app => app.OnGet("/file", _ => FileDownloadResult.FromFile(path, downloadName: "monthly report.pdf"))
+            app => app.MapGet("/file", _ => FileDownloadResult.FromFile(path, downloadName: "monthly report.pdf"))
         );
 
         var response = await server.Client.GetAsync("/file", Token);
@@ -286,7 +286,7 @@ public class DownloadTests : IDisposable
         var content = Encoding.ASCII.GetBytes("abcdefghij");
 
         await using var server = await TestServer.StartAsync(
-            app => app.OnGet("/bytes", _ => FileDownloadResult.FromBytes(content, "text/plain"))
+            app => app.MapGet("/bytes", _ => FileDownloadResult.FromBytes(content, "text/plain"))
         );
 
         var request = new HttpRequestMessage(HttpMethod.Get, "/bytes");
@@ -326,7 +326,7 @@ public class UploadTests : IDisposable
     [Fact]
     public async Task Reads_form_values_and_files()
     {
-        await using var server = await TestServer.StartAsync(app => app.OnPost("/upload", async ctx =>
+        await using var server = await TestServer.StartAsync(app => app.MapPost("/upload", async ctx =>
         {
             var form = await ctx.Request.ReadFormAsync(cancellationToken: ctx.RequestAborted);
             var file = form.GetFile("document")!;
@@ -352,7 +352,7 @@ public class UploadTests : IDisposable
     {
         var target = Path.Combine(this.directory, "large.bin");
 
-        await using var server = await TestServer.StartAsync(app => app.OnPost("/stream", async ctx =>
+        await using var server = await TestServer.StartAsync(app => app.MapPost("/stream", async ctx =>
         {
             await foreach (var section in ctx.Request.ReadMultipartAsync(ctx.RequestAborted))
             {
@@ -388,7 +388,7 @@ public class UploadTests : IDisposable
         // scan-and-split gets wrong.
         var payload = Encoding.ASCII.GetBytes("before\r\n--not-the-boundary\r\nafter");
 
-        await using var server = await TestServer.StartAsync(app => app.OnPost("/tricky", async ctx =>
+        await using var server = await TestServer.StartAsync(app => app.MapPost("/tricky", async ctx =>
         {
             var form = await ctx.Request.ReadFormAsync(cancellationToken: ctx.RequestAborted);
             await ctx.Response.WriteAsync(form.GetFile("f")!.Length.ToString());
@@ -406,7 +406,7 @@ public class UploadTests : IDisposable
     [Fact]
     public async Task Reads_several_files_in_one_request()
     {
-        await using var server = await TestServer.StartAsync(app => app.OnPost("/many", async ctx =>
+        await using var server = await TestServer.StartAsync(app => app.MapPost("/many", async ctx =>
         {
             var form = await ctx.Request.ReadFormAsync(cancellationToken: ctx.RequestAborted);
             await ctx.Response.WriteAsync(string.Join(",", form.Files.Select(f => $"{f.Name}:{f.FileName}")));
@@ -425,7 +425,7 @@ public class UploadTests : IDisposable
     [Fact]
     public async Task Skipping_a_section_still_advances_to_the_next()
     {
-        await using var server = await TestServer.StartAsync(app => app.OnPost("/skip", async ctx =>
+        await using var server = await TestServer.StartAsync(app => app.MapPost("/skip", async ctx =>
         {
             var names = new List<string>();
 
@@ -448,7 +448,7 @@ public class UploadTests : IDisposable
     [Fact]
     public async Task Reads_a_url_encoded_form()
     {
-        await using var server = await TestServer.StartAsync(app => app.OnPost("/form", async ctx =>
+        await using var server = await TestServer.StartAsync(app => app.MapPost("/form", async ctx =>
         {
             var form = await ctx.Request.ReadFormAsync(cancellationToken: ctx.RequestAborted);
             await ctx.Response.WriteAsync($"{form.GetFirst("name")}|{form.GetFirst("note")}");
@@ -466,7 +466,7 @@ public class UploadTests : IDisposable
     [Fact]
     public async Task Refuses_a_file_over_the_buffering_limit()
     {
-        await using var server = await TestServer.StartAsync(app => app.OnPost("/limited", async ctx =>
+        await using var server = await TestServer.StartAsync(app => app.MapPost("/limited", async ctx =>
         {
             var form = await ctx.Request.ReadFormAsync(maxFileSize: 1024, cancellationToken: ctx.RequestAborted);
             await ctx.Response.WriteAsync($"{form.Files.Count}");
@@ -486,7 +486,7 @@ public class UploadTests : IDisposable
     {
         var target = Path.Combine(this.directory, "put.bin");
 
-        await using var server = await TestServer.StartAsync(app => app.OnPut("/raw", async ctx =>
+        await using var server = await TestServer.StartAsync(app => app.MapPut("/raw", async ctx =>
         {
             var written = await ctx.Request.SaveBodyToAsync(target, ctx.RequestAborted);
             await ctx.Response.WriteAsync(written.ToString());
@@ -504,7 +504,7 @@ public class UploadTests : IDisposable
     [Fact]
     public async Task Reports_whether_the_body_is_a_form()
     {
-        await using var server = await TestServer.StartAsync(app => app.OnPost("/is-form", ctx =>
+        await using var server = await TestServer.StartAsync(app => app.MapPost("/is-form", ctx =>
             ctx.Response.WriteAsync(ctx.Request.HasFormContentType().ToString())));
 
         var form = await server.Client.PostAsync("/is-form", new FormUrlEncodedContent([]), Token);

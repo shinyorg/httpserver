@@ -107,7 +107,7 @@ public static class ServerSentEventExtensions
     /// Opens an event stream and hands it to <paramref name="produce"/>, which runs until it
     /// returns or the client disconnects.
     /// <code>
-    /// app.OnGet("/events", ctx => ctx.SendEventsAsync(async stream =>
+    /// app.MapGet("/events", ctx => ctx.SendEventsAsync(async stream =>
     /// {
     ///     while (!stream.Aborted.IsCancellationRequested)
     ///     {

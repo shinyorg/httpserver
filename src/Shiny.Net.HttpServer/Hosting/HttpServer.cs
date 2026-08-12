@@ -176,19 +176,6 @@ public sealed class HttpServer : IAsyncDisposable
 
     public HttpServer MapPatch(string pattern, RequestDelegate handler) => this.Map(HttpMethods.Patch, pattern, handler);
 
-    // On* reads better next to OnRequest — "when a GET for /hello arrives, do this" — and is the
-    // spelling the tier-1 examples use. Map* is kept because it is what ASP.NET Core calls these.
-
-    public HttpServer OnGet(string pattern, RequestDelegate handler) => this.Map(HttpMethods.Get, pattern, handler);
-
-    public HttpServer OnPost(string pattern, RequestDelegate handler) => this.Map(HttpMethods.Post, pattern, handler);
-
-    public HttpServer OnPut(string pattern, RequestDelegate handler) => this.Map(HttpMethods.Put, pattern, handler);
-
-    public HttpServer OnDelete(string pattern, RequestDelegate handler) => this.Map(HttpMethods.Delete, pattern, handler);
-
-    public HttpServer OnPatch(string pattern, RequestDelegate handler) => this.Map(HttpMethods.Patch, pattern, handler);
-
     // ---- Tier 2: middleware ----
 
     /// <summary>

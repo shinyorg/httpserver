@@ -62,27 +62,6 @@ public static class HttpServerResultExtensions
     public static HttpServer MapPatch(this HttpServer server, string pattern, Func<HttpContext, ValueTask<IResult>> handler)
         => server.Map(HttpMethods.Patch, pattern, handler);
 
-    public static HttpServer OnGet(this HttpServer server, string pattern, Func<HttpContext, IResult> handler)
-        => server.Map(HttpMethods.Get, pattern, handler);
-
-    public static HttpServer OnGet(this HttpServer server, string pattern, Func<HttpContext, ValueTask<IResult>> handler)
-        => server.Map(HttpMethods.Get, pattern, handler);
-
-    public static HttpServer OnPost(this HttpServer server, string pattern, Func<HttpContext, IResult> handler)
-        => server.Map(HttpMethods.Post, pattern, handler);
-
-    public static HttpServer OnPost(this HttpServer server, string pattern, Func<HttpContext, ValueTask<IResult>> handler)
-        => server.Map(HttpMethods.Post, pattern, handler);
-
-    public static HttpServer OnPut(this HttpServer server, string pattern, Func<HttpContext, IResult> handler)
-        => server.Map(HttpMethods.Put, pattern, handler);
-
-    public static HttpServer OnDelete(this HttpServer server, string pattern, Func<HttpContext, IResult> handler)
-        => server.Map(HttpMethods.Delete, pattern, handler);
-
-    public static HttpServer OnPatch(this HttpServer server, string pattern, Func<HttpContext, IResult> handler)
-        => server.Map(HttpMethods.Patch, pattern, handler);
-
     /// <summary>The <see cref="IResult"/> equivalent of <see cref="HttpServer.OnRequest(RequestDelegate)"/>.</summary>
     public static HttpServer OnRequest(this HttpServer server, Func<HttpContext, IResult> handler)
     {

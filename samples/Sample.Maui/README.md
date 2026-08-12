@@ -120,7 +120,9 @@ required. `Server/RequireAuthentication.cs` is the ten lines that close that.
 
 ## Browsing the device's files
 
-`/files` maps the file browser over `FileSystem.AppDataDirectory`:
+`/files` maps the file browser over `FileSystem.AppDataDirectory`. The **Server** tab shows it as a
+tappable link — the address on this network, because the endpoint hands out the contents of the
+device's storage and the tunnel is cleartext HTTP through a shared host:
 
 ```bash
 curl -u admin:PASSWORD https://xxxx.lhr.life/files                 # JSON listing

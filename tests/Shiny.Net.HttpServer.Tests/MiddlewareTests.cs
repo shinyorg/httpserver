@@ -59,7 +59,7 @@ public class HttpMiddlewareTests
         {
             app.Use(new TaggingMiddleware("outer", log));
             app.Use(new TaggingMiddleware("inner", log));
-            app.OnGet("/x", ctx => { log.Add("handler"); return ctx.Response.WriteAsync("ok"); });
+            app.MapGet("/x", ctx => { log.Add("handler"); return ctx.Response.WriteAsync("ok"); });
         });
 
         await server.Client.GetStringAsync("/x", Token);
@@ -76,7 +76,7 @@ public class HttpMiddlewareTests
         {
             app.Use(new TaggingMiddleware("class", log));
             app.Use(async (ctx, next) => { log.Add("lambda-in"); await next(ctx); log.Add("lambda-out"); });
-            app.OnGet("/x", ctx => { log.Add("handler"); return ctx.Response.WriteAsync("ok"); });
+            app.MapGet("/x", ctx => { log.Add("handler"); return ctx.Response.WriteAsync("ok"); });
         });
 
         await server.Client.GetStringAsync("/x", Token);
@@ -90,7 +90,7 @@ public class HttpMiddlewareTests
         await using var server = await TestServer.StartAsync(app =>
         {
             app.Use(new GateMiddleware());
-            app.OnGet("/secret", ctx => ctx.Response.WriteAsync("classified"));
+            app.MapGet("/secret", ctx => ctx.Response.WriteAsync("classified"));
         });
 
         var blocked = await server.Client.GetAsync("/secret", Token);
@@ -109,7 +109,7 @@ public class HttpMiddlewareTests
             app =>
             {
                 app.Use<GateMiddleware>();
-                app.OnGet("/secret", ctx => ctx.Response.WriteAsync("classified"));
+                app.MapGet("/secret", ctx => ctx.Response.WriteAsync("classified"));
             },
             builder => builder.Services.AddSingleton<GateMiddleware>()
         );
@@ -124,7 +124,7 @@ public class HttpMiddlewareTests
             app =>
             {
                 app.Use<ScopeProbeMiddleware>();
-                app.OnGet("/scope", ctx =>
+                app.MapGet("/scope", ctx =>
                 {
                     var fromHandler = ctx.GetRequiredService<RequestScopedValue>().Id;
                     var fromMiddleware = (Guid)ctx.Items["middleware-scope-id"]!;
@@ -152,7 +152,7 @@ public class HttpMiddlewareTests
         await using var server = await TestServer.StartAsync(app =>
         {
             app.Use<UnregisteredMiddleware>();
-            app.OnGet("/x", ctx => ctx.Response.WriteAsync("ok"));
+            app.MapGet("/x", ctx => ctx.Response.WriteAsync("ok"));
         });
 
         var response = await server.Client.GetAsync("/x", Token);
@@ -166,7 +166,7 @@ public class HttpMiddlewareTests
     [Fact]
     public async Task Rejects_middleware_registered_after_the_server_started()
     {
-        await using var server = await TestServer.StartAsync(app => app.OnGet("/x", ctx => ctx.Response.WriteAsync("ok")));
+        await using var server = await TestServer.StartAsync(app => app.MapGet("/x", ctx => ctx.Response.WriteAsync("ok")));
 
         Assert.Throws<InvalidOperationException>(() => server.Server.Use(new GateMiddleware()));
         Assert.Throws<InvalidOperationException>(() => server.Server.Use<GateMiddleware>());
@@ -187,7 +187,7 @@ public class HttpMiddlewareTests
 
                 return next(ctx);
             });
-            app.OnGet("/x", ctx => ctx.Response.WriteAsync("ok"));
+            app.MapGet("/x", ctx => ctx.Response.WriteAsync("ok"));
         });
 
         var response = await server.Client.GetAsync("/x", Token);
@@ -200,7 +200,7 @@ public class HttpMiddlewareTests
         // The alternative — silently dropping the header — would be a genuinely nasty afternoon.
         await using var server = await TestServer.StartAsync(app =>
         {
-            app.OnGet("/x", async ctx =>
+            app.MapGet("/x", async ctx =>
             {
                 await ctx.Response.WriteAsync("ok");
                 ctx.Response.Headers["X-Too-Late"] = "yes";

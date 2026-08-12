@@ -50,7 +50,7 @@ public static class HttpServerOpenApiExtensions
     /// Describes the most recently mapped route, which is how a raw handler gets into the document
     /// with something more useful than its path.
     /// <code>
-    /// app.OnGet("/ping", ctx => ctx.Response.WriteAsync("pong"))
+    /// app.MapGet("/ping", ctx => ctx.Response.WriteAsync("pong"))
     ///    .Describe(o =>
     ///    {
     ///        o.Summary = "Liveness probe";

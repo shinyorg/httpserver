@@ -13,7 +13,7 @@ public class TlsTests
     public async Task Serves_a_request_over_tls()
     {
         await using var server = await TlsTestServer.StartAsync(
-            app => app.OnGet("/ping", ctx => ctx.Response.WriteAsync("pong"))
+            app => app.MapGet("/ping", ctx => ctx.Response.WriteAsync("pong"))
         );
 
         Assert.Equal("pong", await server.Client.GetStringAsync("/ping", Token));
@@ -23,7 +23,7 @@ public class TlsTests
     public async Task Reports_the_https_scheme_and_an_encrypted_connection()
     {
         await using var server = await TlsTestServer.StartAsync(
-            app => app.OnGet("/info", ctx => ctx.Response.WriteAsync($"{ctx.Request.Scheme}/{ctx.Connection.IsEncrypted}"))
+            app => app.MapGet("/info", ctx => ctx.Response.WriteAsync($"{ctx.Request.Scheme}/{ctx.Connection.IsEncrypted}"))
         );
 
         Assert.Equal("https/True", await server.Client.GetStringAsync("/info", Token));
@@ -34,7 +34,7 @@ public class TlsTests
     public async Task Negotiates_http2_over_alpn()
     {
         await using var server = await TlsTestServer.StartAsync(
-            app => app.OnGet("/proto", ctx => ctx.Response.WriteAsync(ctx.Request.Protocol)),
+            app => app.MapGet("/proto", ctx => ctx.Response.WriteAsync(ctx.Request.Protocol)),
             configureClient: client =>
             {
                 client.DefaultRequestVersion = HttpVersion.Version20;
@@ -52,7 +52,7 @@ public class TlsTests
     public async Task Falls_back_to_http11_when_http2_is_turned_off()
     {
         await using var server = await TlsTestServer.StartAsync(
-            app => app.OnGet("/proto", ctx => ctx.Response.WriteAsync(ctx.Request.Protocol)),
+            app => app.MapGet("/proto", ctx => ctx.Response.WriteAsync(ctx.Request.Protocol)),
             configureOptions: o => o.Http2.Enabled = false,
             configureClient: client =>
             {
@@ -72,7 +72,7 @@ public class TlsTests
     public async Task Keeps_serving_http11_clients_on_a_server_offering_http2()
     {
         await using var server = await TlsTestServer.StartAsync(
-            app => app.OnGet("/proto", ctx => ctx.Response.WriteAsync(ctx.Request.Protocol))
+            app => app.MapGet("/proto", ctx => ctx.Response.WriteAsync(ctx.Request.Protocol))
         );
 
         // Default client version is 1.1 — offering h2 must not break a client that never asks.
@@ -111,7 +111,7 @@ public class TlsTests
         };
 
         await using var server = new HttpServer(options);
-        server.OnGet("/", ctx => ctx.Response.WriteAsync("ok"));
+        server.MapGet("/", ctx => ctx.Response.WriteAsync("ok"));
         await server.StartAsync(Token);
 
         var port = new Uri(server.ListenUrl!).Port;
@@ -137,7 +137,7 @@ public class TlsTests
         };
 
         await using var server = new HttpServer(options);
-        server.OnGet("/", ctx => ctx.Response.WriteAsync("ok"));
+        server.MapGet("/", ctx => ctx.Response.WriteAsync("ok"));
         await server.StartAsync(Token);
 
         var port = new Uri(server.ListenUrl!).Port;
@@ -159,7 +159,7 @@ public class TlsTests
         });
 
         await using var server = await TlsTestServer.StartAsync(
-            app => app.OnGet("/who", ctx => ctx.Response.WriteAsync(ctx.Connection.ClientCertificate?.Subject ?? "anonymous")),
+            app => app.MapGet("/who", ctx => ctx.Response.WriteAsync(ctx.Connection.ClientCertificate?.Subject ?? "anonymous")),
             configureOptions: o => o.Https!.ClientCertificateMode = ClientCertificateMode.RequireCertificate
         );
 
@@ -172,7 +172,7 @@ public class TlsTests
     public async Task Rejects_a_client_that_presents_no_certificate_when_one_is_required()
     {
         await using var server = await TlsTestServer.StartAsync(
-            app => app.OnGet("/who", ctx => ctx.Response.WriteAsync("in")),
+            app => app.MapGet("/who", ctx => ctx.Response.WriteAsync("in")),
             configureOptions: o => o.Https!.ClientCertificateMode = ClientCertificateMode.RequireCertificate
         );
 
@@ -184,7 +184,7 @@ public class TlsTests
     public async Task Serves_a_client_with_no_certificate_when_one_is_merely_allowed()
     {
         await using var server = await TlsTestServer.StartAsync(
-            app => app.OnGet("/who", ctx => ctx.Response.WriteAsync(ctx.Connection.ClientCertificate?.Subject ?? "anonymous")),
+            app => app.MapGet("/who", ctx => ctx.Response.WriteAsync(ctx.Connection.ClientCertificate?.Subject ?? "anonymous")),
             configureOptions: o => o.Https!.ClientCertificateMode = ClientCertificateMode.AllowCertificate
         );
 
@@ -201,7 +201,7 @@ public class TlsTests
         });
 
         await using var server = await TlsTestServer.StartAsync(
-            app => app.OnGet("/who", ctx => ctx.Response.WriteAsync("in")),
+            app => app.MapGet("/who", ctx => ctx.Response.WriteAsync("in")),
             configureOptions: o =>
             {
                 o.Https!.ClientCertificateMode = ClientCertificateMode.RequireCertificate;
@@ -219,7 +219,7 @@ public class TlsTests
     public async Task A_stalled_handshake_does_not_block_other_connections()
     {
         await using var server = await TlsTestServer.StartAsync(
-            app => app.OnGet("/ping", ctx => ctx.Response.WriteAsync("pong"))
+            app => app.MapGet("/ping", ctx => ctx.Response.WriteAsync("pong"))
         );
 
         // Connects and then says nothing at all. If the handshake ran on the accept loop this
@@ -237,7 +237,7 @@ public class TlsTests
     public async Task Survives_a_client_speaking_cleartext_to_a_tls_port()
     {
         await using var server = await TlsTestServer.StartAsync(
-            app => app.OnGet("/ping", ctx => ctx.Response.WriteAsync("pong"))
+            app => app.MapGet("/ping", ctx => ctx.Response.WriteAsync("pong"))
         );
 
         using (var confused = new TcpClient())
@@ -253,7 +253,7 @@ public class TlsTests
     public async Task Times_out_a_handshake_that_never_completes()
     {
         await using var server = await TlsTestServer.StartAsync(
-            app => app.OnGet("/ping", ctx => ctx.Response.WriteAsync("pong")),
+            app => app.MapGet("/ping", ctx => ctx.Response.WriteAsync("pong")),
             configureOptions: o => o.Https!.HandshakeTimeout = TimeSpan.FromMilliseconds(250)
         );
 

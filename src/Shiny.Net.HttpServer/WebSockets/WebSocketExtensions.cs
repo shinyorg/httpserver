@@ -44,7 +44,7 @@ public static class WebSocketExtensions
     /// handler returns, so a receive loop belongs inside it rather than on a background task.
     /// </para>
     /// <code>
-    /// app.OnGet("/ws", async ctx =>
+    /// app.MapGet("/ws", async ctx =>
     /// {
     ///     if (!ctx.Request.IsWebSocketRequest())
     ///     {

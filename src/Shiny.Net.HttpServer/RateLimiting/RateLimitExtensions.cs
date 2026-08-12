@@ -81,7 +81,7 @@ public static class HttpServerRateLimitExtensions
     /// <summary>
     /// Applies a named policy to the most recently mapped route.
     /// <code>
-    /// app.OnPost("/upload", Handler).RequireRateLimiting("uploads");
+    /// app.MapPost("/upload", Handler).RequireRateLimiting("uploads");
     /// </code>
     /// </summary>
     public static HttpServer RequireRateLimiting(this HttpServer server, string policyName)

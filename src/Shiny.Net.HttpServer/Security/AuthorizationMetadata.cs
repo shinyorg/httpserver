@@ -26,7 +26,7 @@ public static class HttpServerAuthorizationExtensions
     /// <summary>
     /// Requires authorization for the most recently mapped route.
     /// <code>
-    /// app.OnGet("/secrets", ctx => ...).RequireAuthorization("admin");
+    /// app.MapGet("/secrets", ctx => ...).RequireAuthorization("admin");
     /// </code>
     /// With no policy named, the default policy applies — an authenticated caller.
     /// </summary>

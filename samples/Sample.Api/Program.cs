@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 using Sample.Api;
 using Shiny.Net.HttpServer;
 using Shiny.Net.HttpServer.Cors;
+using Shiny.Net.HttpServer.FileBrowser;
 using Shiny.Net.HttpServer.Jwt;
 using Shiny.Net.HttpServer.OpenApi;
 using Shiny.Net.HttpServer.RateLimiting;
@@ -15,7 +16,7 @@ using Shiny.Net.HttpServer.WebDav;
 // The whole ramp, in one app. Every tier below is optional and they all compose:
 //
 //   Tier 0  OnRequest      one delegate, no routing
-//   Tier 1  OnGet/OnPost   raw handlers behind a route template
+//   Tier 1  MapGet/MapPost raw handlers behind a route template
 //   Tier 2  Use            middleware, ASP.NET Core shaped
 //   Tier 3  [Route]        generated typed endpoints — see WidgetEndpoints.cs
 // ---------------------------------------------------------------------------
@@ -129,7 +130,7 @@ app.MapOpenApi(configure: o =>
 // --- Tier 1: routed raw handlers ---
 //
 // Describe() puts a raw route in the OpenAPI document with more than just its path.
-app.OnGet("/ping", ctx => ctx.Response.WriteAsync("pong"))
+app.MapGet("/ping", ctx => ctx.Response.WriteAsync("pong"))
    .Describe(o =>
    {
        o.Summary = "Liveness probe";
@@ -137,22 +138,22 @@ app.OnGet("/ping", ctx => ctx.Response.WriteAsync("pong"))
        o.Responses.Add(new ApiResponse { StatusCode = 200, Type = typeof(string), ContentType = "text/plain" });
    });
 
-app.OnGet("/hello/{name}", ctx =>
+app.MapGet("/hello/{name}", ctx =>
 {
     var greeter = ctx.GetRequiredService<IGreeter>();
     return ctx.Response.WriteAsync(greeter.Greet(ctx.Request.RouteValues["name"]!));
 });
 
 // Per-route policies. Each applies to the route just mapped, the same way RequireAuthorization does.
-app.OnGet("/status", ctx => ctx.Response.WriteAsync("ok"))
+app.MapGet("/status", ctx => ctx.Response.WriteAsync("ok"))
    .RequireCors("public")
    .DisableRateLimiting();
 
-app.OnGet("/admin/keys", ctx => ctx.Response.WriteAsync("nothing to see here"))
+app.MapGet("/admin/keys", ctx => ctx.Response.WriteAsync("nothing to see here"))
    .RequireIpFilter("admin");
 
 // IResult with JsonTypeInfo passed directly — the most explicit AOT-safe JSON you can write.
-app.OnGet("/users/{id:int}", ctx =>
+app.MapGet("/users/{id:int}", ctx =>
 {
     ctx.Request.RouteValues.TryGetInt32("id", out var id);
     return id is > 0 and < 1000
@@ -160,42 +161,66 @@ app.OnGet("/users/{id:int}", ctx =>
         : Results.NotFound();
 });
 
-app.OnGet("/files/{*path}", ctx =>
+// A catch-all route parameter: everything after the prefix, slashes included, arrives as one value.
+app.MapGet("/catch-all/{*path}", ctx =>
     Results.Text($"catch-all captured: {ctx.Request.RouteValues["path"]}"));
 
 // Proves the scope really is per request: both resolutions inside one request are the same
 // instance, and a second request gets a different one.
-app.OnGet("/scope", ctx =>
+app.MapGet("/scope", ctx =>
 {
     var a = ctx.GetRequiredService<RequestId>();
     var b = ctx.GetRequiredService<RequestId>();
     return ctx.Response.WriteAsync($"same-instance={ReferenceEquals(a, b)} id={a.Value}");
 });
 
-app.OnPost("/echo", async ctx =>
+app.MapPost("/echo", async ctx =>
 {
     var body = await ctx.Request.ReadBodyAsStringAsync();
     await ctx.Response.WriteAsync($"echo:{body}");
 });
 
-app.OnGet("/boom", _ => throw new InvalidOperationException("deliberate failure"));
+app.MapGet("/boom", _ => throw new InvalidOperationException("deliberate failure"));
 
-// --- A directory, as a drive ---
+// --- One directory, served two ways ---
+//
+// The same folder is mapped below as a JSON API and as a drive. Which one a caller wants depends
+// entirely on what the caller is: a script speaks HTTP, a desktop speaks WebDAV.
+var filesRoot = Directory.CreateDirectory(Path.Combine(AppContext.BaseDirectory, "files-root"));
+
+if (!File.Exists(Path.Combine(filesRoot.FullName, "readme.txt")))
+    File.WriteAllText(Path.Combine(filesRoot.FullName, "readme.txt"), "Edit me from your file manager.\n");
+
+// --- A directory, as an API ---
+//
+//   curl http://localhost:8080/files                                   # JSON listing
+//   curl http://localhost:8080/files/readme.txt                        # the bytes
+//   curl -X PUT --data 'hello' -H "Authorization: Bearer $TOKEN" http://localhost:8080/files/notes.txt
+//   curl -X DELETE -H "Authorization: Bearer $TOKEN" http://localhost:8080/files/notes.txt
+//
+// The file browser is mapped as routes rather than middleware, and that is the whole reason it
+// hands its endpoints back: reads stay open here while anything that changes a file needs an admin
+// token — a distinction middleware could not express. Get a token from POST /api/auth/login as
+// ada/hunter2, or swap the call below for .RequireAuthorization() to close the reads too.
+app.MapFileBrowser("/files", o =>
+{
+    o.RootPath = filesRoot.FullName;
+    o.AllowWrite = true;
+    o.AllowDelete = true;
+})
+.RequireAuthorizationForChanges("admin");
+
+// --- The same directory, as a drive ---
 //
 // One call maps the twenty-two routes of an RFC 4918 class 1 & 2 WebDAV mount. Point Finder (Go →
 // Connect to Server) or Explorer (Map network drive) at http://localhost:8080/dav and the folder
-// below opens as a drive — no client to write, and no client to install.
+// opens as a drive — no client to write, and no client to install.
 //
 // A browser GET of the same URL shows a plain HTML index, which is the quickest way to see it
 // working without mounting anything.
-var davRoot = Directory.CreateDirectory(Path.Combine(AppContext.BaseDirectory, "dav-root"));
-
-if (!File.Exists(Path.Combine(davRoot.FullName, "readme.txt")))
-    File.WriteAllText(Path.Combine(davRoot.FullName, "readme.txt"), "Edit me from your file manager.\n");
-
 app.MapWebDav("/dav", o =>
 {
-    o.RootPath = davRoot.FullName;
+    o.RootPath = filesRoot.FullName;
     o.AllowWrite = true;
     o.AllowDelete = true;
     o.DisplayName = "Sample";
@@ -213,9 +238,9 @@ app.MapWebDav("/dav", o =>
 // sample exposes it over HTTP for demonstration, but the same two calls sit behind a toggle in a
 // MAUI app. With AddHttpServer(..., autoStart: false) the server is registered and configured but
 // never listening until something asks it to.
-app.OnGet("/server/status", ctx => ctx.Response.WriteAsync($"{app.State} {app.ListenUrl}"));
+app.MapGet("/server/status", ctx => ctx.Response.WriteAsync($"{app.State} {app.ListenUrl}"));
 
-app.OnPost("/server/restart", async ctx =>
+app.MapPost("/server/restart", async ctx =>
 {
     // Not awaited inline: restarting tears down the connection this request arrived on.
     _ = Task.Run(async () =>

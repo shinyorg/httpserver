@@ -12,7 +12,7 @@ namespace Shiny.Net.HttpServer.Security;
 /// });
 ///
 /// app.UseIpFilter();
-/// app.OnGet("/admin/keys", Handler).RequireIpFilter("admin");
+/// app.MapGet("/admin/keys", Handler).RequireIpFilter("admin");
 /// </code>
 /// </summary>
 public sealed class IpFilterOptions

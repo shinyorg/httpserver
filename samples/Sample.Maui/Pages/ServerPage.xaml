@@ -67,6 +67,21 @@
                     <Label Text="{Binding McpUrl, TargetNullValue='Server not started'}"
                            LineBreakMode="CharacterWrap" />
 
+                    <!-- The file browser over the app's own storage. Tapping it opens the JSON
+                         listing of the root; every entry's path hangs off this address, so the
+                         browser walks the tree and curl scripts against the same URLs. The mount
+                         below is the same directory for a client that would rather have a drive. -->
+                    <Label Text="File browser — the app's storage as JSON" TextColor="Gray" Margin="0,6,0,0" />
+                    <Label Text="{Binding FilesUrl, TargetNullValue='Server not started'}"
+                           TextColor="{StaticResource Primary}"
+                           TextDecorations="Underline"
+                           LineBreakMode="CharacterWrap">
+                        <Label.GestureRecognizers>
+                            <TapGestureRecognizer Command="{Binding OpenUrlCommand}"
+                                                  CommandParameter="{Binding FilesUrl}" />
+                        </Label.GestureRecognizers>
+                    </Label>
+
                     <!-- The WebDAV mount, both ways to reach it. Finder: Go → Connect to Server.
                          Explorer: Map network drive. Same server, same password — the app's storage
                          as a drive. Tapping either one browses the mount here instead: GET on a

@@ -205,7 +205,7 @@ public class Http2InteropTests
     public async Task Serves_a_request_over_http2()
     {
         await using var server = await TestServer.StartAsync(
-            app => app.OnGet("/ping", ctx => ctx.Response.WriteAsync($"pong via {ctx.Request.Protocol}"))
+            app => app.MapGet("/ping", ctx => ctx.Response.WriteAsync($"pong via {ctx.Request.Protocol}"))
         );
 
         using var client = CreateClient(server.Port);
@@ -218,7 +218,7 @@ public class Http2InteropTests
     [Fact]
     public async Task Carries_headers_both_ways()
     {
-        await using var server = await TestServer.StartAsync(app => app.OnGet("/echo", ctx =>
+        await using var server = await TestServer.StartAsync(app => app.MapGet("/echo", ctx =>
         {
             ctx.Response.Headers["X-Server-Header"] = "from-server";
             return ctx.Response.WriteAsync(ctx.Request.Headers.GetFirst("X-Client-Header") ?? "(none)");
@@ -240,8 +240,8 @@ public class Http2InteropTests
     {
         await using var server = await TestServer.StartAsync(app =>
         {
-            app.OnGet("/users/{id:int}", ctx => ctx.Response.WriteAsync($"user {ctx.Request.RouteValues["id"]}"));
-            app.OnGet("/search", ctx => ctx.Response.WriteAsync($"q={ctx.Request.Query.GetFirst("q")}"));
+            app.MapGet("/users/{id:int}", ctx => ctx.Response.WriteAsync($"user {ctx.Request.RouteValues["id"]}"));
+            app.MapGet("/search", ctx => ctx.Response.WriteAsync($"q={ctx.Request.Query.GetFirst("q")}"));
         });
 
         using var client = CreateClient(server.Port);
@@ -253,7 +253,7 @@ public class Http2InteropTests
     [Fact]
     public async Task Reads_a_request_body()
     {
-        await using var server = await TestServer.StartAsync(app => app.OnPost("/echo", async ctx =>
+        await using var server = await TestServer.StartAsync(app => app.MapPost("/echo", async ctx =>
         {
             var body = await ctx.Request.ReadBodyAsStringAsync(cancellationToken: ctx.RequestAborted);
             await ctx.Response.WriteAsync($"echo:{body}");
@@ -272,7 +272,7 @@ public class Http2InteropTests
         // in both directions.
         var payload = new string('x', 512 * 1024);
 
-        await using var server = await TestServer.StartAsync(app => app.OnPost("/big", async ctx =>
+        await using var server = await TestServer.StartAsync(app => app.MapPost("/big", async ctx =>
         {
             var body = await ctx.Request.ReadBodyAsStringAsync(
                 maxLength: 4 * 1024 * 1024,
@@ -293,7 +293,7 @@ public class Http2InteropTests
     [Fact]
     public async Task Multiplexes_concurrent_requests_on_one_connection()
     {
-        await using var server = await TestServer.StartAsync(app => app.OnGet("/slow/{id}", async ctx =>
+        await using var server = await TestServer.StartAsync(app => app.MapGet("/slow/{id}", async ctx =>
         {
             await Task.Delay(50, ctx.RequestAborted);
             await ctx.Response.WriteAsync(ctx.Request.RouteValues["id"]!);
@@ -315,8 +315,8 @@ public class Http2InteropTests
     {
         await using var server = await TestServer.StartAsync(app =>
         {
-            app.OnGet("/missing", _ => Results.NotFound());
-            app.OnGet("/json", _ => Results.Ok(new Thing(3, "over-h2"), TestJson.Default.Thing));
+            app.MapGet("/missing", _ => Results.NotFound());
+            app.MapGet("/json", _ => Results.Ok(new Thing(3, "over-h2"), TestJson.Default.Thing));
         });
 
         using var client = CreateClient(server.Port);
@@ -332,7 +332,7 @@ public class Http2InteropTests
     public async Task Reuses_one_connection_across_requests()
     {
         await using var server = await TestServer.StartAsync(
-            app => app.OnGet("/id", ctx => ctx.Response.WriteAsync(ctx.Connection.ConnectionId))
+            app => app.MapGet("/id", ctx => ctx.Response.WriteAsync(ctx.Connection.ConnectionId))
         );
 
         using var client = CreateClient(server.Port);
@@ -347,7 +347,7 @@ public class Http2InteropTests
     public async Task Still_serves_http1_clients_on_the_same_port()
     {
         await using var server = await TestServer.StartAsync(
-            app => app.OnGet("/ping", ctx => ctx.Response.WriteAsync(ctx.Request.Protocol))
+            app => app.MapGet("/ping", ctx => ctx.Response.WriteAsync(ctx.Request.Protocol))
         );
 
         // The default client speaks HTTP/1.1; protocol selection is per connection, not per server.
@@ -361,7 +361,7 @@ public class Http2InteropTests
     public async Task Falls_back_to_http1_when_http2_is_turned_off()
     {
         await using var server = await TestServer.StartAsync(
-            app => app.OnGet("/ping", ctx => ctx.Response.WriteAsync(ctx.Request.Protocol)),
+            app => app.MapGet("/ping", ctx => ctx.Response.WriteAsync(ctx.Request.Protocol)),
             builder => builder.Options.Http2.Enabled = false
         );
 
@@ -371,7 +371,7 @@ public class Http2InteropTests
     [Fact]
     public async Task Streams_a_response_written_in_pieces()
     {
-        await using var server = await TestServer.StartAsync(app => app.OnGet("/stream", async ctx =>
+        await using var server = await TestServer.StartAsync(app => app.MapGet("/stream", async ctx =>
         {
             ctx.Response.ContentType = "text/plain";
             await ctx.Response.StartAsync(ctx.RequestAborted);
@@ -392,7 +392,7 @@ public class Http2InteropTests
     [Fact]
     public async Task Reports_the_client_address_and_authority()
     {
-        await using var server = await TestServer.StartAsync(app => app.OnGet("/who", ctx =>
+        await using var server = await TestServer.StartAsync(app => app.MapGet("/who", ctx =>
             ctx.Response.WriteAsync($"{ctx.Request.Host}|{ctx.Connection.RemoteIpAddress}")));
 
         using var client = CreateClient(server.Port);

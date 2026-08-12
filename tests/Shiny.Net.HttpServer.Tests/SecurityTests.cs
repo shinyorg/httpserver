@@ -53,8 +53,8 @@ public class AuthorizationTests
             app.UseAuthentication();
             app.UseAuthorization();
             app.MapSecureEndpoints();
-            app.OnGet("/open", ctx => ctx.Response.WriteAsync("open"));
-            app.OnGet("/closed", ctx => ctx.Response.WriteAsync("closed")).RequireAuthorization();
+            app.MapGet("/open", ctx => ctx.Response.WriteAsync("open"));
+            app.MapGet("/closed", ctx => ctx.Response.WriteAsync("closed")).RequireAuthorization();
             configure?.Invoke(app);
         },
         builder =>
@@ -232,7 +232,7 @@ public class AuthorizationTests
     [Fact]
     public async Task Populates_the_user_even_on_an_open_endpoint()
     {
-        await using var server = await StartAsync(app => app.OnGet("/whoami", ctx =>
+        await using var server = await StartAsync(app => app.MapGet("/whoami", ctx =>
             ctx.Response.WriteAsync(ctx.User.Identity?.Name ?? ctx.User.FindFirst(JwtClaimNames.Subject)?.Value ?? "anonymous")));
 
         Assert.Equal("anonymous", await server.Client.GetStringAsync("/whoami", Token));
@@ -263,7 +263,7 @@ public class AuthorizationTests
             {
                 app.UseAuthentication();
                 app.UseAuthorization();
-                app.OnGet("/x", ctx => ctx.Response.WriteAsync("x")).RequireAuthorization("nonexistent");
+                app.MapGet("/x", ctx => ctx.Response.WriteAsync("x")).RequireAuthorization("nonexistent");
             },
             builder =>
             {
@@ -287,7 +287,7 @@ public class AuthorizationTests
     public async Task Custom_policies_can_read_the_request()
     {
         await using var server = await StartAsync(
-            app => app.OnGet("/users/{id}/secrets", ctx => ctx.Response.WriteAsync("yours"))
+            app => app.MapGet("/users/{id}/secrets", ctx => ctx.Response.WriteAsync("yours"))
                       .RequireAuthorization("self"),
             authorization: o => o.AddPolicy("self", p => p.RequireAssertion(
                 ctx => ctx.User.FindFirst(JwtClaimNames.Subject)?.Value

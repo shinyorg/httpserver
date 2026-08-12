@@ -24,9 +24,9 @@ public class EndToEndTests
     {
         await using var server = await TestServer.StartAsync(app =>
         {
-            app.OnGet("/ping", ctx => ctx.Response.WriteAsync("pong"));
-            app.OnPost("/ping", ctx => ctx.Response.WriteAsync("posted"));
-            app.OnGet("/users/{id:int}", ctx => ctx.Response.WriteAsync($"user {ctx.Request.RouteValues["id"]}"));
+            app.MapGet("/ping", ctx => ctx.Response.WriteAsync("pong"));
+            app.MapPost("/ping", ctx => ctx.Response.WriteAsync("posted"));
+            app.MapGet("/users/{id:int}", ctx => ctx.Response.WriteAsync($"user {ctx.Request.RouteValues["id"]}"));
         });
 
         Assert.Equal("pong", await server.Client.GetStringAsync("/ping", Token));
@@ -39,7 +39,7 @@ public class EndToEndTests
     [Fact]
     public async Task Returns_404_when_no_route_matches_and_there_is_no_fallback()
     {
-        await using var server = await TestServer.StartAsync(app => app.OnGet("/ping", ctx => ctx.Response.WriteAsync("pong")));
+        await using var server = await TestServer.StartAsync(app => app.MapGet("/ping", ctx => ctx.Response.WriteAsync("pong")));
 
         var response = await server.Client.GetAsync("/nope", Token);
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
@@ -50,7 +50,7 @@ public class EndToEndTests
     {
         await using var server = await TestServer.StartAsync(app =>
         {
-            app.OnGet("/ping", ctx => ctx.Response.WriteAsync("pong"));
+            app.MapGet("/ping", ctx => ctx.Response.WriteAsync("pong"));
             app.OnRequest(ctx => ctx.Response.WriteAsync("fallback"));
         });
 
@@ -60,7 +60,7 @@ public class EndToEndTests
     [Fact]
     public async Task Returns_405_with_an_Allow_header()
     {
-        await using var server = await TestServer.StartAsync(app => app.OnGet("/ping", ctx => ctx.Response.WriteAsync("pong")));
+        await using var server = await TestServer.StartAsync(app => app.MapGet("/ping", ctx => ctx.Response.WriteAsync("pong")));
 
         var response = await server.Client.PostAsync("/ping", new StringContent(""), Token);
 
@@ -73,7 +73,7 @@ public class EndToEndTests
     [Fact]
     public async Task Answers_HEAD_from_the_GET_handler_without_a_body()
     {
-        await using var server = await TestServer.StartAsync(app => app.OnGet("/ping", ctx => ctx.Response.WriteAsync("pong")));
+        await using var server = await TestServer.StartAsync(app => app.MapGet("/ping", ctx => ctx.Response.WriteAsync("pong")));
 
         var response = await server.Client.SendAsync(new HttpRequestMessage(HttpMethod.Head, "/ping"), Token);
 
@@ -85,7 +85,7 @@ public class EndToEndTests
     [Fact]
     public async Task Reads_a_content_length_body()
     {
-        await using var server = await TestServer.StartAsync(app => app.OnPost("/echo", async ctx =>
+        await using var server = await TestServer.StartAsync(app => app.MapPost("/echo", async ctx =>
         {
             var body = await ctx.Request.ReadBodyAsStringAsync(cancellationToken: ctx.RequestAborted);
             await ctx.Response.WriteAsync($"echo:{body}");
@@ -98,7 +98,7 @@ public class EndToEndTests
     [Fact]
     public async Task Reads_a_chunked_body()
     {
-        await using var server = await TestServer.StartAsync(app => app.OnPost("/echo", async ctx =>
+        await using var server = await TestServer.StartAsync(app => app.MapPost("/echo", async ctx =>
         {
             Assert.True(ctx.Request.IsChunked);
             var body = await ctx.Request.ReadBodyAsStringAsync(cancellationToken: ctx.RequestAborted);
@@ -119,7 +119,7 @@ public class EndToEndTests
     [Fact]
     public async Task Streams_a_response_of_unknown_length_as_chunked()
     {
-        await using var server = await TestServer.StartAsync(app => app.OnGet("/stream", async ctx =>
+        await using var server = await TestServer.StartAsync(app => app.MapGet("/stream", async ctx =>
         {
             ctx.Response.ContentType = "text/plain";
             await ctx.Response.StartAsync(ctx.RequestAborted);
@@ -140,7 +140,7 @@ public class EndToEndTests
     [Fact]
     public async Task Reuses_a_keep_alive_connection_for_several_requests()
     {
-        await using var server = await TestServer.StartAsync(app => app.OnGet("/n", ctx =>
+        await using var server = await TestServer.StartAsync(app => app.MapGet("/n", ctx =>
             ctx.Response.WriteAsync(ctx.Connection.ConnectionId)));
 
         var first = await server.Client.GetStringAsync("/n", Token);
@@ -155,7 +155,7 @@ public class EndToEndTests
     [Fact]
     public async Task Serves_pipelined_requests_on_one_connection()
     {
-        await using var server = await TestServer.StartAsync(app => app.OnGet("/ping", ctx => ctx.Response.WriteAsync("pong")));
+        await using var server = await TestServer.StartAsync(app => app.MapGet("/ping", ctx => ctx.Response.WriteAsync("pong")));
 
         var raw = await server.SendRawAsync(
             "GET /ping HTTP/1.1\r\nHost: localhost\r\n\r\n" +
@@ -169,7 +169,7 @@ public class EndToEndTests
     [Fact]
     public async Task Rejects_an_HTTP_1_1_request_with_no_Host_header()
     {
-        await using var server = await TestServer.StartAsync(app => app.OnGet("/ping", ctx => ctx.Response.WriteAsync("pong")));
+        await using var server = await TestServer.StartAsync(app => app.MapGet("/ping", ctx => ctx.Response.WriteAsync("pong")));
 
         var raw = await server.SendRawAsync("GET /ping HTTP/1.1\r\n\r\n");
         Assert.Contains("400", raw);
@@ -178,7 +178,7 @@ public class EndToEndTests
     [Fact]
     public async Task Rejects_a_request_with_both_chunked_and_content_length()
     {
-        await using var server = await TestServer.StartAsync(app => app.OnPost("/x", ctx => ctx.Response.WriteAsync("ok")));
+        await using var server = await TestServer.StartAsync(app => app.MapPost("/x", ctx => ctx.Response.WriteAsync("ok")));
 
         var raw = await server.SendRawAsync(
             "POST /x HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nContent-Length: 5\r\n\r\n0\r\n\r\n"
@@ -190,7 +190,7 @@ public class EndToEndTests
     [Fact]
     public async Task Rejects_duplicate_Host_headers()
     {
-        await using var server = await TestServer.StartAsync(app => app.OnGet("/x", ctx => ctx.Response.WriteAsync("ok")));
+        await using var server = await TestServer.StartAsync(app => app.MapGet("/x", ctx => ctx.Response.WriteAsync("ok")));
 
         var raw = await server.SendRawAsync("GET /x HTTP/1.1\r\nHost: a\r\nHost: b\r\n\r\n");
         Assert.Contains("400", raw);
@@ -200,7 +200,7 @@ public class EndToEndTests
     public async Task Turns_an_unhandled_exception_into_a_500()
     {
         await using var server = await TestServer.StartAsync(
-            app => app.OnGet("/boom", _ => throw new InvalidOperationException("deliberate")),
+            app => app.MapGet("/boom", _ => throw new InvalidOperationException("deliberate")),
             builder => builder.Options.HideExceptionDetails = true
         );
 
@@ -219,7 +219,7 @@ public class EndToEndTests
         {
             app.Use(async (ctx, next) => { order.Add("outer-in"); await next(ctx); order.Add("outer-out"); });
             app.Use(async (ctx, next) => { order.Add("inner-in"); await next(ctx); order.Add("inner-out"); });
-            app.OnGet("/x", ctx => { order.Add("handler"); return ctx.Response.WriteAsync("ok"); });
+            app.MapGet("/x", ctx => { order.Add("handler"); return ctx.Response.WriteAsync("ok"); });
         });
 
         await server.Client.GetStringAsync("/x", Token);
@@ -242,7 +242,7 @@ public class EndToEndTests
                 }
                 await next(ctx);
             });
-            app.OnGet("/secret", ctx => ctx.Response.WriteAsync("classified"));
+            app.MapGet("/secret", ctx => ctx.Response.WriteAsync("classified"));
         });
 
         var denied = await server.Client.GetAsync("/secret", Token);
@@ -257,7 +257,7 @@ public class EndToEndTests
     [Fact]
     public async Task Handles_many_concurrent_requests()
     {
-        await using var server = await TestServer.StartAsync(app => app.OnGet("/slow", async ctx =>
+        await using var server = await TestServer.StartAsync(app => app.MapGet("/slow", async ctx =>
         {
             await Task.Delay(20, ctx.RequestAborted);
             await ctx.Response.WriteAsync("done");
@@ -275,12 +275,12 @@ public class EndToEndTests
     {
         await using var server = await TestServer.StartAsync(app =>
         {
-            app.OnGet("/set", ctx =>
+            app.MapGet("/set", ctx =>
             {
                 ctx.Response.Cookies.Append("session", "abc123");
                 return ctx.Response.WriteAsync("set");
             });
-            app.OnGet("/read", ctx => ctx.Response.WriteAsync(ctx.Request.Cookies["session"] ?? "(none)"));
+            app.MapGet("/read", ctx => ctx.Response.WriteAsync(ctx.Request.Cookies["session"] ?? "(none)"));
         });
 
         var set = await server.Client.GetAsync("/set", Token);
@@ -297,7 +297,7 @@ public class EndToEndTests
         var started = new TaskCompletionSource();
         var release = new TaskCompletionSource();
 
-        await using var server = await TestServer.StartAsync(app => app.OnGet("/hold", async ctx =>
+        await using var server = await TestServer.StartAsync(app => app.MapGet("/hold", async ctx =>
         {
             started.SetResult();
             await release.Task;
@@ -339,7 +339,7 @@ public class DependencyInjectionTests
     public async Task Resolves_the_same_scoped_instance_within_one_request()
     {
         await using var server = await TestServer.StartAsync(
-            app => app.OnGet("/scope", ctx =>
+            app => app.MapGet("/scope", ctx =>
             {
                 var a = ctx.GetRequiredService<Marker>();
                 var b = ctx.GetRequiredService<Marker>();
@@ -355,7 +355,7 @@ public class DependencyInjectionTests
     public async Task Resolves_a_different_scoped_instance_per_request()
     {
         await using var server = await TestServer.StartAsync(
-            app => app.OnGet("/id", ctx => ctx.Response.WriteAsync(ctx.GetRequiredService<Marker>().Id.ToString())),
+            app => app.MapGet("/id", ctx => ctx.Response.WriteAsync(ctx.GetRequiredService<Marker>().Id.ToString())),
             builder => builder.Services.AddScoped<Marker>()
         );
 
@@ -369,7 +369,7 @@ public class DependencyInjectionTests
     public async Task Shares_a_singleton_across_requests()
     {
         await using var server = await TestServer.StartAsync(
-            app => app.OnGet("/id", ctx => ctx.Response.WriteAsync(ctx.GetRequiredService<Marker>().Id.ToString())),
+            app => app.MapGet("/id", ctx => ctx.Response.WriteAsync(ctx.GetRequiredService<Marker>().Id.ToString())),
             builder => builder.Services.AddSingleton<Marker>()
         );
 
@@ -385,7 +385,7 @@ public class DependencyInjectionTests
         TrackedDisposable.DisposeCount = 0;
 
         await using var server = await TestServer.StartAsync(
-            app => app.OnGet("/x", ctx =>
+            app => app.MapGet("/x", ctx =>
             {
                 ctx.GetRequiredService<TrackedDisposable>();
                 return ctx.Response.WriteAsync("ok");
@@ -403,7 +403,7 @@ public class DependencyInjectionTests
     public async Task Works_without_a_container_at_all()
     {
         var server = new HttpServer(new HttpServerOptions { Port = 0, Address = IPAddress.Loopback });
-        server.OnGet("/x", ctx => ctx.Response.WriteAsync(ctx.GetService<Marker>() is null ? "none" : "resolved"));
+        server.MapGet("/x", ctx => ctx.Response.WriteAsync(ctx.GetService<Marker>() is null ? "none" : "resolved"));
 
         await using (server)
         {

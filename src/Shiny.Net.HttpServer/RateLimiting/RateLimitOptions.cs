@@ -11,7 +11,7 @@ namespace Shiny.Net.HttpServer.RateLimiting;
 /// });
 ///
 /// app.UseRateLimiter();
-/// app.OnPost("/upload", Handler).RequireRateLimiting("uploads");
+/// app.MapPost("/upload", Handler).RequireRateLimiting("uploads");
 /// </code>
 /// </summary>
 public sealed class RateLimitOptions

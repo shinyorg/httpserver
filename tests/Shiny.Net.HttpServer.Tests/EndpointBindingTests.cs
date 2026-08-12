@@ -13,7 +13,7 @@ public class EndpointBindingTests
         var options = new HttpServerOptions { Address = IPAddress.Loopback, Port = 0 };
 
         await using var server = new HttpServer(options);
-        server.OnGet("/ping", ctx => ctx.Response.WriteAsync("pong"));
+        server.MapGet("/ping", ctx => ctx.Response.WriteAsync("pong"));
         await server.StartAsync(Token);
 
         Assert.Single(server.ListenUrls);
@@ -31,7 +31,7 @@ public class EndpointBindingTests
         options.Listen(IPAddress.Loopback, 0);
 
         await using var server = new HttpServer(options);
-        server.OnGet("/ping", ctx => ctx.Response.WriteAsync("pong"));
+        server.MapGet("/ping", ctx => ctx.Response.WriteAsync("pong"));
         await server.StartAsync(Token);
 
         Assert.Equal(2, server.ListenUrls.Count);
@@ -52,7 +52,7 @@ public class EndpointBindingTests
         options.ListenHttps(IPAddress.Loopback, 0, certificate);
 
         await using var server = new HttpServer(options);
-        server.OnGet("/scheme", ctx => ctx.Response.WriteAsync(ctx.Request.Scheme));
+        server.MapGet("/scheme", ctx => ctx.Response.WriteAsync(ctx.Request.Scheme));
         await server.StartAsync(Token);
 
         var http = server.ListenUrls[0];
@@ -77,7 +77,7 @@ public class EndpointBindingTests
         options.Listen(IPAddress.Loopback, 0);
 
         await using var server = new HttpServer(options);
-        server.OnGet("/ping", ctx => ctx.Response.WriteAsync("pong"));
+        server.MapGet("/ping", ctx => ctx.Response.WriteAsync("pong"));
         await server.StartAsync(Token);
 
         Assert.Single(server.ListenUrls);
@@ -91,7 +91,7 @@ public class EndpointBindingTests
         options.Listen(IPAddress.Loopback, 0);
 
         await using var server = new HttpServer(options);
-        server.OnGet("/id", ctx => ctx.Response.WriteAsync(ctx.Connection.ConnectionId));
+        server.MapGet("/id", ctx => ctx.Response.WriteAsync(ctx.Connection.ConnectionId));
         await server.StartAsync(Token);
 
         using var first = new HttpClient();
@@ -118,7 +118,7 @@ public class EndpointBindingTests
         options.Listen(IPAddress.Loopback, taken);
 
         await using var server = new HttpServer(options);
-        server.OnGet("/ping", ctx => ctx.Response.WriteAsync("pong"));
+        server.MapGet("/ping", ctx => ctx.Response.WriteAsync("pong"));
 
         await Assert.ThrowsAsync<IOException>(() => server.StartAsync(Token));
 
@@ -141,7 +141,7 @@ public class EndpointBindingTests
         options.Listen(IPAddress.Loopback, 0);
 
         await using var server = new HttpServer(options);
-        server.OnGet("/ping", ctx => ctx.Response.WriteAsync("pong"));
+        server.MapGet("/ping", ctx => ctx.Response.WriteAsync("pong"));
         await server.StartAsync(Token);
 
         Assert.Single(server.ListenUrls);
@@ -162,7 +162,7 @@ public class EndpointBindingTests
         var options = new HttpServerOptions { Address = IPAddress.Loopback, Port = 0 };
 
         await using var server = new HttpServer(options);
-        server.OnGet("/ping", ctx => ctx.Response.WriteAsync("pong"));
+        server.MapGet("/ping", ctx => ctx.Response.WriteAsync("pong"));
 
         Assert.Empty(server.ListenUrls);
         Assert.Null(server.ListenUrl);
@@ -183,7 +183,7 @@ public class EndpointBindingTests
         options.Listen(IPAddress.Loopback, 0);
 
         await using var server = new HttpServer(options);
-        server.OnGet("/ping", ctx => ctx.Response.WriteAsync("pong"));
+        server.MapGet("/ping", ctx => ctx.Response.WriteAsync("pong"));
         await server.StartAsync(Token);
 
         using var client = new HttpClient();

@@ -153,7 +153,7 @@ public class DuplexPipeConnectionTests
         // The point of the abstraction, in one test: no listener, no port, no socket — the same
         // pipeline that serves TCP serves an in-memory connection identically.
         var server = new HttpServer(new HttpServerOptions { Port = 0 });
-        server.OnGet("/ping", ctx => ctx.Response.WriteAsync("pong"));
+        server.MapGet("/ping", ctx => ctx.Response.WriteAsync("pong"));
 
         await using (server)
         {
@@ -286,7 +286,7 @@ public class TunnelEndToEndTests
     public async Task Serves_a_request_arriving_through_the_tunnel()
     {
         await using var fixture = await TunnelFixture.StartAsync(
-            app => app.OnGet("/ping", ctx => ctx.Response.WriteAsync("pong"))
+            app => app.MapGet("/ping", ctx => ctx.Response.WriteAsync("pong"))
         );
 
         var response = await fixture.Client.SendAsync(fixture.Request(HttpMethod.Get, "/ping"), Token);
@@ -298,7 +298,7 @@ public class TunnelEndToEndTests
     [Fact]
     public async Task Reports_the_public_url_the_relay_assigned()
     {
-        await using var fixture = await TunnelFixture.StartAsync(app => app.OnGet("/x", ctx => ctx.Response.WriteAsync("x")), "named");
+        await using var fixture = await TunnelFixture.StartAsync(app => app.MapGet("/x", ctx => ctx.Response.WriteAsync("x")), "named");
 
         Assert.Contains("named.localhost", fixture.Provider.PublicUrl);
         Assert.Contains("named.localhost", fixture.Relay.RegisteredHosts);
@@ -309,7 +309,7 @@ public class TunnelEndToEndTests
     {
         var payload = new string('z', 200_000);
 
-        await using var fixture = await TunnelFixture.StartAsync(app => app.OnPost("/echo", async ctx =>
+        await using var fixture = await TunnelFixture.StartAsync(app => app.MapPost("/echo", async ctx =>
         {
             var body = await ctx.Request.ReadBodyAsStringAsync(
                 maxLength: 1024 * 1024,
@@ -332,7 +332,7 @@ public class TunnelEndToEndTests
     [Fact]
     public async Task Reuses_one_tunnelled_connection_for_several_requests()
     {
-        await using var fixture = await TunnelFixture.StartAsync(app => app.OnGet("/id", ctx =>
+        await using var fixture = await TunnelFixture.StartAsync(app => app.MapGet("/id", ctx =>
             ctx.Response.WriteAsync(ctx.Connection.ConnectionId)));
 
         var first = await fixture.Client.SendAsync(fixture.Request(HttpMethod.Get, "/id"), Token);
@@ -347,7 +347,7 @@ public class TunnelEndToEndTests
     [Fact]
     public async Task Marks_tunnelled_connections_as_tunnelled()
     {
-        await using var fixture = await TunnelFixture.StartAsync(app => app.OnGet("/how", ctx =>
+        await using var fixture = await TunnelFixture.StartAsync(app => app.MapGet("/how", ctx =>
             ctx.Response.WriteAsync(ctx.Connection.IsTunneled ? "tunnel" : "socket")));
 
         var response = await fixture.Client.SendAsync(fixture.Request(HttpMethod.Get, "/how"), Token);
@@ -357,7 +357,7 @@ public class TunnelEndToEndTests
     [Fact]
     public async Task Forwards_the_original_client_address()
     {
-        await using var fixture = await TunnelFixture.StartAsync(app => app.OnGet("/who", ctx =>
+        await using var fixture = await TunnelFixture.StartAsync(app => app.MapGet("/who", ctx =>
             ctx.Response.WriteAsync(
                 $"{ctx.Request.Headers.GetFirst("X-Forwarded-For")}|{ctx.Request.Headers.GetFirst("X-Forwarded-Host")}"
             )));
@@ -372,7 +372,7 @@ public class TunnelEndToEndTests
     [Fact]
     public async Task Returns_404_for_a_host_with_no_tunnel()
     {
-        await using var fixture = await TunnelFixture.StartAsync(app => app.OnGet("/x", ctx => ctx.Response.WriteAsync("x")));
+        await using var fixture = await TunnelFixture.StartAsync(app => app.MapGet("/x", ctx => ctx.Response.WriteAsync("x")));
 
         var request = new HttpRequestMessage(HttpMethod.Get, "/x");
         request.Headers.Host = "nobody.localhost";
@@ -417,7 +417,7 @@ public class TunnelEndToEndTests
     [Fact]
     public async Task Refuses_a_subdomain_that_is_already_taken()
     {
-        await using var first = await TunnelFixture.StartAsync(app => app.OnGet("/x", ctx => ctx.Response.WriteAsync("x")), "taken");
+        await using var first = await TunnelFixture.StartAsync(app => app.MapGet("/x", ctx => ctx.Response.WriteAsync("x")), "taken");
 
         var provider = new RelayTunnelProvider(new RelayTunnelOptions
         {
@@ -438,7 +438,7 @@ public class TunnelEndToEndTests
     public async Task Assigns_a_subdomain_when_none_was_requested()
     {
         await using var fixture = await TunnelFixture.StartAsync(
-            app => app.OnGet("/x", ctx => ctx.Response.WriteAsync("x")),
+            app => app.MapGet("/x", ctx => ctx.Response.WriteAsync("x")),
             subdomain: ""
         );
 
@@ -451,7 +451,7 @@ public class TunnelEndToEndTests
     public async Task Refuses_a_host_switch_on_a_reused_connection()
     {
         await using var fixture = await TunnelFixture.StartAsync(
-            app => app.OnGet("/who", ctx => ctx.Response.WriteAsync("mine")),
+            app => app.MapGet("/who", ctx => ctx.Response.WriteAsync("mine")),
             "pinned"
         );
 
@@ -471,7 +471,7 @@ public class TunnelEndToEndTests
     [Fact]
     public async Task Handles_concurrent_requests_over_one_tunnel()
     {
-        await using var fixture = await TunnelFixture.StartAsync(app => app.OnGet("/slow", async ctx =>
+        await using var fixture = await TunnelFixture.StartAsync(app => app.MapGet("/slow", async ctx =>
         {
             await Task.Delay(20, ctx.RequestAborted);
             await ctx.Response.WriteAsync("done");
@@ -491,10 +491,10 @@ public class TunnelEndToEndTests
     [Fact]
     public async Task Routes_two_tunnels_by_their_host()
     {
-        await using var first = await TunnelFixture.StartAsync(app => app.OnGet("/who", ctx => ctx.Response.WriteAsync("first")), "one");
+        await using var first = await TunnelFixture.StartAsync(app => app.MapGet("/who", ctx => ctx.Response.WriteAsync("first")), "one");
 
         var second = new HttpServer(new HttpServerOptions { Port = 0 });
-        second.OnGet("/who", ctx => ctx.Response.WriteAsync("second"));
+        second.MapGet("/who", ctx => ctx.Response.WriteAsync("second"));
 
         var provider = new RelayTunnelProvider(new RelayTunnelOptions
         {

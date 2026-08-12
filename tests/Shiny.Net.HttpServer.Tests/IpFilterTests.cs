@@ -122,7 +122,7 @@ public class IpFilterMiddlewareTests
         await using var server = await TestServer.StartAsync(app =>
         {
             app.UseIpFilter(p => p.AllowLoopback());
-            app.OnGet("/x", ctx => ctx.Response.WriteAsync("ok"));
+            app.MapGet("/x", ctx => ctx.Response.WriteAsync("ok"));
         });
 
         Assert.Equal("ok", await server.Client.GetStringAsync("/x", Token));
@@ -134,7 +134,7 @@ public class IpFilterMiddlewareTests
         await using var server = await TestServer.StartAsync(app =>
         {
             app.UseIpFilter(p => p.Allow("10.0.0.0/8"));
-            app.OnGet("/x", ctx => ctx.Response.WriteAsync("ok"));
+            app.MapGet("/x", ctx => ctx.Response.WriteAsync("ok"));
         });
 
         Assert.Equal(HttpStatusCode.Forbidden, (await server.Client.GetAsync("/x", Token)).StatusCode);
@@ -146,7 +146,7 @@ public class IpFilterMiddlewareTests
         await using var server = await TestServer.StartAsync(app =>
         {
             app.UseIpFilter(p => p.AllowLoopback().Deny("127.0.0.1/32"));
-            app.OnGet("/x", ctx => ctx.Response.WriteAsync("ok"));
+            app.MapGet("/x", ctx => ctx.Response.WriteAsync("ok"));
         });
 
         Assert.Equal(HttpStatusCode.Forbidden, (await server.Client.GetAsync("/x", Token)).StatusCode);
@@ -158,7 +158,7 @@ public class IpFilterMiddlewareTests
         await using var server = await TestServer.StartAsync(app =>
         {
             app.UseIpFilter(p => p.Allow("10.0.0.0/8"));
-            app.OnGet("/x", ctx => ctx.Response.WriteAsync("ok"));
+            app.MapGet("/x", ctx => ctx.Response.WriteAsync("ok"));
         });
 
         // 403 rather than 404: which paths exist is itself worth not telling them.
@@ -173,7 +173,7 @@ public class IpFilterMiddlewareTests
         await using var server = await TestServer.StartAsync(app =>
         {
             app.UseIpFilter(p => p.Allow("10.0.0.0/8"));
-            app.OnGet("/x", ctx => { ran = true; return ctx.Response.WriteAsync("ok"); });
+            app.MapGet("/x", ctx => { ran = true; return ctx.Response.WriteAsync("ok"); });
         });
 
         await server.Client.GetAsync("/x", Token);
@@ -188,8 +188,8 @@ public class IpFilterMiddlewareTests
             app =>
             {
                 app.UseIpFilter();
-                app.OnGet("/open", ctx => ctx.Response.WriteAsync("open"));
-                app.OnGet("/admin", ctx => ctx.Response.WriteAsync("admin")).RequireIpFilter("admin");
+                app.MapGet("/open", ctx => ctx.Response.WriteAsync("open"));
+                app.MapGet("/admin", ctx => ctx.Response.WriteAsync("admin")).RequireIpFilter("admin");
             },
             builder => builder.Services.AddIpFilter(o =>
             {
@@ -209,8 +209,8 @@ public class IpFilterMiddlewareTests
             app =>
             {
                 app.UseIpFilter();
-                app.OnGet("/x", ctx => ctx.Response.WriteAsync("blocked"));
-                app.OnGet("/health", ctx => ctx.Response.WriteAsync("ok")).AllowAnyIp();
+                app.MapGet("/x", ctx => ctx.Response.WriteAsync("blocked"));
+                app.MapGet("/health", ctx => ctx.Response.WriteAsync("ok")).AllowAnyIp();
             },
             builder => builder.Services.AddIpFilter(o => o.SetDefaultPolicy(p => p.Allow("10.0.0.0/8")))
         );
@@ -226,7 +226,7 @@ public class IpFilterMiddlewareTests
             app =>
             {
                 app.UseIpFilter();
-                app.OnGet("/x", ctx => ctx.Response.WriteAsync("ok"));
+                app.MapGet("/x", ctx => ctx.Response.WriteAsync("ok"));
             },
             builder => builder.Services.AddIpFilter(o =>
             {
@@ -252,7 +252,7 @@ public class IpFilterMiddlewareTests
             app =>
             {
                 app.UseIpFilter();
-                app.OnGet("/x", ctx => ctx.Response.WriteAsync("ok")).RequireIpFilter("missing");
+                app.MapGet("/x", ctx => ctx.Response.WriteAsync("ok")).RequireIpFilter("missing");
             },
             builder => builder.Services.AddIpFilter(o => o.SetDefaultPolicy(p => p.AllowLoopback()))
         );
@@ -267,7 +267,7 @@ public class IpFilterMiddlewareTests
     [Fact]
     public async Task UseIpFilter_without_a_policy_says_so_rather_than_failing_open()
     {
-        await using var server = await TestServer.StartAsync(app => app.OnGet("/x", ctx => ctx.Response.WriteAsync("ok")));
+        await using var server = await TestServer.StartAsync(app => app.MapGet("/x", ctx => ctx.Response.WriteAsync("ok")));
 
         var error = Assert.Throws<InvalidOperationException>(() => server.Server.UseIpFilter());
         Assert.Contains("AddIpFilter", error.Message);

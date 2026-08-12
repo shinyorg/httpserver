@@ -268,8 +268,8 @@ public class OpenApiDocumentTests
     {
         var document = BuildDocument(app =>
         {
-            app.OnGet("/raw/{id:guid}", ctx => ctx.Response.WriteAsync("x"));
-            app.OnPost("/raw", ctx => ctx.Response.WriteAsync("x"));
+            app.MapGet("/raw/{id:guid}", ctx => ctx.Response.WriteAsync("x"));
+            app.MapPost("/raw", ctx => ctx.Response.WriteAsync("x"));
         });
 
         var parameter = Operation(document, "/raw/{id}", "get").GetProperty("parameters")[0];
@@ -286,8 +286,8 @@ public class OpenApiDocumentTests
         var document = BuildDocument(
             app =>
             {
-                app.OnGet("/undescribed", ctx => ctx.Response.WriteAsync("x"));
-                app.OnGet("/described", ctx => ctx.Response.WriteAsync("x")).Describe(o => o.Summary = "Described");
+                app.MapGet("/undescribed", ctx => ctx.Response.WriteAsync("x"));
+                app.MapGet("/described", ctx => ctx.Response.WriteAsync("x")).Describe(o => o.Summary = "Described");
             },
             o => o.IncludeUndescribedRoutes = false
         );
@@ -302,7 +302,7 @@ public class OpenApiDocumentTests
     public void Describe_augments_a_raw_route()
     {
         var document = BuildDocument(app => app
-            .OnGet("/ping", ctx => ctx.Response.WriteAsync("pong"))
+            .MapGet("/ping", ctx => ctx.Response.WriteAsync("pong"))
             .Describe(o =>
             {
                 o.Summary = "Liveness probe";
@@ -329,7 +329,7 @@ public class OpenApiDocumentTests
     public void ConfigureOperation_can_apply_a_convention_to_every_endpoint()
     {
         var document = BuildDocument(
-            app => app.OnGet("/x", ctx => ctx.Response.WriteAsync("x")),
+            app => app.MapGet("/x", ctx => ctx.Response.WriteAsync("x")),
             o => o.ConfigureOperation = (operation, _) =>
                 operation.Responses.Add(new ApiResponse { StatusCode = 401 })
         );
@@ -341,7 +341,7 @@ public class OpenApiDocumentTests
     public void Does_not_escape_non_ascii_text()
     {
         var server = new HttpServer(new HttpServerOptions { Port = 0 });
-        server.OnGet("/x", ctx => ctx.Response.WriteAsync("x")).Describe(o => o.Summary = "Fetches a widget — quickly");
+        server.MapGet("/x", ctx => ctx.Response.WriteAsync("x")).Describe(o => o.Summary = "Fetches a widget — quickly");
 
         Assert.Contains("—", OpenApiDocumentBuilder.BuildJson(server));
     }
@@ -355,7 +355,7 @@ public class OpenApiSecurityTests
 
         var server = new HttpServer(new HttpServerOptions { Port = 0 });
         server.MapSecureEndpoints();
-        server.OnGet("/open", ctx => ctx.Response.WriteAsync("open"));
+        server.MapGet("/open", ctx => ctx.Response.WriteAsync("open"));
 
         var apiOptions = new OpenApiOptions();
         apiOptions.AddBearerAuthentication();
@@ -441,7 +441,7 @@ public class OpenApiEndpointTests
     {
         await using var server = await TestServer.StartAsync(app =>
         {
-            app.OnGet("/x", ctx => ctx.Response.WriteAsync("x"));
+            app.MapGet("/x", ctx => ctx.Response.WriteAsync("x"));
             app.MapOpenApi();
         });
 
@@ -456,7 +456,7 @@ public class OpenApiEndpointTests
     {
         await using var server = await TestServer.StartAsync(app =>
         {
-            app.OnGet("/x", ctx => ctx.Response.WriteAsync("x"));
+            app.MapGet("/x", ctx => ctx.Response.WriteAsync("x"));
             app.MapOpenApi("/swagger/v1/swagger.json");
         });
 
@@ -469,7 +469,7 @@ public class OpenApiEndpointTests
     {
         await using var server = await TestServer.StartAsync(app =>
         {
-            app.OnGet("/x", ctx => ctx.Response.WriteAsync("x"));
+            app.MapGet("/x", ctx => ctx.Response.WriteAsync("x"));
             app.MapOpenApi();
         });
 

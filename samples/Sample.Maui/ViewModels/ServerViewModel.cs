@@ -42,12 +42,14 @@ public partial class ServerViewModel(
     [NotifyPropertyChangedFor(nameof(HasPublicUrl))]
     [NotifyPropertyChangedFor(nameof(CanStopSharing))]
     [NotifyPropertyChangedFor(nameof(McpUrl))]
+    [NotifyPropertyChangedFor(nameof(FilesUrl))]
     [NotifyPropertyChangedFor(nameof(PublicWebDavUrl))]
     string? publicUrl;
 
     /// <summary>The address on this Wi-Fi network. Works with no internet at all.</summary>
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(McpUrl))]
+    [NotifyPropertyChangedFor(nameof(FilesUrl))]
     [NotifyPropertyChangedFor(nameof(LocalWebDavUrl))]
     string? localUrl;
 
@@ -97,6 +99,19 @@ public partial class ServerViewModel(
     /// </summary>
     public string? McpUrl => (this.PublicUrl ?? this.LocalUrl) is { Length: > 0 } url
         ? $"{url.TrimEnd('/')}/mcp"
+        : null;
+
+    /// <summary>
+    /// The file browser over the app's own storage — a JSON listing a script or a browser can walk,
+    /// which is the same directory the WebDAV mount below exposes as a drive.
+    /// <para>
+    /// The address on this network comes first, the same way round as the mount and for the same
+    /// reason: this hands out the contents of the device's storage, and the tunnel is cleartext HTTP
+    /// through a shared host.
+    /// </para>
+    /// </summary>
+    public string? FilesUrl => (this.LocalUrl ?? this.PublicUrl) is { Length: > 0 } url
+        ? $"{url.TrimEnd('/')}/files"
         : null;
 
     /// <summary>

@@ -50,7 +50,7 @@ var app = builder.Build();
 app.MapMcp();
 
 // The MCP endpoint is just another route: everything else the server does still works alongside it.
-app.OnGet("/health", ctx => ctx.Response.WriteAsync("ok"));
+app.MapGet("/health", ctx => ctx.Response.WriteAsync("ok"));
 
 Console.WriteLine("MCP endpoint:  http://localhost:8181/mcp");
 Console.WriteLine("Press Ctrl+C to stop.");

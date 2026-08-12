@@ -131,8 +131,10 @@ public sealed class RouteConstraint
         if (name != "range")
             return null;
 
-        if (!TryParseArgument(arguments[..comma], out var low) ||
-            !TryParseArgument(arguments[(comma + 1)..], out var high))
+        // Sliced as spans: the string indexer would allocate a substring for each half only to
+        // hand it straight to a span parameter.
+        if (!TryParseArgument(arguments.AsSpan(0, comma), out var low) ||
+            !TryParseArgument(arguments.AsSpan(comma + 1), out var high))
             return null;
 
         // An inverted range matches nothing, which is never what someone meant to type.

@@ -96,7 +96,7 @@ public static class HttpServerIpFilterExtensions
     /// <summary>
     /// Applies a named policy to the most recently mapped route.
     /// <code>
-    /// app.OnGet("/admin/keys", Handler).RequireIpFilter("admin");
+    /// app.MapGet("/admin/keys", Handler).RequireIpFilter("admin");
     /// </code>
     /// </summary>
     public static HttpServer RequireIpFilter(this HttpServer server, string policyName)

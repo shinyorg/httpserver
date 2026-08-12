@@ -84,7 +84,7 @@ public static class HttpServerCorsExtensions
     /// <summary>
     /// Applies a named CORS policy to the most recently mapped route.
     /// <code>
-    /// app.OnGet("/status", Handler).RequireCors("public");
+    /// app.MapGet("/status", Handler).RequireCors("public");
     /// </code>
     /// </summary>
     public static HttpServer RequireCors(this HttpServer server, string policyName)

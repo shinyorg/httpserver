@@ -14,8 +14,8 @@ public class CorsTests
         => TestServer.StartAsync(app =>
         {
             app.UseCors(policy);
-            app.OnGet("/data", ctx => ctx.Response.WriteAsync("payload"));
-            app.OnPost("/data", ctx => ctx.Response.WriteAsync("created"));
+            app.MapGet("/data", ctx => ctx.Response.WriteAsync("payload"));
+            app.MapPost("/data", ctx => ctx.Response.WriteAsync("created"));
         });
 
     static HttpRequestMessage Preflight(string path, string method, string origin = Origin, string? headers = null)
@@ -237,8 +237,8 @@ public class CorsTests
             app =>
             {
                 app.UseCors();
-                app.OnGet("/private", ctx => ctx.Response.WriteAsync("private"));
-                app.OnGet("/public", ctx => ctx.Response.WriteAsync("public")).RequireCors("public");
+                app.MapGet("/private", ctx => ctx.Response.WriteAsync("private"));
+                app.MapGet("/public", ctx => ctx.Response.WriteAsync("public")).RequireCors("public");
             },
             builder => builder.Services.AddCors(o =>
             {
@@ -265,7 +265,7 @@ public class CorsTests
             app =>
             {
                 app.UseCors();
-                app.OnPost("/public", ctx => ctx.Response.WriteAsync("public")).RequireCors("public");
+                app.MapPost("/public", ctx => ctx.Response.WriteAsync("public")).RequireCors("public");
             },
             builder => builder.Services.AddCors(o =>
             {
@@ -286,7 +286,7 @@ public class CorsTests
             app =>
             {
                 app.UseCors();
-                app.OnGet("/data", ctx => ctx.Response.WriteAsync("payload")).DisableCors();
+                app.MapGet("/data", ctx => ctx.Response.WriteAsync("payload")).DisableCors();
             },
             builder => builder.Services.AddCors(
                 o => o.AddDefaultPolicy(p => p.WithOrigins(Origin).AllowAnyMethod().AllowAnyHeader())
@@ -315,7 +315,7 @@ public class CorsTests
         await using var server = await TestServer.StartAsync(app =>
         {
             app.UseCors(p => p.WithOrigins(Origin).AllowAnyMethod().AllowAnyHeader());
-            app.OnGet("/data", ctx =>
+            app.MapGet("/data", ctx =>
             {
                 ctx.Response.Headers.Set(HeaderNames.Vary, HeaderNames.AcceptEncoding);
                 return ctx.Response.WriteAsync("payload");
@@ -332,7 +332,7 @@ public class CorsTests
     [Fact]
     public async Task UseCors_without_a_policy_says_so_rather_than_doing_nothing()
     {
-        await using var server = await TestServer.StartAsync(app => app.OnGet("/x", ctx => ctx.Response.WriteAsync("ok")));
+        await using var server = await TestServer.StartAsync(app => app.MapGet("/x", ctx => ctx.Response.WriteAsync("ok")));
 
         var error = Assert.Throws<InvalidOperationException>(() => server.Server.UseCors());
         Assert.Contains("AddCors", error.Message);

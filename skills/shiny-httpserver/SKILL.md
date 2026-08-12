@@ -11,9 +11,9 @@ triggers:
 - HttpServerOptions
 - HttpServerBuilder
 - AddHttpServer
-- OnGet
-- OnRequest
 - MapGet
+- MapPost
+- OnRequest
 - IHttpMiddleware
 - RequestDelegate
 - HttpContext
@@ -202,7 +202,7 @@ Every new API belongs to one of these. Say which when you introduce one. They co
 | Tier | What it is | Use when |
 | --- | --- | --- |
 | 0 | `OnRequest(ctx => …)` — one delegate, no routing | A single handler, a test fixture, a fallback |
-| 1 | `OnGet`/`OnPost`/… — raw handlers behind a route template | A handful of routes, no binding wanted |
+| 1 | `MapGet`/`MapPost`/… — raw handlers behind a route template | A handful of routes, no binding wanted |
 | 2 | `Use(...)` / `IHttpMiddleware` — the pipeline | Cross-cutting work |
 | 3 | `[Route]` classes + the source generator | Anything real: typed parameters, DI, OpenAPI |
 
@@ -216,7 +216,7 @@ Choose the host shape from who owns the container:
 ```csharp
 // (a) No container — smallest possible
 var server = new HttpServer(new HttpServerOptions { Port = 8080 });
-server.OnGet("/ping", ctx => ctx.Response.WriteAsync("pong"));
+server.MapGet("/ping", ctx => ctx.Response.WriteAsync("pong"));
 await server.RunAsync();
 
 // (b) The builder — a console app or service that wants DI
@@ -552,7 +552,7 @@ app.MapWebDav("/dav", o =>
 
 ```csharp
 // WebSockets — the handler owns the socket; loop inside it
-app.OnGet("/ws", async ctx =>
+app.MapGet("/ws", async ctx =>
 {
     if (!ctx.Request.IsWebSocketRequest()) { ctx.Response.StatusCode = 400; return; }
 
@@ -562,7 +562,7 @@ app.OnGet("/ws", async ctx =>
 });
 
 // SSE
-app.OnGet("/events", ctx => ctx.SendEventsAsync(async stream =>
+app.MapGet("/events", ctx => ctx.SendEventsAsync(async stream =>
 {
     while (!stream.Aborted.IsCancellationRequested)
     {
