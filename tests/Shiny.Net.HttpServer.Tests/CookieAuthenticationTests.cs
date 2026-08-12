@@ -63,13 +63,32 @@ public class TicketProtectorTests
     public void Rejects_a_tampered_ticket()
     {
         var protector = new TicketProtector(Key);
-        var value = protector.Protect(Ticket());
 
-        // Flip one character of the payload, past the version and key id.
-        var chars = value.ToCharArray();
-        chars[^1] = chars[^1] == 'A' ? 'B' : 'A';
+        Assert.True(Base64Url.TryDecode(protector.Protect(Ticket()), out var payload));
 
-        Assert.Null(protector.Unprotect(new string(chars)));
+        // Flip a bit of the ciphertext — past the version, key id, nonce and tag. Tampering with a
+        // byte rather than a character of the encoding is the point: base64url packs 6 bits per
+        // character, so when the payload length is not a multiple of three the final character
+        // carries unused low bits that decode to nothing. Editing *that* character leaves the bytes
+        // identical, the ticket verifies, and the test fails — which it did, intermittently, because
+        // the payload length moves with the timestamps in the ticket.
+        payload[^1] ^= 0x01;
+
+        Assert.Null(protector.Unprotect(Base64Url.Encode(payload)));
+    }
+
+    /// <summary>The tag is the integrity check, so an edit there has to be refused just as flatly.</summary>
+    [Fact]
+    public void Rejects_a_ticket_with_a_tampered_tag()
+    {
+        var protector = new TicketProtector(Key);
+
+        Assert.True(Base64Url.TryDecode(protector.Protect(Ticket()), out var payload));
+
+        // version (1) + key id (4) + nonce (12) — the first byte of the 16-byte tag.
+        payload[17] ^= 0x01;
+
+        Assert.Null(protector.Unprotect(Base64Url.Encode(payload)));
     }
 
     [Fact]
