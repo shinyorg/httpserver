@@ -209,8 +209,58 @@ public static class Runner
         if (settings.UseHttps)
             Warn("The certificate is self-signed and generated at startup, so clients will not trust it.");
 
+        if (settings.ShowQr)
+            PrintQr(settings, prefix);
+
         Console.WriteLine("Ctrl+C to stop");
         Console.WriteLine();
+    }
+
+
+    /// <summary>
+    /// The point of the code is a phone that is not this machine, so it carries the address another
+    /// device can reach - and nothing at all when the server is only listening to itself.
+    /// </summary>
+    static void PrintQr(ServeSettings settings, string prefix)
+    {
+        var url = ShareableUrl(settings, prefix);
+        if (url == null || !QrCode.TryEncode(url, out var code))
+            return;
+
+        // half-blocks and colour are a terminal's, not a log file's, and a code that wraps is a code
+        // that will not scan
+        if (Console.IsOutputRedirected || ConsoleWidth() < QrConsole.Width(code) + 2)
+            return;
+
+        QrConsole.Write(code, "  ");
+        Console.WriteLine();
+        Line("Scan", url);
+        Console.WriteLine();
+    }
+
+
+    static string? ShareableUrl(ServeSettings settings, string prefix)
+    {
+        if (!settings.Address.Equals(IPAddress.Any) && !settings.Address.Equals(IPAddress.IPv6Any))
+            return IPAddress.IsLoopback(settings.Address) ? null : Url(settings, Host(settings.Address), prefix);
+
+        var address = LocalAddresses().FirstOrDefault();
+        return address == null ? null : Url(settings, Host(address), prefix);
+    }
+
+
+    /// <summary>The window's width, or no limit at all when there is no window to ask.</summary>
+    static int ConsoleWidth()
+    {
+        try
+        {
+            var width = Console.WindowWidth;
+            return width > 0 ? width : Int32.MaxValue;
+        }
+        catch (IOException)
+        {
+            return Int32.MaxValue;
+        }
     }
 
 
@@ -218,15 +268,19 @@ public static class Runner
     {
         if (!settings.Address.Equals(IPAddress.Any) && !settings.Address.Equals(IPAddress.IPv6Any))
         {
-            yield return $"{settings.Scheme}://{Host(settings.Address)}:{settings.Port}{prefix}";
+            yield return Url(settings, Host(settings.Address), prefix);
             yield break;
         }
 
-        yield return $"{settings.Scheme}://localhost:{settings.Port}{prefix}";
+        yield return Url(settings, "localhost", prefix);
 
         foreach (var address in LocalAddresses())
-            yield return $"{settings.Scheme}://{Host(address)}:{settings.Port}{prefix}";
+            yield return Url(settings, Host(address), prefix);
     }
+
+
+    static string Url(ServeSettings settings, string host, string prefix)
+        => $"{settings.Scheme}://{host}:{settings.Port}{prefix}";
 
 
     static IEnumerable<IPAddress> LocalAddresses()

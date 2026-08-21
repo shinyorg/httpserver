@@ -23,7 +23,7 @@ JWT, OpenAPI, HPACK, QPACK — is built on what is in the box.
 | [Shiny.Net.HttpServer.DocumentDb](https://www.nuget.org/packages/Shiny.Net.HttpServer.DocumentDb) | Publishes a Shiny.DocumentDb type as a REST resource — list, by-id, count, CRUD, merge-patch and a live SSE tail |
 | [Shiny.Net.HttpServer.WebDav](https://www.nuget.org/packages/Shiny.Net.HttpServer.WebDav) | A WebDAV (RFC 4918) class 1 & 2 server over a directory — mount an app's storage in Finder, Windows Explorer or any WebDAV client |
 | [Shiny.Net.HttpServer.Grpc](https://www.nuget.org/packages/Shiny.Net.HttpServer.Grpc) | gRPC and gRPC-Web — unary, streaming and bidirectional methods over the same HTTP/2 stack, with serialization you supply |
-| [Shiny.Net.HttpServer.CommandLine](https://www.nuget.org/packages/Shiny.Net.HttpServer.CommandLine) | A .NET tool — `shinyhttpserver` — that serves a directory over HTTP with the file browser, with basic auth and per-operation permissions |
+| [Shiny.Net.HttpServer.CommandLine](https://www.nuget.org/packages/Shiny.Net.HttpServer.CommandLine) | A .NET tool — `shinyhttpserver` — that serves a directory over HTTP with the file browser, with basic auth, per-operation permissions, and a QR code of the LAN address in the banner so a phone can scan its way in |
 
 ## Getting Started
 

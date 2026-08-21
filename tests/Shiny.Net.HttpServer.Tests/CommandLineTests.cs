@@ -48,9 +48,16 @@ public class CommandLineParsingTests
         Assert.Equal("/", settings.UrlPrefix);
         Assert.Equal(8080, settings.Port);
 
-        // Loopback rather than every interface: the safer of the two is the one you get by accident.
-        Assert.Equal(IPAddress.Loopback, settings.Address);
+        // Every interface rather than loopback: a directory nobody else can reach is not what the
+        // tool is for, and the QR code in the banner has to point somewhere a phone can go.
+        Assert.Equal(IPAddress.Any, settings.Address);
+        Assert.True(settings.ShowQr);
     }
+
+
+    [Fact]
+    public async Task Drops_the_qr_code_when_asked()
+        => Assert.False((await ParseAsync("--no-qr")).ShowQr);
 
     [Theory]
     [InlineData(new[] { "--allow", "create" }, Permissions.Read | Permissions.Create)]

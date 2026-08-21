@@ -30,9 +30,9 @@ public static class Cli
 
         var addressOpt = new Option<IPAddress>("--address", "-a")
         {
-            Description = "Address to bind: an IP, 'any' (all interfaces) or 'localhost'.",
+            Description = "Address to bind: an IP, 'any' (all interfaces) or 'localhost'. Defaults to every interface so other devices can reach it.",
             HelpName = "address",
-            DefaultValueFactory = _ => IPAddress.Loopback,
+            DefaultValueFactory = _ => IPAddress.Any,
             CustomParser = ParseAddress
         };
 
@@ -96,6 +96,11 @@ public static class Cli
             CustomParser = ParseSize
         };
 
+        var noQrOpt = new Option<bool>("--no-qr")
+        {
+            Description = "Leaves the QR code out of the banner."
+        };
+
         var verboseOpt = new Option<bool>("--verbose", "-v")
         {
             Description = "Logs every request."
@@ -115,6 +120,7 @@ public static class Cli
             httpsOpt,
             hiddenOpt,
             maxUploadOpt,
+            noQrOpt,
             verboseOpt
         };
 
@@ -134,6 +140,7 @@ public static class Cli
                 UseHttps = parseResult.GetValue(httpsOpt),
                 ServeHidden = parseResult.GetValue(hiddenOpt),
                 MaxUploadBytes = parseResult.GetRequiredValue(maxUploadOpt),
+                ShowQr = !parseResult.GetValue(noQrOpt),
                 Verbose = parseResult.GetValue(verboseOpt)
             };
             return run(settings, ct);

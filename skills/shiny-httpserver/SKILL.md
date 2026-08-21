@@ -97,6 +97,8 @@ triggers:
 - Shiny.Net.HttpServer.CommandLine
 - shinyhttpserver
 - serve a directory from the command line
+- QR code in the terminal
+- open a served directory on a phone
 - Shiny.Net.HttpServer.WebDav
 - MapWebDav
 - WebDavOptions
@@ -203,6 +205,10 @@ dotnet tool install -g Shiny.Net.HttpServer.CommandLine  # `shinyhttpserver`, no
 `Shiny.Net.HttpServer.CommandLine` is a .NET tool, not something an app references: it serves a
 directory over HTTP from a terminal (`shinyhttpserver [path] -m read|create|update|delete|all
 -u user:password`). Reach for it when the ask is "serve this folder", not "add a server to my app".
+It listens on every interface by default and ends its banner with a scannable QR code of the LAN
+address plus the URL in full, so "get this folder onto my phone" is the tool answer, not code —
+`-a localhost` keeps it to the machine, `--no-qr` drops the code. Basic auth (`-u`) over plain HTTP
+refuses to start on a non-loopback address, which the default now is: pair it with `--https`.
 
 ## The four tiers — the spine of this library
 
