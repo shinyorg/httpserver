@@ -405,6 +405,93 @@ public class FileBrowserTests
 }
 
 /// <summary>
+/// Mounted at "/" the browser owns the whole site, which is what a plain file server is. The
+/// prefix is the one part of the mapping that has no segment to hang the catch-all off, so it is
+/// worth pinning down separately.
+/// </summary>
+public class FileBrowserRootMountTests
+{
+    static Task<TestServer> StartAsync(ContentRoot root)
+        => TestServer.StartAsync(app => app.MapFileBrowser("/", o =>
+        {
+            o.RootPath = root.Path;
+            o.AllowWrite = true;
+            o.AllowDelete = true;
+        }));
+
+    [Fact]
+    public async Task Serves_everything_from_the_site_root()
+    {
+        using var root = new ContentRoot()
+            .With("notes.txt", "hello")
+            .With("docs/readme.md", "# hi");
+
+        await using var server = await StartAsync(root);
+        var ct = TestContext.Current.CancellationToken;
+
+        var listing = await server.Client.GetStringAsync("/", ct);
+
+        Assert.Contains("\"notes.txt\"", listing);
+        Assert.Equal("hello", await server.Client.GetStringAsync("/notes.txt", ct));
+        Assert.Equal("# hi", await server.Client.GetStringAsync("/docs/readme.md", ct));
+        Assert.Contains("\"docs/readme.md\"", await server.Client.GetStringAsync("/docs", ct));
+    }
+
+    [Fact]
+    public async Task Writes_and_deletes_from_the_site_root()
+    {
+        using var root = new ContentRoot().With("notes.txt", "hello");
+
+        await using var server = await StartAsync(root);
+        var ct = TestContext.Current.CancellationToken;
+
+        var written = await server.Client.PutAsync("/new.txt", new StringContent("written"), ct);
+
+        Assert.Equal(HttpStatusCode.Created, written.StatusCode);
+        Assert.Equal("written", File.ReadAllText(Path.Combine(root.Path, "new.txt")));
+
+        var deleted = await server.Client.DeleteAsync("/notes.txt", ct);
+
+        Assert.Equal(HttpStatusCode.NoContent, deleted.StatusCode);
+        Assert.False(File.Exists(Path.Combine(root.Path, "notes.txt")));
+    }
+
+    /// <summary>
+    /// A browser over the whole site is only usable if the app can still own a path within it —
+    /// literals beat the catch-all, so it can.
+    /// </summary>
+    [Fact]
+    public async Task Leaves_more_specific_routes_alone()
+    {
+        using var root = new ContentRoot().With("health", "not the endpoint");
+
+        await using var server = await TestServer.StartAsync(app =>
+        {
+            app.MapFileBrowser("/", o => o.RootPath = root.Path);
+            app.MapGet("/health", ctx => ctx.Response.WriteTextAsync("ok"));
+        });
+
+        Assert.Equal("ok", await server.Client.GetStringAsync("/health", TestContext.Current.CancellationToken));
+    }
+
+    /// <summary>
+    /// The templates are what every log line, diagnostic and OpenAPI path is built from, so a
+    /// doubled slash would surface everywhere even though the router itself tolerates it.
+    /// </summary>
+    [Fact]
+    public async Task Registers_routes_without_a_doubled_slash()
+    {
+        using var root = new ContentRoot().With("notes.txt", "hello");
+        await using var server = await StartAsync(root);
+
+        var templates = server.Server.Router.Endpoints.Select(x => x.Template.RawText).ToList();
+
+        Assert.DoesNotContain(templates, x => x.Contains("//", StringComparison.Ordinal));
+        Assert.Contains("/{*path}", templates);
+    }
+}
+
+/// <summary>
 /// The reason these are routes rather than middleware: each one can carry its own authorization.
 /// </summary>
 public class FileBrowserAuthorizationTests

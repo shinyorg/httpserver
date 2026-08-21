@@ -94,6 +94,9 @@ triggers:
 - MapDocumentCollection
 - DocumentEndpoints
 - DocumentResourceBuilder
+- Shiny.Net.HttpServer.CommandLine
+- shinyhttpserver
+- serve a directory from the command line
 - Shiny.Net.HttpServer.WebDav
 - MapWebDav
 - WebDavOptions
@@ -193,7 +196,13 @@ dotnet add package Shiny.Net.HttpServer.Mediator         # Shiny.Mediator handle
 dotnet add package Shiny.Net.HttpServer.DocumentDb       # Shiny.DocumentDb types as REST resources
 dotnet add package Shiny.Net.HttpServer.WebDav           # a directory as a WebDAV mount (RFC 4918)
 dotnet add package Shiny.Net.HttpServer.Grpc             # gRPC + gRPC-Web services
+
+dotnet tool install -g Shiny.Net.HttpServer.CommandLine  # `shinyhttpserver`, not a library reference
 ```
+
+`Shiny.Net.HttpServer.CommandLine` is a .NET tool, not something an app references: it serves a
+directory over HTTP from a terminal (`shinyhttpserver [path] -m read|create|update|delete|all
+-u user:password`). Reach for it when the ask is "serve this folder", not "add a server to my app".
 
 ## The four tiers — the spine of this library
 
@@ -510,6 +519,8 @@ app.MapFileBrowser("/files", o => o.RootPath = FileSystem.AppDataDirectory).Requ
 
 - Unknown file extensions are **not served** by default. Add `ContentTypeOverrides[".x"]` rather than
   turning on `ServeUnknownFileTypes`.
+- `MapFileBrowser("/", …)` mounts the browser on the whole site — the shape a "serve this directory"
+  CLI wants. Literals still beat its catch-all, so routes mapped alongside it keep answering.
 - Uploads: `await foreach (var part in ctx.Request.ReadMultipartAsync(ct))` and
   `part.SafeFileName()` (never `part.FileName` — traversal). `ReadFormAsync` buffers; use it only for
   small fields.

@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>Shiny.Net.HttpServer.CommandLine</RootNamespace>
+    <Description>Serves a directory over HTTP from the command line with the Shiny.Net.HttpServer file browser: basic auth, per-operation permissions (read/create/update/delete) and optional TLS. Installs as a .NET tool.</Description>
+    <PackageTags>$(PackageTags) cli dotnet-tool filebrowser</PackageTags>
+
+    <!-- The command is the product here, so the assembly carries the command's name — which means
+         the package id has to be stated rather than inherited from it. -->
+    <AssemblyName>shinyhttpserver</AssemblyName>
+    <PackageId>Shiny.Net.HttpServer.CommandLine</PackageId>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>shinyhttpserver</ToolCommandName>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.CommandLine" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Console" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Shiny.Net.HttpServer/Shiny.Net.HttpServer.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Shiny.Net.HttpServer.Tests" />
+  </ItemGroup>
+
+</Project>

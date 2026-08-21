@@ -132,6 +132,11 @@ public static class FileBrowserExtensions
             throw new DirectoryNotFoundException($"The file browser root '{root}' does not exist.");
 
         var basePath = "/" + prefix.Trim('/');
+
+        // Mounted at the site root there is no prefix to hang the catch-all off, and gluing one on
+        // anyway gives "//{*path}" — which routes correctly, because the template parser trims the
+        // leading slashes, but reads like a mistake everywhere the template is printed.
+        var childPath = basePath == "/" ? "/{*path}" : $"{basePath}/{{*path}}";
         var browser = new FileBrowserHandler(options, root);
 
         // Two routes per verb: one for the root of the browser, one for everything under it. A
@@ -139,7 +144,7 @@ public static class FileBrowserExtensions
         var read = new List<RouteEndpoint>
         {
             server.MapRoute(HttpMethods.Get, basePath, browser.GetAsync),
-            server.MapRoute(HttpMethods.Get, $"{basePath}/{{*path}}", browser.GetAsync)
+            server.MapRoute(HttpMethods.Get, childPath, browser.GetAsync)
         };
 
         var write = new List<RouteEndpoint>();
@@ -147,12 +152,12 @@ public static class FileBrowserExtensions
 
         if (options.AllowWrite)
         {
-            write.Add(server.MapRoute(HttpMethods.Put, $"{basePath}/{{*path}}", browser.PutAsync));
+            write.Add(server.MapRoute(HttpMethods.Put, childPath, browser.PutAsync));
         }
 
         if (options.AllowDelete)
         {
-            delete.Add(server.MapRoute(HttpMethods.Delete, $"{basePath}/{{*path}}", browser.DeleteAsync));
+            delete.Add(server.MapRoute(HttpMethods.Delete, childPath, browser.DeleteAsync));
         }
 
         return new FileBrowserEndpoints(read, write, delete);

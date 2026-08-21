@@ -57,6 +57,10 @@
     <ProjectReference Include="../../src/Shiny.Net.HttpServer.Mediator/Shiny.Net.HttpServer.Mediator.csproj" />
     <ProjectReference Include="../../src/Shiny.Net.HttpServer.DocumentDb/Shiny.Net.HttpServer.DocumentDb.csproj" />
 
+    <!-- The CLI is an executable, but its argument parsing and its create/update guard are ordinary
+         classes, and they are the parts that would rot silently. -->
+    <ProjectReference Include="../../src/Shiny.Net.HttpServer.CommandLine/Shiny.Net.HttpServer.CommandLine.csproj" />
+
     <!-- A real store behind the document endpoints, so the tests exercise the engine rather than a
          stand-in. Test-only, and pinned in lockstep with the engine in Directory.Packages.props: a
          provider compiled against a different engine build is a runtime mismatch, not a build error. -->

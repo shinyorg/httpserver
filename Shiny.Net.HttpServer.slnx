@@ -23,6 +23,7 @@
     </Folder>
 
     <Project Path="src/Shiny.Net.HttpServer.AzureRelay/Shiny.Net.HttpServer.AzureRelay.csproj" />
+    <Project Path="src/Shiny.Net.HttpServer.CommandLine/Shiny.Net.HttpServer.CommandLine.csproj" />
     <Project Path="src/Shiny.Net.HttpServer.DocumentDb/Shiny.Net.HttpServer.DocumentDb.csproj" />
     <Project Path="src/Shiny.Net.HttpServer.Grpc/Shiny.Net.HttpServer.Grpc.csproj" />
     <Project Path="src/Shiny.Net.HttpServer.Jwt/Shiny.Net.HttpServer.Jwt.csproj" />
