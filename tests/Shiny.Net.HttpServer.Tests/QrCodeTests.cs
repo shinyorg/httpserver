@@ -159,6 +159,21 @@ public class QrConsoleTests
         => Assert.True(QrConsole.Width(Code()) <= 40);
 
 
+    /// <summary>
+    /// A tunnel address is far longer than a LAN one - pinggy builds the hostname out of the
+    /// client's address, so an IPv6 machine gets the worst case. It still has to encode, and still
+    /// has to fit a terminal, or "--tunnel" prints no code at all.
+    /// </summary>
+    [Fact]
+    public void Fits_a_tunnel_address_too()
+    {
+        const string Url = "https://gyjjf-2605-8d80-5c0-d61d-616e-e6d7-7250-2508.free.pinggy.net/";
+
+        Assert.True(QrCode.TryEncode(Url, out var code));
+        Assert.True(QrConsole.Width(code) <= 80);
+    }
+
+
     [Fact]
     public void Draws_with_nothing_but_block_glyphs()
         => Assert.All(QrConsole.Render(Code()), line => Assert.All(line.ToCharArray(), c => Assert.Contains(c, " █▀▄")));

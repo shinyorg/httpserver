@@ -99,6 +99,9 @@ triggers:
 - serve a directory from the command line
 - QR code in the terminal
 - open a served directory on a phone
+- share a folder over the internet
+- --tunnel
+- --tunnel-token
 - Shiny.Net.HttpServer.WebDav
 - MapWebDav
 - WebDavOptions
@@ -209,6 +212,14 @@ It listens on every interface by default and ends its banner with a scannable QR
 address plus the URL in full, so "get this folder onto my phone" is the tool answer, not code —
 `-a localhost` keeps it to the machine, `--no-qr` drops the code. Basic auth (`-u`) over plain HTTP
 refuses to start on a non-loopback address, which the default now is: pair it with `--https`.
+
+`--tunnel` is the answer to "share this folder with someone not on my network": it opens a
+`QuickTunnel` to pinggy.io and the QR code carries the public HTTPS address instead of the LAN one.
+Because the tunnel feeds `HttpServer.ServeAsync` directly, `--tunnel -a localhost` binds nothing on
+the LAN and is reachable only through the tunnel — and a tunnelled connection counts as encrypted
+transport, so `-u` works over it without `--https` or `--allow-insecure-auth`. Anonymous tunnels stop
+after 60 minutes; `--tunnel-token <token>` lifts that and implies `--tunnel`. Always say that the
+address is public when you suggest it.
 
 ## The four tiers — the spine of this library
 

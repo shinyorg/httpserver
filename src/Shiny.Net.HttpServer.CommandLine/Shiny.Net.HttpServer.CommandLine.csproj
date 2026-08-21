@@ -22,6 +22,7 @@
 
   <ItemGroup>
     <ProjectReference Include="../Shiny.Net.HttpServer/Shiny.Net.HttpServer.csproj" />
+    <ProjectReference Include="../Shiny.Net.HttpServer.Ssh/Shiny.Net.HttpServer.Ssh.csproj" />
   </ItemGroup>
 
   <ItemGroup>

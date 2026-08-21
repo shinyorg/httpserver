@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
@@ -6,6 +7,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Shiny.Net.HttpServer.FileBrowser;
 using Shiny.Net.HttpServer.Security;
+using Shiny.Net.HttpServer.Ssh;
 
 namespace Shiny.Net.HttpServer.CommandLine;
 
@@ -29,6 +31,11 @@ public static class Runner
                 o.TimestampFormat = "HH:mm:ss ";
             })
             .SetMinimumLevel(settings.Verbose ? LogLevel.Debug : LogLevel.Warning)
+
+            // The tunnel warns that it is trusting an unverified host key, which is exactly what a
+            // quick tunnel does by design - and the banner says so in plainer words a few lines
+            // later. Left in for --verbose, kept out of a normal run's first three lines.
+            .AddFilter("Shiny.Net.HttpServer.Ssh", settings.Verbose ? LogLevel.Debug : LogLevel.Error)
         );
 
         builder.Configure(o =>
@@ -103,7 +110,26 @@ public static class Runner
             });
         }
 
-        PrintBanner(settings, prefix);
+        // The tunnel hands connections straight to ServeAsync, so it is up before - and independent
+        // of - the listener. That is what makes "--tunnel -a localhost" a real combination: nothing
+        // on the LAN, everything through the tunnel.
+        await using var tunnel = settings.UseTunnel
+            ? QuickTunnel.For(
+                server,
+                QuickTunnelHost.Pinggy,
+                settings.TunnelToken,
+                loggerFactory: server.Services?.GetService<ILoggerFactory>()
+            )
+            : null;
+
+        var tunnelUrl = tunnel is null ? null : await OpenTunnelAsync(tunnel, cancellationToken).ConfigureAwait(false);
+
+        PrintBanner(settings, prefix, tunnelUrl);
+
+        // The address changes on every reconnect, which kills whatever is already on screen - so a
+        // new one is announced, with its own code, rather than leaving a dead link as the last word.
+        if (tunnel is not null)
+            tunnel.PropertyChanged += (_, e) => OnTunnelUrlChanged(settings, prefix, tunnel, e);
 
         try
         {
@@ -122,6 +148,61 @@ public static class Runner
         Console.WriteLine("stopped");
         return 0;
     }
+
+
+    /// <summary>
+    /// Brings the tunnel up, or explains why there is none. A tunnel that will not open is not a
+    /// reason to refuse to serve: the directory is still on this network, and the banner still has
+    /// somewhere to point.
+    /// </summary>
+    static async Task<string?> OpenTunnelAsync(QuickTunnel tunnel, CancellationToken cancellationToken)
+    {
+        Console.WriteLine();
+        Console.WriteLine("  opening tunnel...");
+
+        try
+        {
+            var url = await tunnel.StartAsync(cancellationToken).ConfigureAwait(false);
+            if (url is { Length: > 0 })
+                return url;
+
+            Error(tunnel.LastError ?? "The tunnel connected but never reported an address.");
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            Error($"The tunnel could not be opened - {ex.Message}");
+        }
+
+        Warn("Serving on this network only.");
+        return null;
+    }
+
+
+    static void OnTunnelUrlChanged(ServeSettings settings, string prefix, QuickTunnel tunnel, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName != nameof(QuickTunnel.PublicUrl) || tunnel.PublicUrl is not { Length: > 0 } url)
+            return;
+
+        Console.WriteLine();
+        Warn("The tunnel reconnected on a new address. The previous one no longer answers.");
+        Line("Tunnel", TunnelUrl(url, prefix));
+
+        if (settings.ShowQr)
+        {
+            Console.WriteLine();
+            PrintQr(TunnelUrl(url, prefix));
+        }
+        Console.WriteLine();
+    }
+
+
+    /// <summary>The tunnel terminates at the site root, so the mount point has to be put back on.</summary>
+    internal static string TunnelUrl(string url, string prefix)
+        => prefix == "/" ? url.TrimEnd('/') + "/" : url.TrimEnd('/') + prefix;
 
 
     static bool NeedsWriteGuard(Permissions permissions)
@@ -159,6 +240,7 @@ public static class Runner
 
                  Pick one:
                    --https                  serve over TLS with a self-signed certificate
+                   --tunnel -a localhost    reach it only through the tunnel, which is encrypted
                    --address localhost      keep the server on this machine
                    --allow-insecure-auth    send it anyway
                  """
@@ -180,7 +262,7 @@ public static class Runner
     }
 
 
-    static void PrintBanner(ServeSettings settings, string prefix)
+    static void PrintBanner(ServeSettings settings, string prefix, string? tunnelUrl)
     {
         Console.WriteLine();
         Console.WriteLine("shinyhttpserver");
@@ -189,6 +271,9 @@ public static class Runner
 
         foreach (var url in Urls(settings, prefix))
             Line("URL", url);
+
+        if (tunnelUrl is not null)
+            Line("Tunnel", TunnelUrl(tunnelUrl, prefix));
 
         Line("Operations", settings.Permissions.Describe());
         Line(
@@ -203,14 +288,32 @@ public static class Runner
 
         Console.WriteLine();
 
+        // Said before the write warning, because it is what turns that warning from "the office
+        // network" into "the internet".
+        if (tunnelUrl is not null)
+        {
+            Warn(
+                "The tunnel is public: anyone holding the address can reach this directory, and the traffic passes through pinggy.io."
+                + (settings.TunnelToken is { Length: > 0 } ? "" : " An anonymous tunnel stops after 60 minutes.")
+            );
+        }
+
         if (settings.Permissions.AllowsChanges() && !settings.AuthEnabled)
-            Warn("Writes are open to anyone who can reach this server. Add --user name:password.");
+        {
+            Warn(
+                tunnelUrl is null
+                    ? "Writes are open to anyone who can reach this server. Add --user name:password."
+                    : "Writes are open to anyone on the internet holding the tunnel address. Add --user name:password."
+            );
+        }
 
         if (settings.UseHttps)
             Warn("The certificate is self-signed and generated at startup, so clients will not trust it.");
 
+        // The tunnel address is the one worth scanning when there is one: it reaches a phone that
+        // is not on this network at all, which the LAN address does not.
         if (settings.ShowQr)
-            PrintQr(settings, prefix);
+            PrintQr(tunnelUrl is null ? ShareableUrl(settings, prefix) : TunnelUrl(tunnelUrl, prefix));
 
         Console.WriteLine("Ctrl+C to stop");
         Console.WriteLine();
@@ -219,11 +322,10 @@ public static class Runner
 
     /// <summary>
     /// The point of the code is a phone that is not this machine, so it carries the address another
-    /// device can reach - and nothing at all when the server is only listening to itself.
+    /// device can reach - and nothing at all when there is no such address.
     /// </summary>
-    static void PrintQr(ServeSettings settings, string prefix)
+    static void PrintQr(string? url)
     {
-        var url = ShareableUrl(settings, prefix);
         if (url == null || !QrCode.TryEncode(url, out var code))
             return;
 

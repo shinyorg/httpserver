@@ -26,6 +26,12 @@ public sealed record ServeSettings
 
     public required bool UseHttps { get; init; }
 
+    /// <summary>Opens a pinggy.io quick tunnel, so the directory is reachable from off this network.</summary>
+    public required bool UseTunnel { get; init; }
+
+    /// <summary>A pinggy.io access token, which lifts the 60 minute cap an anonymous tunnel has.</summary>
+    public string? TunnelToken { get; init; }
+
     /// <summary>Prints a scannable QR code of the address another device can reach.</summary>
     public bool ShowQr { get; init; } = true;
 

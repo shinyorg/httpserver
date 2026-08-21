@@ -83,6 +83,17 @@ public static class Cli
             Description = "Serves over HTTPS with a self-signed certificate generated at startup. Clients will warn about it."
         };
 
+        var tunnelOpt = new Option<bool>("--tunnel")
+        {
+            Description = "Opens a public pinggy.io tunnel and shares that address instead of the LAN one. Anonymous tunnels stop after 60 minutes."
+        };
+
+        var tunnelTokenOpt = new Option<string?>("--tunnel-token")
+        {
+            Description = "A pinggy.io access token, which lifts the 60 minute cap an anonymous tunnel has. Implies --tunnel.",
+            HelpName = "token"
+        };
+
         var hiddenOpt = new Option<bool>("--hidden")
         {
             Description = "Includes dotfiles and hidden files in listings and downloads."
@@ -118,6 +129,8 @@ public static class Cli
             authChangesOpt,
             insecureAuthOpt,
             httpsOpt,
+            tunnelOpt,
+            tunnelTokenOpt,
             hiddenOpt,
             maxUploadOpt,
             noQrOpt,
@@ -138,6 +151,8 @@ public static class Cli
                 AuthChangesOnly = parseResult.GetValue(authChangesOpt),
                 AllowInsecureAuth = parseResult.GetValue(insecureAuthOpt),
                 UseHttps = parseResult.GetValue(httpsOpt),
+                UseTunnel = parseResult.GetValue(tunnelOpt) || parseResult.GetValue(tunnelTokenOpt) is { Length: > 0 },
+                TunnelToken = parseResult.GetValue(tunnelTokenOpt),
                 ServeHidden = parseResult.GetValue(hiddenOpt),
                 MaxUploadBytes = parseResult.GetRequiredValue(maxUploadOpt),
                 ShowQr = !parseResult.GetValue(noQrOpt),

@@ -105,6 +105,45 @@ public class CommandLineParsingTests
         Assert.Equal("/", (await ParseAsync("--prefix", "/")).UrlPrefix);
     }
 
+    /// <summary>
+    /// The tunnel is what puts the directory on the public internet, so nothing but asking for it
+    /// turns it on.
+    /// </summary>
+    [Fact]
+    public async Task Leaves_the_tunnel_closed_unless_asked()
+    {
+        var settings = await ParseAsync();
+
+        Assert.False(settings.UseTunnel);
+        Assert.Null(settings.TunnelToken);
+    }
+
+    [Fact]
+    public async Task Opens_a_tunnel_when_asked()
+        => Assert.True((await ParseAsync("--tunnel")).UseTunnel);
+
+    /// <summary>A token is only ever used to open a tunnel, so supplying one is asking for one.</summary>
+    [Fact]
+    public async Task Reads_a_tunnel_token_and_takes_it_as_asking_for_a_tunnel()
+    {
+        var settings = await ParseAsync("--tunnel-token", "abc123");
+
+        Assert.True(settings.UseTunnel);
+        Assert.Equal("abc123", settings.TunnelToken);
+    }
+
+    /// <summary>
+    /// The tunnel terminates at the site root, so a prefixed mount has to be put back on - the
+    /// address in the banner and in the QR code is the one that has to open the listing.
+    /// </summary>
+    [Theory]
+    [InlineData("https://x.free.pinggy.net", "/", "https://x.free.pinggy.net/")]
+    [InlineData("https://x.free.pinggy.net/", "/", "https://x.free.pinggy.net/")]
+    [InlineData("https://x.free.pinggy.net", "/files", "https://x.free.pinggy.net/files")]
+    [InlineData("https://x.free.pinggy.net/", "/files", "https://x.free.pinggy.net/files")]
+    public void Puts_the_prefix_back_on_the_tunnel_address(string url, string prefix, string expected)
+        => Assert.Equal(expected, Runner.TunnelUrl(url, prefix));
+
     [Theory]
     [InlineData(new[] { "--allow", "frobnicate" }, "is not an operation")]
     [InlineData(new[] { "--user", "nopassword" }, "is not a credential")]
