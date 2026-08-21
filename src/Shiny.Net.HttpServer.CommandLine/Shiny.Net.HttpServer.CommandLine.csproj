@@ -3,8 +3,8 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <RootNamespace>Shiny.Net.HttpServer.CommandLine</RootNamespace>
-    <Description>Serves a directory over HTTP from the command line with the Shiny.Net.HttpServer file browser: basic auth, per-operation permissions (read/create/update/delete) and optional TLS. Installs as a .NET tool.</Description>
-    <PackageTags>$(PackageTags) cli dotnet-tool filebrowser</PackageTags>
+    <Description>Serves a directory over HTTP from the command line: a browser file manager with upload, rename and delete, and the same address mounts as a WebDAV drive in Finder or Explorer. Basic auth, per-operation permissions (read/create/update/delete), optional TLS and a public tunnel. Installs as a .NET tool.</Description>
+    <PackageTags>$(PackageTags) cli dotnet-tool filebrowser filemanager webdav</PackageTags>
 
     <!-- The command is the product here, so the assembly carries the command's name — which means
          the package id has to be stated rather than inherited from it. -->
@@ -23,6 +23,7 @@
   <ItemGroup>
     <ProjectReference Include="../Shiny.Net.HttpServer/Shiny.Net.HttpServer.csproj" />
     <ProjectReference Include="../Shiny.Net.HttpServer.Ssh/Shiny.Net.HttpServer.Ssh.csproj" />
+    <ProjectReference Include="../Shiny.Net.HttpServer.WebDav/Shiny.Net.HttpServer.WebDav.csproj" />
   </ItemGroup>
 
   <ItemGroup>

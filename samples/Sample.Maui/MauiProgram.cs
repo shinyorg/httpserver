@@ -131,7 +131,9 @@ public static class MauiProgram
                 // /files is a JSON API for a script; this is the protocol a desktop already speaks,
                 // so the phone's storage opens as a drive in Finder or Windows Explorer with nothing
                 // installed on either end. Point them at http://<device>:<port>/dav and sign in with
-                // the same account as everything else.
+                // the same account as everything else - or open that URL in a browser, where the
+                // same mount answers with a file manager: the phone's storage, uploaded to and
+                // deleted from, with no app on the other machine at all.
                 //
                 // Locking is left on, and that is not a detail: Finder and the Windows redirector
                 // both check for DAV class 2 at mount time and mount read-only without it, however

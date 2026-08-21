@@ -216,7 +216,8 @@ app.MapFileBrowser("/files", o =>
 // Connect to Server) or Explorer (Map network drive) at http://localhost:8080/dav and the folder
 // opens as a drive — no client to write, and no client to install.
 //
-// A browser GET of the same URL shows a plain HTML index, which is the quickest way to see it
+// A browser GET of the same URL shows a file manager - listing, upload, new folder, rename, delete,
+// each offered only when the options above allow it - which is the quickest way to see the mount
 // working without mounting anything.
 app.MapWebDav("/dav", o =>
 {

@@ -1,7 +1,7 @@
 using System.Net;
 using System.Text;
 using Shiny.Net.HttpServer.CommandLine;
-using Shiny.Net.HttpServer.FileBrowser;
+using Shiny.Net.HttpServer.WebDav;
 
 namespace Shiny.Net.HttpServer.Tests;
 
@@ -155,9 +155,9 @@ public class CommandLineParsingTests
 
 
 /// <summary>
-/// The file browser has one write switch, so create and update are the same PUT to it. This is the
-/// piece that tells them apart, and getting it backwards silently grants the operation that was
-/// withheld.
+/// The mount has one write switch, so create and update are the same PUT to it - and the same
+/// MKCOL, COPY and MOVE. This is the piece that tells them apart, and getting it backwards
+/// silently grants the operation that was withheld.
 /// </summary>
 public class WriteGuardTests
 {
@@ -165,16 +165,25 @@ public class WriteGuardTests
         => TestServer.StartAsync(app =>
         {
             app.Use(new WriteGuard(prefix, root.Path, permissions));
-            app.MapFileBrowser(prefix, o =>
+            app.MapWebDav(prefix, new WebDavOptions
             {
-                o.RootPath = root.Path;
-                o.AllowWrite = true;
-                o.AllowDelete = permissions.Has(Permissions.Delete);
-                o.AllowCreateDirectories = permissions.Has(Permissions.Create);
+                RootPath = root.Path,
+                AllowWrite = true,
+                AllowDelete = permissions.Has(Permissions.Delete)
             });
         });
 
     static StringContent Body() => new("written", Encoding.UTF8);
+
+    static HttpRequestMessage Request(string method, string path, string? destination = null)
+    {
+        var message = new HttpRequestMessage(new HttpMethod(method), path);
+
+        if (destination is not null)
+            message.Headers.TryAddWithoutValidation("Destination", destination);
+
+        return message;
+    }
 
     [Fact]
     public async Task Create_alone_writes_a_new_file_but_never_over_one()
@@ -197,22 +206,68 @@ public class WriteGuardTests
         await using var server = await StartAsync(root, Permissions.Read | Permissions.Update);
         var ct = TestContext.Current.CancellationToken;
 
-        Assert.Equal(HttpStatusCode.OK, (await server.Client.PutAsync("/notes.txt", Body(), ct)).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, (await server.Client.PutAsync("/notes.txt", Body(), ct)).StatusCode);
         Assert.Equal(HttpStatusCode.Forbidden, (await server.Client.PutAsync("/new.txt", Body(), ct)).StatusCode);
         Assert.False(File.Exists(Path.Combine(root.Path, "new.txt")));
     }
 
-    /// <summary>A directory that does not exist yet is a create, whichever way the path is spelled.</summary>
+    /// <summary>A collection never overwrites anything, so making one is a create whoever asks.</summary>
     [Fact]
-    public async Task Treats_making_a_directory_as_a_create()
+    public async Task Treats_making_a_collection_as_a_create()
     {
         using var root = new ContentRoot().With("notes.txt", "original");
         await using var server = await StartAsync(root, Permissions.Read | Permissions.Update);
 
-        var response = await server.Client.PutAsync("/archive/", null, TestContext.Current.CancellationToken);
+        var response = await server.Client.SendAsync(Request("MKCOL", "/archive"), TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
         Assert.False(Directory.Exists(Path.Combine(root.Path, "archive")));
+    }
+
+
+    /// <summary>
+    /// A move lands bytes at the destination, so the destination decides which write it is - the
+    /// same file, moved onto a name that is free or one that is taken, is two different operations.
+    /// </summary>
+    [Fact]
+    public async Task Reads_a_move_by_where_it_lands()
+    {
+        using var root = new ContentRoot().With("notes.txt", "original").With("archive.txt", "kept");
+        await using var server = await StartAsync(root, Permissions.Read | Permissions.Update | Permissions.Delete);
+        var ct = TestContext.Current.CancellationToken;
+
+        var toNew = await server.Client.SendAsync(
+            Request("MOVE", "/notes.txt", new Uri(server.Client.BaseAddress!, "/free.txt").ToString()),
+            ct
+        );
+
+        Assert.Equal(HttpStatusCode.Forbidden, toNew.StatusCode);
+        Assert.True(File.Exists(Path.Combine(root.Path, "notes.txt")));
+
+        var toExisting = await server.Client.SendAsync(
+            Request("MOVE", "/notes.txt", new Uri(server.Client.BaseAddress!, "/archive.txt").ToString()),
+            ct
+        );
+
+        Assert.Equal(HttpStatusCode.NoContent, toExisting.StatusCode);
+        Assert.Equal("original", File.ReadAllText(Path.Combine(root.Path, "archive.txt")));
+    }
+
+
+    /// <summary>A destination is allowed to be a path rather than a full URL, and often is.</summary>
+    [Fact]
+    public async Task Reads_a_destination_that_is_a_path()
+    {
+        using var root = new ContentRoot().With("notes.txt", "original");
+        await using var server = await StartAsync(root, Permissions.Read | Permissions.Update | Permissions.Delete);
+
+        var response = await server.Client.SendAsync(
+            Request("MOVE", "/notes.txt", "/my%20notes.txt"),
+            TestContext.Current.CancellationToken
+        );
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.True(File.Exists(Path.Combine(root.Path, "notes.txt")));
     }
 
     /// <summary>

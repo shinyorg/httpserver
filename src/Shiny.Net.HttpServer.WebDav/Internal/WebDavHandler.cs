@@ -131,52 +131,92 @@ sealed partial class WebDavHandler
     }
 
     /// <summary>
-    /// An HTML listing for a collection, for the human who opened the mount in a browser to see
-    /// whether it works. WebDAV itself has nothing to say about <c>GET</c> on a collection.
+    /// The file manager a browser gets on a collection: the listing, plus whatever verbs this mount
+    /// allows. WebDAV itself has nothing to say about <c>GET</c> on a collection.
     /// </summary>
     async ValueTask WriteIndexAsync(HttpContext context, DavPath path)
     {
-        var title = path.IsRoot ? this.RootDisplayName : path.Relative;
-        var builder = new StringBuilder();
-
-        builder.Append("<!doctype html><html><head><meta charset=\"utf-8\"><title>");
-        builder.Append(System.Net.WebUtility.HtmlEncode(title));
-        builder.Append("</title></head><body><h1>");
-        builder.Append(System.Net.WebUtility.HtmlEncode(title));
-        builder.Append("</h1><ul>");
-
-        // Absolute hrefs, the same ones PROPFIND reports. A relative one would resolve against the
-        // request URL, and a browser that arrived at the collection without a trailing slash — which
-        // is how anyone types a mount URL — resolves it against the *parent*, so every link in the
-        // listing lands a directory short.
-        if (!path.IsRoot)
-        {
-            var cut = path.Relative.LastIndexOf('/');
-            var parent = cut < 0 ? string.Empty : path.Relative[..cut];
-
-            builder.Append("<li><a href=\"");
-            builder.Append(System.Net.WebUtility.HtmlEncode(this.HrefFor(parent, isCollection: true)));
-            builder.Append("\">../</a></li>");
-        }
+        var entries = new List<WebDavDirectoryPage.Entry>();
 
         foreach (var child in this.Children(path))
         {
             var isCollection = child is DirectoryInfo;
-            var name = child.Name + (isCollection ? "/" : string.Empty);
 
-            builder.Append("<li><a href=\"");
-            builder.Append(System.Net.WebUtility.HtmlEncode(this.HrefFor(Join(path.Relative, child.Name), isCollection)));
-            builder.Append("\">");
-            builder.Append(System.Net.WebUtility.HtmlEncode(name));
-            builder.Append("</a></li>");
+            entries.Add(new WebDavDirectoryPage.Entry(
+                child.Name,
+                this.HrefFor(Join(path.Relative, child.Name), isCollection),
+                isCollection,
+                child is FileInfo file ? file.Length : 0,
+                child.LastWriteTimeUtc
+            ));
         }
 
-        builder.Append("</ul></body></html>");
+        var model = new WebDavDirectoryPage.Model(
+            path.IsRoot ? this.RootDisplayName : path.Relative,
+            this.HrefFor(path, isCollection: true),
+            this.ParentHref(path),
+            this.Trail(path),
+            entries,
+            new WebDavDirectoryPage.Capabilities(
+                this.options.AllowWrite,
+                this.options.AllowDelete,
+                this.options.AllowMove,
+                this.options.MaxUploadBytes
+            )
+        );
+
+        // A listing that a delete or an upload has already invalidated is exactly what the back
+        // button would otherwise serve from cache.
+        context.Response.Headers.Set(HeaderNames.CacheControl, "no-store");
 
         await context.Response
-            .WriteTextAsync(builder.ToString(), "text/html; charset=utf-8", context.RequestAborted)
+            .WriteTextAsync(WebDavDirectoryPage.Render(model), "text/html; charset=utf-8", context.RequestAborted)
             .ConfigureAwait(false);
     }
+
+
+    /// <summary>
+    /// The collection above this one, or null at the mount root - which has no parent this mount is
+    /// willing to name.
+    /// </summary>
+    /// <remarks>
+    /// Absolute, like every href here: a browser that arrived without the trailing slash - which is
+    /// how anyone types a mount URL - resolves a relative one against the *parent*, so every link in
+    /// the listing would land a directory short.
+    /// </remarks>
+    string? ParentHref(DavPath path)
+    {
+        if (path.IsRoot)
+            return null;
+
+        var cut = path.Relative.LastIndexOf('/');
+
+        return this.HrefFor(cut < 0 ? string.Empty : path.Relative[..cut], isCollection: true);
+    }
+
+
+    /// <summary>The walk back to the mount root, root first, this collection last.</summary>
+    IReadOnlyList<WebDavDirectoryPage.Crumb> Trail(DavPath path)
+    {
+        var trail = new List<WebDavDirectoryPage.Crumb>
+        {
+            new(this.RootDisplayName, this.HrefFor(string.Empty, isCollection: true))
+        };
+
+        if (path.IsRoot)
+            return trail;
+
+        var walked = string.Empty;
+
+        foreach (var segment in path.Relative.Split('/', StringSplitOptions.RemoveEmptyEntries))
+        {
+            walked = Join(walked, segment);
+            trail.Add(new WebDavDirectoryPage.Crumb(segment, this.HrefFor(walked, isCollection: true)));
+        }
+
+        return trail;
+    }
+
 
     // ---- PUT ----
 

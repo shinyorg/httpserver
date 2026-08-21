@@ -1,13 +1,17 @@
-
 namespace Shiny.Net.HttpServer.CommandLine;
 
 
 /// <summary>
-/// Splits the file browser's single PUT into create and update.
+/// Splits the mount's single write switch into create and update.
 /// <para>
-/// The browser has one write switch, so create and update are the same route to it. Asking the
-/// file system whether the target already exists is the only thing that tells them apart, and it
-/// has to happen before the handler runs - after that the file is already written.
+/// WebDAV has one permission for writing, so create and update are the same <c>PUT</c> to it -
+/// and the same <c>MKCOL</c>, <c>COPY</c> and <c>MOVE</c>. Asking the file system whether the
+/// target already exists is the only thing that tells them apart, and it has to happen before the
+/// handler runs: after that the file is already written.
+/// </para>
+/// <para>
+/// Deleting needs none of this. It has a permission of its own on the mount, so it never reaches
+/// here.
 /// </para>
 /// </summary>
 public sealed class WriteGuard(string prefix, string rootPath, Permissions permissions) : IHttpMiddleware
@@ -32,20 +36,47 @@ public sealed class WriteGuard(string prefix, string rootPath, Permissions permi
     }
 
 
-    /// <summary>Null when this request is not a write, or when the path is one the browser will reject anyway.</summary>
+    /// <summary>Null when this request is not a write, or when the path is one the mount will reject anyway.</summary>
     Permissions? RequiredPermission(HttpRequest request)
     {
-        if (!String.Equals(request.Method, "PUT", StringComparison.OrdinalIgnoreCase))
+        // PROPPATCH and LOCK are left out on purpose. Neither changes a file's contents, and both
+        // are sent by Finder and by the Windows redirector around an ordinary upload - refusing
+        // them on a create-only server would break the upload the server does allow.
+        switch (request.Method.ToUpperInvariant())
+        {
+            case "PUT":
+                return this.ForTarget(request.Path);
+
+            // A collection either exists - in which case MKCOL is the mount's own 405 - or is about
+            // to, which is a create however the server is configured.
+            case "MKCOL":
+                return Permissions.Create;
+
+            // Both land bytes at the destination, and the destination is what decides which write
+            // it is. MOVE also removes the source, which the mount's delete permission gates.
+            case "COPY":
+            case "MOVE":
+                return request.Headers.GetFirst("Destination") is { Length: > 0 } destination
+                    ? this.ForTarget(DestinationPath(destination))
+                    : null;
+
+            default:
+                return null;
+        }
+    }
+
+
+    /// <summary>What writing to this path would be: replacing something, or making it.</summary>
+    Permissions? ForTarget(string path)
+    {
+        if (!path.StartsWith(this.pathPrefix, StringComparison.Ordinal))
             return null;
 
-        if (!request.Path.StartsWith(this.pathPrefix, StringComparison.Ordinal))
-            return null;
-
-        var relative = request.Path[this.pathPrefix.Length..];
+        var relative = path[this.pathPrefix.Length..];
         if (relative.Length == 0)
             return null;
 
-        // a trailing slash is the browser's directory create, never an overwrite
+        // a trailing slash names a collection, which is only ever created
         if (relative.EndsWith('/'))
             return Permissions.Create;
 
@@ -53,11 +84,37 @@ public sealed class WriteGuard(string prefix, string rootPath, Permissions permi
         if (target == null)
             return null;
 
-        return File.Exists(target) ? Permissions.Update : Permissions.Create;
+        return File.Exists(target) || Directory.Exists(target) ? Permissions.Update : Permissions.Create;
     }
 
 
-    /// <summary>The full path, or null when it escapes the root and the browser's own check will refuse it.</summary>
+    /// <summary>
+    /// The path part of a <c>Destination</c>, which RFC 4918 allows to be a full URL. Percent
+    /// decoded, because that is the form the request path arrives in and the two are compared.
+    /// </summary>
+    static string DestinationPath(string destination)
+    {
+        var value = destination.Trim();
+
+        if (Uri.TryCreate(value, UriKind.Absolute, out var absolute))
+            value = absolute.AbsolutePath;
+
+        var query = value.IndexOfAny(['?', '#']);
+        if (query >= 0)
+            value = value[..query];
+
+        try
+        {
+            return Uri.UnescapeDataString(value);
+        }
+        catch (UriFormatException)
+        {
+            return value;
+        }
+    }
+
+
+    /// <summary>The full path, or null when it escapes the root and the mount's own check will refuse it.</summary>
     string? Resolve(string relative)
     {
         try

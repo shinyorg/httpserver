@@ -11,7 +11,7 @@ public sealed record ServeSettings
     public required IPAddress Address { get; init; }
     public required int Port { get; init; }
 
-    /// <summary>Where the browser is mounted - "/" serves the directory at the root of the site.</summary>
+    /// <summary>Where the directory is mounted - "/" serves it at the root of the site.</summary>
     public required string UrlPrefix { get; init; }
 
     public required Permissions Permissions { get; init; }

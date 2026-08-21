@@ -368,6 +368,80 @@ public class WebDavTests
         Assert.Contains("href=\"/dav/\"", html, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// The page offers exactly what the mount allows. A button that only ever earns a 403 is worse
+    /// than no button, because it reads as a server that is broken rather than one that is read-only.
+    /// </summary>
+    [Fact]
+    public async Task Get_on_a_collection_offers_the_verbs_the_mount_allows()
+    {
+        using var root = new ContentRoot().With("notes.txt", "hello");
+        await using var server = await StartAsync(root);
+
+        var html = await server.Client.GetStringAsync("/dav", TestContext.Current.CancellationToken);
+
+        Assert.Contains("data-can-write=\"1\"", html, StringComparison.Ordinal);
+        Assert.Contains("data-can-delete=\"1\"", html, StringComparison.Ordinal);
+        Assert.Contains("data-can-move=\"1\"", html, StringComparison.Ordinal);
+        Assert.Contains("id=\"new-folder\"", html, StringComparison.Ordinal);
+        Assert.Contains("data-act=\"rename\"", html, StringComparison.Ordinal);
+        Assert.Contains("data-act=\"delete\"", html, StringComparison.Ordinal);
+
+        // The collection's own href is what every one of those verbs is built from.
+        Assert.Contains("data-href=\"/dav/\"", html, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Get_on_a_collection_of_a_read_only_mount_offers_none_of_them()
+    {
+        using var root = new ContentRoot().With("notes.txt", "hello");
+
+        await using var server = await StartAsync(root, o =>
+        {
+            o.AllowWrite = false;
+            o.AllowDelete = false;
+        });
+
+        var html = await server.Client.GetStringAsync("/dav", TestContext.Current.CancellationToken);
+
+        Assert.DoesNotContain("data-can-write", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("data-can-delete", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("data-act=", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("id=\"new-folder\"", html, StringComparison.Ordinal);
+
+        // Reading is still what the mount is for, so the listing and its downloads stay.
+        Assert.Contains("href=\"/dav/notes.txt\"", html, StringComparison.Ordinal);
+        Assert.Contains("download=\"notes.txt\"", html, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A file name is attacker-supplied on any mount that allows writing, and it lands in the page
+    /// as both text and an attribute value.
+    /// </summary>
+    [Fact]
+    public async Task Get_on_a_collection_escapes_a_name_that_is_markup()
+    {
+        using var root = new ContentRoot().With("<img src=x onerror=alert(1)>.txt", "hello");
+        await using var server = await StartAsync(root);
+
+        var html = await server.Client.GetStringAsync("/dav", TestContext.Current.CancellationToken);
+
+        Assert.DoesNotContain("<img src=x", html, StringComparison.Ordinal);
+        Assert.Contains("&lt;img src=x onerror=alert(1)&gt;.txt", html, StringComparison.Ordinal);
+    }
+
+    /// <summary>A listing the back button serves from cache is one an upload or a delete has moved on from.</summary>
+    [Fact]
+    public async Task Get_on_a_collection_is_not_cached()
+    {
+        using var root = new ContentRoot().With("notes.txt", "hello");
+        await using var server = await StartAsync(root);
+
+        var response = await server.Client.GetAsync("/dav", TestContext.Current.CancellationToken);
+
+        Assert.Equal("no-store", response.Headers.CacheControl?.ToString());
+    }
+
     [Fact]
     public async Task Mkcol_creates_a_collection_and_refuses_to_create_it_twice()
     {

@@ -38,7 +38,7 @@ public static class Cli
 
         var prefixOpt = new Option<string>("--prefix")
         {
-            Description = "URL prefix the browser is mounted at.",
+            Description = "URL prefix the directory is mounted at.",
             DefaultValueFactory = _ => "/"
         };
 
@@ -117,7 +117,7 @@ public static class Cli
             Description = "Logs every request."
         };
 
-        var root = new RootCommand("Serves a directory over HTTP with the Shiny.Net.HttpServer file browser.")
+        var root = new RootCommand("Serves a directory over HTTP: a file manager in a browser, and a WebDAV drive in Finder or Explorer.")
         {
             pathArg,
             portOpt,

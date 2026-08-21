@@ -1,7 +1,7 @@
 namespace Shiny.Net.HttpServer.CommandLine;
 
 /// <summary>
-/// What the file browser is allowed to do. Read is always on - a server that cannot
+/// What the mount is allowed to do. Read is always on - a server that cannot
 /// be read from is not one worth starting.
 /// </summary>
 [Flags]

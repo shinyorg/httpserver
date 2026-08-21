@@ -97,6 +97,8 @@ triggers:
 - Shiny.Net.HttpServer.CommandLine
 - shinyhttpserver
 - serve a directory from the command line
+- file manager in a browser
+- mount a folder as a drive
 - QR code in the terminal
 - open a served directory on a phone
 - share a folder over the internet
@@ -208,6 +210,13 @@ dotnet tool install -g Shiny.Net.HttpServer.CommandLine  # `shinyhttpserver`, no
 `Shiny.Net.HttpServer.CommandLine` is a .NET tool, not something an app references: it serves a
 directory over HTTP from a terminal (`shinyhttpserver [path] -m read|create|update|delete|all
 -u user:password`). Reach for it when the ask is "serve this folder", not "add a server to my app".
+It mounts the directory over **WebDAV**, so one address is both a browser file manager (browse,
+upload, rename, delete — whatever `-m` allows) and a drive Finder, Explorer or a Linux file manager
+can mount. Scripting it is WebDAV: `GET`/`PUT`/`DELETE` as usual, `MKCOL` for a directory, `MOVE`
+for a rename, and `PROPFIND` with `Depth: 1` for a machine-readable listing — a `GET` on a directory
+returns the manager's HTML, not JSON. `-m` is enforced before the handler runs, across `MKCOL`,
+`COPY` and `MOVE` as well as `PUT`; a `MOVE` is judged by where it lands, and renaming needs
+`update` **and** `delete`.
 It listens on every interface by default and ends its banner with a scannable QR code of the LAN
 address plus the URL in full, so "get this folder onto my phone" is the tool answer, not code —
 `-a localhost` keeps it to the machine, `--no-qr` drops the code. Basic auth (`-u`) over plain HTTP
@@ -547,8 +556,9 @@ app.MapFileBrowser("/files", o => o.RootPath = FileSystem.AppDataDirectory).Requ
 
 `MapFileBrowser` is a JSON API you drive with curl or your own client. `MapWebDav` speaks the
 protocol the operating system already has a client for, so the folder mounts as a drive with no
-client code at all. Reach for it whenever the user says *mount*, *Finder*, *Explorer*, *map a
-network drive*, or *WebDAV*; reach for the file browser when they want an API.
+client code at all — and its browser `GET` is a working file manager. Reach for it whenever the user
+says *mount*, *Finder*, *Explorer*, *map a network drive*, *WebDAV*, or wants a **UI** over a
+directory; reach for the file browser when they want a JSON API to call from their own code.
 
 Tier 1: a mounted module of raw routes, twenty-two of them, mapped in one call.
 
@@ -571,9 +581,15 @@ app.MapWebDav("/dav", o =>
   small tree.
 - Dead properties (`PROPPATCH`) are held in memory. Assign `PropertyStore` to keep them across
   restarts.
-- A browser `GET` on a collection returns an HTML listing whose entries — and the link back to the
-  parent — are absolute, so the tree is walkable from a plain browser with or without a trailing
-  slash on the mount URL. `DirectoryBrowsing = false` turns it off.
+- A browser `GET` on a collection returns a **file manager**: listing with sizes and times,
+  breadcrumbs, drag-and-drop upload (`PUT`, folders walked and recreated), new folder (`MKCOL`),
+  rename (`MOVE`, `Overwrite: F`) and delete (`DELETE`), plus a download button per file. It offers
+  only what the options allow — read-only renders a listing with no buttons — and it is one
+  self-contained response with nothing fetched from outside. Entries and the link to the parent are
+  absolute, so the tree is walkable with or without a trailing slash on the mount URL.
+  `DirectoryBrowsing = false` turns the page off entirely (a browser `GET` then answers 405). This
+  is the same page `shinyhttpserver` serves — say "open the mount URL in a browser" when a user asks
+  for a UI over a directory; there is no other file-manager UI in this library.
 - The mount is excluded from the OpenAPI document — do not try to describe it.
 
 ## Realtime

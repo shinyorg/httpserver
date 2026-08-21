@@ -5,9 +5,9 @@ using System.Net.Sockets;
 using System.Security.Cryptography.X509Certificates;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using Shiny.Net.HttpServer.FileBrowser;
 using Shiny.Net.HttpServer.Security;
 using Shiny.Net.HttpServer.Ssh;
+using Shiny.Net.HttpServer.WebDav;
 
 namespace Shiny.Net.HttpServer.CommandLine;
 
@@ -78,26 +78,34 @@ public static class Runner
         if (settings.Verbose)
             server.Use(LogRequestAsync);
 
-        // the browser has one write flag, so create/update only differ if something checks first
+        // the mount has one write flag, so create/update only differ if something checks first
         if (NeedsWriteGuard(settings.Permissions))
             server.Use(new WriteGuard(prefix, settings.RootPath, settings.Permissions));
 
-        var endpoints = server.MapFileBrowser(prefix, o =>
+        // WebDAV rather than the JSON file browser, because it is two things at once: the file
+        // manager a browser gets on GET, and a drive Finder, Explorer and the Linux file managers
+        // can mount at the same address - which is the shortest path from "a directory on this
+        // machine" to "a folder on that one".
+        var mount = server.MapWebDav(prefix, o =>
         {
             o.RootPath = settings.RootPath;
             o.AllowWrite = settings.Permissions.Has(Permissions.Create) || settings.Permissions.Has(Permissions.Update);
-            o.AllowCreateDirectories = settings.Permissions.Has(Permissions.Create);
             o.AllowDelete = settings.Permissions.Has(Permissions.Delete);
             o.ServeHiddenFiles = settings.ServeHidden;
             o.MaxUploadBytes = settings.MaxUploadBytes;
+            // The directory's own name, which is what the manager's breadcrumb and a mounted drive
+            // are labelled with. A root directory has no name, and there the mount's own default
+            // is the better answer than an empty label.
+            if (Path.GetFileName(Path.TrimEndingDirectorySeparator(settings.RootPath)) is { Length: > 0 } name)
+                o.DisplayName = name;
         });
 
         if (settings.AuthEnabled)
         {
             if (settings.AuthChangesOnly)
-                endpoints.RequireAuthorizationForChanges();
+                mount.RequireAuthorizationForChanges();
             else
-                endpoints.RequireAuthorization();
+                mount.RequireAuthorization();
         }
 
         // mounted anywhere else the site root is a 404, which is a worse answer than the listing
@@ -276,6 +284,7 @@ public static class Runner
             Line("Tunnel", TunnelUrl(tunnelUrl, prefix));
 
         Line("Operations", settings.Permissions.Describe());
+        Line("Mount", "WebDAV - Finder, Explorer and any WebDAV client can open the URL as a drive");
         Line(
             "Auth",
             settings.AuthEnabled
