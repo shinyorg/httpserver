@@ -6,8 +6,16 @@ namespace Shiny.Net.HttpServer;
 /// The seam between <see cref="HttpResponse"/> and whatever is actually framing bytes onto the
 /// wire. Implemented per protocol version, which is what lets HTTP/2 slot in later without
 /// touching the public response surface.
+/// <para>
+/// Public so a middleware can sit in the middle of it: take the control the response is currently
+/// bound to, wrap it, and <see cref="HttpResponse.Bind"/> the wrapper. That is how response
+/// compression inserts itself without every writer knowing about it, and it is the same seam a
+/// recorder or a logger needs to see the bytes of a body it did not write. Wrappers must forward
+/// <see cref="StartAsync"/> and <see cref="CompleteAsync"/> to the control they wrapped, and must
+/// flush anything they buffered before the connection completes.
+/// </para>
 /// </summary>
-interface IResponseBodyControl
+public interface IResponseBodyControl
 {
     bool HasStarted { get; }
     Stream Stream { get; }

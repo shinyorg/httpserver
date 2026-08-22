@@ -210,13 +210,24 @@ public sealed class HttpResponse
         this.Headers.Set(HeaderNames.Location, location);
     }
 
-    internal void Bind(IResponseBodyControl bodyControl) => this.control = bodyControl;
+    /// <summary>
+    /// Puts <paramref name="bodyControl"/> in charge of framing this response. A middleware that
+    /// wants to see or transform the body wraps <see cref="BodyControl"/> and binds the wrapper —
+    /// do it before calling the next delegate, and make sure whatever the wrapper buffered is
+    /// flushed afterwards, because the connection completes its own producer rather than whatever
+    /// the response ended up bound to.
+    /// </summary>
+    public void Bind(IResponseBodyControl bodyControl)
+    {
+        ArgumentNullException.ThrowIfNull(bodyControl);
+        this.control = bodyControl;
+    }
 
     /// <summary>
     /// The control currently framing this response, so a middleware can wrap it — which is how
     /// response compression inserts itself without every writer knowing about it.
     /// </summary>
-    internal IResponseBodyControl BodyControl => this.control;
+    public IResponseBodyControl BodyControl => this.control;
 
     internal async ValueTask InvokeOnStartingAsync()
     {

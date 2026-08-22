@@ -15,6 +15,12 @@ triggers:
 - MapPost
 - OnRequest
 - IHttpMiddleware
+- IResponseBodyControl
+- request logging
+- traffic recorder
+- capture request body
+- capture response body
+- read body twice
 - RequestDelegate
 - HttpContext
 - RouteAttribute
@@ -494,8 +500,34 @@ app.UseSessions();
 app.UseStaticFiles("./wwwroot");
 ```
 
+### Seeing the bodies (request logging, traffic recording, audit)
+
+Both directions have a seam; use them rather than trying to read a body twice off the wire.
+
+```csharp
+// inbound: read once, hand the handler a rewound copy (also drops any BodyReader handed out)
+var buffered = new MemoryStream();
+await ctx.Request.Body.CopyToAsync(buffered, ctx.RequestAborted);
+buffered.Position = 0;
+ctx.Request.Body = buffered;
+
+// outbound: wrap the control the response is bound to, then bind the wrapper
+var tee = new TeeBodyControl(ctx.Response.BodyControl, capture);   // : IResponseBodyControl
+ctx.Response.Bind(tee);
+try     { await next(ctx); }
+finally { await tee.FlushAsync(); }        // see gotcha below
+```
+
+A wrapper must forward `StartAsync`/`CompleteAsync` to the control it wrapped, and should build its
+`Writer` over its own `Stream` (not over `inner.Writer`) so both write paths meet in one place. This
+is the same seam `UseResponseCompression()` inserts itself through. On a device, decide from the
+content type whether a body is worth keeping at all and cap what you store.
+
 **Critical gotchas:**
 
+- **Flush what a body-control wrapper buffered before the pipeline unwinds.** The connection
+  completes its own producer, not whatever the response ended up bound to, so bytes left in a
+  wrapper's `PipeWriter` never reach the wire.
 - The pipeline is composed **once**, at first serve. Registering middleware after the server starts
   throws; `RestartAsync` does not recompose it. Routes *can* change at any time.
 - Headers flush on the first body write. To add a header around a handler, use

@@ -79,7 +79,7 @@ is built on the one below and they compose in the same app.
 
 | | |
 | --- | --- |
-| **Core** | Routing with constraints and runtime-mutable routes, ASP.NET-shaped middleware, a real `IServiceScope` per request, results in both `Results.*` and `IActionResult` spellings, RFC 9457 problem details and an exception-handler chain |
+| **Core** | Routing with constraints and runtime-mutable routes, ASP.NET-shaped middleware that can read and rewrite both bodies of an exchange, a real `IServiceScope` per request, results in both `Results.*` and `IActionResult` spellings, RFC 9457 problem details and an exception-handler chain |
 | **Formats** | Content negotiation in both directions — responses chosen from `Accept`, request bodies from `Content-Type`. JSON out of the box; XML, MessagePack and protobuf are one line each, and a format of your own is an `IOutputFormatter`/`IInputFormatter` pair. XML and MessagePack need no dependency and no attributes on your DTOs: they read the same `JsonTypeInfo` the JSON path reads, which is what keeps them AOT-clean where `XmlSerializer` cannot be |
 | **Protocols** | HTTP/1.1, HTTP/2 (own HPACK), HTTP/3 (own QPACK), WebSockets, Server-Sent Events, trailing headers on all three versions. Never guessed — ALPN over TLS, connection preface over cleartext |
 | **Content** | Static files from disk *or* embedded resources, a published Blazor WebAssembly app, streaming multipart uploads, downloads with byte ranges and conditional GETs, a file browser over a directory, and brotli/gzip/deflate compression |

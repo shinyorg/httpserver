@@ -64,13 +64,29 @@ public sealed class HttpRequest
     public bool IsChunked { get; internal set; }
 
     /// <summary>
-    /// The request body as a stream. Read-only and forward-only — suitable for streaming a large
-    /// upload straight to disk without buffering. Never null; an empty stream when there is no body.
+    /// The request body as a stream. As it arrives off the connection it is read-only and
+    /// forward-only — suitable for streaming a large upload straight to disk without buffering.
+    /// Never null; an empty stream when there is no body.
+    /// <para>
+    /// Settable so a middleware can put something else in front of the handler: the usual reason is
+    /// to read the body once and hand a rewound <see cref="MemoryStream"/> on, which is what makes
+    /// a body readable twice — by a recorder or a logger, and then by the handler. Assigning also
+    /// discards any <see cref="BodyReader"/> already handed out, so the two never disagree about
+    /// where the body starts.
+    /// </para>
     /// </summary>
     public Stream Body
     {
         get => this.body ??= EmptyReadStream.Instance;
-        internal set => this.body = value;
+        set
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            this.body = value;
+
+            // a reader built over the old stream would keep reading the old stream, and its
+            // buffered-but-unconsumed bytes would be lost either way
+            this.bodyReader = null;
+        }
     }
 
     /// <summary>
