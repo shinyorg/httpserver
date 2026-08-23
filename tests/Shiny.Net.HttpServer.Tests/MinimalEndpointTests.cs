@@ -137,8 +137,8 @@ public class MinimalEndpointTests
             },
             builder =>
             {
-                builder.Services.AddAuthentication();
-                builder.Services.AddAuthorization();
+                builder.AddAuthentication();
+                builder.AddAuthorization();
             }
         );
 
@@ -260,8 +260,8 @@ public class EndpointModuleTests
             },
             builder =>
             {
-                builder.Services.AddAuthentication();
-                builder.Services.AddAuthorization();
+                builder.AddAuthentication();
+                builder.AddAuthorization();
             }
         );
 

@@ -139,8 +139,8 @@ public class BasicAuthenticationTests
         },
         builder =>
         {
-            builder.Services.AddAuthentication().AddBasic(configure);
-            builder.Services.AddAuthorization(o => o.AddPolicy("admins", p => p.RequireRole("admin")));
+            builder.AddAuthentication().AddBasic(configure);
+            builder.AddAuthorization(o => o.AddPolicy("admins", p => p.RequireRole("admin")));
         }
     );
 
@@ -338,9 +338,9 @@ public class BasicAuthenticationTests
     [Fact]
     public void Refuses_to_register_with_no_accounts_and_no_validator()
     {
-        var services = new ServiceCollection();
+        var builder = new ShinyHttpServerBuilder(new ServiceCollection());
 
-        Assert.Throws<InvalidOperationException>(() => services.AddAuthentication().AddBasic(_ => { }));
+        Assert.Throws<InvalidOperationException>(() => builder.AddAuthentication().AddBasic(_ => { }));
     }
 
     /// <summary>
@@ -390,7 +390,7 @@ public class BasicCredentialValidatorTests
         }
     }
 
-    static Task<TestServer> StartAsync(Action<IServiceCollection> configureServices) => TestServer.StartAsync(
+    static Task<TestServer> StartAsync(Action<ShinyHttpServerBuilder> configureServices) => TestServer.StartAsync(
         app =>
         {
             app.UseAuthentication();
@@ -399,7 +399,7 @@ public class BasicCredentialValidatorTests
             app.MapGet("/who", ctx => ctx.Response.WriteTextAsync(ctx.User.Identity?.Name ?? "anonymous"))
                 .RequireAuthorization();
         },
-        builder => configureServices(builder.Services)
+        builder => configureServices(builder)
     );
 
     static HttpRequestMessage Request(string username, string password)
@@ -417,10 +417,10 @@ public class BasicCredentialValidatorTests
     [Fact]
     public async Task Authenticates_through_a_validator_resolved_from_the_container()
     {
-        await using var server = await StartAsync(services =>
+        await using var server = await StartAsync(builder =>
         {
-            services.AddAuthentication().AddBasic<MutableStore>(o => o.Realm = "Device");
-            services.AddAuthorization();
+            builder.AddAuthentication().AddBasic<MutableStore>(o => o.Realm = "Device");
+            builder.AddAuthorization();
         });
 
         using var request = Request("ada", "first-password");
@@ -511,10 +511,10 @@ public class BasicCredentialValidatorTests
     [Fact]
     public void Does_not_require_static_accounts_when_a_validator_is_registered()
     {
-        var services = new ServiceCollection();
+        var builder = new ShinyHttpServerBuilder(new ServiceCollection());
 
-        services.AddAuthentication().AddBasic<MutableStore>();
+        builder.AddAuthentication().AddBasic<MutableStore>();
 
-        Assert.Contains(services, d => d.ServiceType == typeof(IBasicCredentialValidator));
+        Assert.Contains(builder.Services, d => d.ServiceType == typeof(IBasicCredentialValidator));
     }
 }

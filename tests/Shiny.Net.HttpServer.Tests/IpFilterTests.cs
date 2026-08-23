@@ -191,7 +191,7 @@ public class IpFilterMiddlewareTests
                 app.MapGet("/open", ctx => ctx.Response.WriteAsync("open"));
                 app.MapGet("/admin", ctx => ctx.Response.WriteAsync("admin")).RequireIpFilter("admin");
             },
-            builder => builder.Services.AddIpFilter(o =>
+            builder => builder.AddIpFilter(o =>
             {
                 o.SetDefaultPolicy(p => p.AllowLoopback());
                 o.AddPolicy("admin", p => p.Allow("10.0.0.0/8"));
@@ -212,7 +212,7 @@ public class IpFilterMiddlewareTests
                 app.MapGet("/x", ctx => ctx.Response.WriteAsync("blocked"));
                 app.MapGet("/health", ctx => ctx.Response.WriteAsync("ok")).AllowAnyIp();
             },
-            builder => builder.Services.AddIpFilter(o => o.SetDefaultPolicy(p => p.Allow("10.0.0.0/8")))
+            builder => builder.AddIpFilter(o => o.SetDefaultPolicy(p => p.Allow("10.0.0.0/8")))
         );
 
         Assert.Equal(HttpStatusCode.Forbidden, (await server.Client.GetAsync("/x", Token)).StatusCode);
@@ -228,7 +228,7 @@ public class IpFilterMiddlewareTests
                 app.UseIpFilter();
                 app.MapGet("/x", ctx => ctx.Response.WriteAsync("ok"));
             },
-            builder => builder.Services.AddIpFilter(o =>
+            builder => builder.AddIpFilter(o =>
             {
                 o.SetDefaultPolicy(p => p.Allow("10.0.0.0/8"));
                 o.OnRejected = (ctx, address) =>
@@ -254,7 +254,7 @@ public class IpFilterMiddlewareTests
                 app.UseIpFilter();
                 app.MapGet("/x", ctx => ctx.Response.WriteAsync("ok")).RequireIpFilter("missing");
             },
-            builder => builder.Services.AddIpFilter(o => o.SetDefaultPolicy(p => p.AllowLoopback()))
+            builder => builder.AddIpFilter(o => o.SetDefaultPolicy(p => p.AllowLoopback()))
         );
 
         var response = await server.Client.GetAsync("/x", Token);

@@ -194,10 +194,10 @@ public static class XmlFormatterExtensions
     }
 
     /// <summary>Registers content negotiation with XML added, for an app that wants nothing else.</summary>
-    public static IServiceCollection AddXmlFormatters(
-        this IServiceCollection services,
+    public static ShinyHttpServerBuilder AddXmlFormatters(
+        this ShinyHttpServerBuilder builder,
         Action<ContentNegotiationOptions>? configure = null
-    ) => services.AddContentNegotiation(o =>
+    ) => builder.AddContentNegotiation(o =>
     {
         o.AddXml();
         configure?.Invoke(o);

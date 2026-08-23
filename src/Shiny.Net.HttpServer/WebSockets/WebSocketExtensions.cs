@@ -17,6 +17,31 @@ public sealed class WebSocketAcceptOptions
     /// otherwise an unbounded allocation.
     /// </summary>
     public long MaxMessageLength { get; set; } = 4 * 1024 * 1024;
+
+    /// <summary>
+    /// Offers permessage-deflate (RFC 7692) when the client asks for it.
+    /// <para>
+    /// On by default: the messages an app sends over a socket are almost always JSON, and a
+    /// tunnelled or cellular socket is where the saving lands. Compression is per message with no
+    /// context takeover in either direction, so a socket costs no persistent compression window.
+    /// </para>
+    /// </summary>
+    public bool EnablePerMessageDeflate { get; set; } = true;
+
+    /// <summary>Messages smaller than this are sent uncompressed — deflate makes them bigger.</summary>
+    public int CompressionThreshold { get; set; } = 256;
+
+    /// <summary>
+    /// How often to ping an idle peer. Null switches keepalive off.
+    /// <para>
+    /// A dropped mobile connection does not close the socket; it goes quiet. Without this the
+    /// server holds the connection open for a peer that is never coming back.
+    /// </para>
+    /// </summary>
+    public TimeSpan? KeepAliveInterval { get; set; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>How many pings may go unanswered before the socket is torn down.</summary>
+    public int MissedPingsBeforeClosing { get; set; } = 2;
 }
 
 /// <summary>Accepting WebSocket connections.</summary>
@@ -90,6 +115,10 @@ public static class WebSocketExtensions
         var key = request.Headers.GetFirst(HeaderNames.SecWebSocketKey)!;
         var subProtocol = SelectSubProtocol(request.Headers.GetFirst(HeaderNames.SecWebSocketProtocol), options);
 
+        var deflate = options.EnablePerMessageDeflate
+            ? PerMessageDeflate.Negotiate(request.Headers.GetFirst(HeaderNames.SecWebSocketExtensions))
+            : null;
+
         var response = context.Response;
         response.StatusCode = StatusCodes.Status101SwitchingProtocols;
         response.Headers[HeaderNames.Upgrade] = "websocket";
@@ -99,10 +128,23 @@ public static class WebSocketExtensions
         if (subProtocol is not null)
             response.Headers[HeaderNames.SecWebSocketProtocol] = subProtocol;
 
+        if (deflate is not null)
+            response.Headers[HeaderNames.SecWebSocketExtensions] = deflate;
+
         // Flushes the 101 and its headers. Everything after this is WebSocket framing.
         await response.StartAsync(cancellationToken).ConfigureAwait(false);
 
-        return new WebSocket(transport, options.MaxMessageLength) { SubProtocol = subProtocol };
+        var socket = new WebSocket(transport, options.MaxMessageLength)
+        {
+            SubProtocol = subProtocol,
+            PerMessageDeflate = deflate is not null,
+            CompressionThreshold = options.CompressionThreshold
+        };
+
+        if (options.KeepAliveInterval is { } interval && interval > TimeSpan.Zero)
+            socket.StartKeepAlive(interval, Math.Max(1, options.MissedPingsBeforeClosing));
+
+        return socket;
     }
 
     /// <summary>The <c>Sec-WebSocket-Accept</c> value for a client key.</summary>

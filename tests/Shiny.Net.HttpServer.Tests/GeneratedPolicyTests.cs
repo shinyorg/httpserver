@@ -71,14 +71,14 @@ public class GeneratedPolicyTests
         },
         builder =>
         {
-            builder.Services.AddCors(o =>
+            builder.AddCors(o =>
             {
                 o.AddDefaultPolicy(p => p.WithOrigins("https://default.example").AllowAnyMethod().AllowAnyHeader());
                 o.AddPolicy("tenant", p => p.WithOrigins(Origin).AllowAnyMethod().AllowAnyHeader());
                 o.AddPolicy("public", p => p.AllowAnyOrigin().AllowAnyMethod());
             });
 
-            builder.Services.AddRateLimiter(o =>
+            builder.AddRateLimiter(o =>
             {
                 o.GlobalPolicy = new FixedWindowRateLimitPolicy(100, TimeSpan.FromMinutes(5))
                 {
@@ -90,7 +90,7 @@ public class GeneratedPolicyTests
                 });
             });
 
-            builder.Services.AddIpFilter(o =>
+            builder.AddIpFilter(o =>
             {
                 o.SetDefaultPolicy(p => p.AllowLoopback());
                 o.AddPolicy("admin", p => p.Allow("10.0.0.0/8"));
@@ -163,7 +163,7 @@ public class GeneratedPolicyTests
                 app.UseIpFilter();
                 app.MapPolicyEndpoints();
             },
-            builder => builder.Services.AddIpFilter(o =>
+            builder => builder.AddIpFilter(o =>
             {
                 o.SetDefaultPolicy(p => p.Allow("10.0.0.0/8"));
                 o.AddPolicy("admin", p => p.Allow("10.0.0.0/8"));

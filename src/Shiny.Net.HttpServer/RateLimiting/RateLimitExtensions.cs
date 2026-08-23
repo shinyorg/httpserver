@@ -8,21 +8,21 @@ namespace Shiny.Net.HttpServer.RateLimiting;
 public static class RateLimitServiceCollectionExtensions
 {
     /// <summary>Registers the rate limiter's options and any named policies.</summary>
-    public static IServiceCollection AddRateLimiter(
-        this IServiceCollection services,
+    public static ShinyHttpServerBuilder AddRateLimiter(
+        this ShinyHttpServerBuilder builder,
         Action<RateLimitOptions>? configure = null
     )
     {
-        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(builder);
 
-        services.TryAddSingleton(_ =>
+        builder.Services.TryAddSingleton(_ =>
         {
             var options = new RateLimitOptions();
             configure?.Invoke(options);
             return options;
         });
 
-        return services;
+        return builder;
     }
 }
 
@@ -68,7 +68,7 @@ public static class HttpServerRateLimitExtensions
                 : throw new InvalidOperationException(
                     "UseRateLimiter has no policy to apply. Either pass one inline — " +
                     "app.UseRateLimiter(new FixedWindowRateLimitPolicy(100, TimeSpan.FromMinutes(1))) — " +
-                    "or register them with services.AddRateLimiter(o => ...)."
+                    "or register them with builder.AddRateLimiter(o => ...)."
                 ));
 
         var logger = server.Services
@@ -109,7 +109,7 @@ public static class HttpServerRateLimitExtensions
         => server.Services?.GetService<RateLimitOptions>()
             ?? throw new InvalidOperationException(
                 "Named rate limit policies live in RateLimitOptions. Register them with " +
-                "services.AddRateLimiter(o => o.AddFixedWindow(\"name\", 100, TimeSpan.FromMinutes(1))), " +
+                "builder.AddRateLimiter(o => o.AddFixedWindow(\"name\", 100, TimeSpan.FromMinutes(1))), " +
                 "or pass a policy inline to UseRateLimiter."
             );
 

@@ -29,7 +29,7 @@ public static class McpServiceCollectionExtensions
     {
         ArgumentNullException.ThrowIfNull(builder);
 
-        builder.Services.AddMcpHttpTransport(configure);
+        Register(builder.Services, configure);
         return builder;
     }
 
@@ -37,10 +37,23 @@ public static class McpServiceCollectionExtensions
     /// Adds the Streamable HTTP transport without the builder in hand — for apps that configure the
     /// MCP server somewhere else entirely.
     /// </summary>
-    public static IServiceCollection AddMcpHttpTransport(
-        this IServiceCollection services,
+    public static ShinyHttpServerBuilder AddMcpHttpTransport(
+        this ShinyHttpServerBuilder builder,
         Action<McpHttpOptions>? configure = null
     )
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+
+        Register(builder.Services, configure);
+        return builder;
+    }
+
+    /// <summary>
+    /// The registration both entry points share. Kept against <see cref="IServiceCollection"/>
+    /// because the MCP SDK's own builder exposes services and nothing else, so
+    /// <see cref="WithHttpTransport"/> has no server builder to hand over.
+    /// </summary>
+    static void Register(IServiceCollection services, Action<McpHttpOptions>? configure)
     {
         ArgumentNullException.ThrowIfNull(services);
 
@@ -51,7 +64,5 @@ public static class McpServiceCollectionExtensions
 
         services.TryAddSingleton<McpHttpSessionManager>();
         services.TryAddSingleton<McpHttpHandler>();
-
-        return services;
     }
 }

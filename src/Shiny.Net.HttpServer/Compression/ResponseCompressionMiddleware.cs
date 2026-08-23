@@ -100,20 +100,22 @@ public static class ResponseCompressionExtensions
     /// builder.Services.AddResponseCompression(o => o.Level = CompressionLevel.Optimal);
     /// </code>
     /// </summary>
-    public static IServiceCollection AddResponseCompression(
-        this IServiceCollection services,
+    public static ShinyHttpServerBuilder AddResponseCompression(
+        this ShinyHttpServerBuilder builder,
         Action<ResponseCompressionOptions>? configure = null
     )
     {
-        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(builder);
 
-        return services.AddSingleton(_ =>
+        builder.Services.AddSingleton(_ =>
         {
             var options = new ResponseCompressionOptions();
             configure?.Invoke(options);
 
             return options;
         });
+
+        return builder;
     }
 
     /// <summary>

@@ -91,16 +91,42 @@ sealed record EndpointPolicyModel(
     string? RateLimitPolicy,
     bool RateLimitDisabled,
     string? IpFilterPolicy,
-    bool IpFilterDisabled
+    bool IpFilterDisabled,
+    string? RequestTimeoutPolicy,
+    int? RequestTimeoutMilliseconds,
+    bool RequestTimeoutDisabled,
+    string? OutputCachePolicy,
+    int? OutputCacheSeconds,
+    bool OutputCacheDisabled,
+    bool AntiforgeryRequired,
+    bool AntiforgeryDisabled
 ) : IEquatable<EndpointPolicyModel>
 {
-    public static readonly EndpointPolicyModel None = new(null, false, null, false, null, false);
+    public static readonly EndpointPolicyModel None = new(
+        null, false, null, false, null, false, null, null, false, null, null, false, false, false
+    );
 
     public bool HasCors => this.CorsDisabled || this.CorsPolicy is not null;
 
     public bool HasRateLimit => this.RateLimitDisabled || this.RateLimitPolicy is not null;
 
     public bool HasIpFilter => this.IpFilterDisabled || this.IpFilterPolicy is not null;
+
+    public bool HasRequestTimeout
+        => this.RequestTimeoutDisabled || this.RequestTimeoutPolicy is not null || this.RequestTimeoutMilliseconds is not null;
+
+    public bool HasOutputCache
+        => this.OutputCacheDisabled || this.OutputCachePolicy is not null || this.OutputCacheSeconds is not null;
+
+    public bool HasAntiforgery => this.AntiforgeryRequired || this.AntiforgeryDisabled;
+
+    public bool HasAny
+        => this.HasCors
+            || this.HasRateLimit
+            || this.HasIpFilter
+            || this.HasRequestTimeout
+            || this.HasOutputCache
+            || this.HasAntiforgery;
 }
 
 /// <summary>What <c>[Authorize]</c> and <c>[AllowAnonymous]</c> on a class and method add up to.</summary>

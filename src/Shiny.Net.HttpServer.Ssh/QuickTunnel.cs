@@ -453,17 +453,17 @@ public static class QuickTunnelExtensions
     /// the public internet is a decision a person makes by tapping something, not a side effect of
     /// the app launching.
     /// </param>
-    public static IServiceCollection AddQuickTunnel(
-        this IServiceCollection services,
+    public static ShinyHttpServerBuilder AddQuickTunnel(
+        this ShinyHttpServerBuilder builder,
         QuickTunnelHost host = QuickTunnelHost.Pinggy,
         string? subdomain = null,
         Action<SshTunnelOptions>? configure = null,
         bool autoStart = false
     )
     {
-        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(builder);
 
-        services.AddSingleton(sp => QuickTunnel.For(
+        builder.Services.AddSingleton(sp => QuickTunnel.For(
             sp.GetRequiredService<HttpServer>(),
             host,
             subdomain,
@@ -472,9 +472,9 @@ public static class QuickTunnelExtensions
         ));
 
         if (autoStart)
-            services.AddHostedService<QuickTunnelHostedService>();
+            builder.Services.AddHostedService<QuickTunnelHostedService>();
 
-        return services;
+        return builder;
     }
 
     /// <summary>

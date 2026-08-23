@@ -512,8 +512,8 @@ public class FileBrowserAuthorizationTests
             },
             builder =>
             {
-                builder.Services.AddAuthentication().AddApiKey(o => o.AddKey("secret-key", "editor", "editor"));
-                builder.Services.AddAuthorization(o => o.AddPolicy("editors", p => p.RequireRole("editor")));
+                builder.AddAuthentication().AddApiKey(o => o.AddKey("secret-key", "editor", "editor"));
+                builder.AddAuthorization(o => o.AddPolicy("editors", p => p.RequireRole("editor")));
             }
         );
 

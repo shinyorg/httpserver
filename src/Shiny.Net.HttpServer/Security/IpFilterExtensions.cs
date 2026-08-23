@@ -15,18 +15,18 @@ namespace Shiny.Net.HttpServer.Security;
 public static class IpFilterServiceCollectionExtensions
 {
     /// <summary>Registers the IP filter's options and policies.</summary>
-    public static IServiceCollection AddIpFilter(this IServiceCollection services, Action<IpFilterOptions>? configure = null)
+    public static ShinyHttpServerBuilder AddIpFilter(this ShinyHttpServerBuilder builder, Action<IpFilterOptions>? configure = null)
     {
-        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(builder);
 
-        services.TryAddSingleton(_ =>
+        builder.Services.TryAddSingleton(_ =>
         {
             var options = new IpFilterOptions();
             configure?.Invoke(options);
             return options;
         });
 
-        return services;
+        return builder;
     }
 }
 
@@ -83,7 +83,7 @@ public static class HttpServerIpFilterExtensions
                 : throw new InvalidOperationException(
                     "UseIpFilter has no policy to apply. Either pass one inline — " +
                     "app.UseIpFilter(p => p.AllowLoopback()) — or register them with " +
-                    "services.AddIpFilter(o => ...)."
+                    "builder.AddIpFilter(o => ...)."
                 ));
 
         var logger = server.Services
@@ -124,7 +124,7 @@ public static class HttpServerIpFilterExtensions
         => server.Services?.GetService<IpFilterOptions>()
             ?? throw new InvalidOperationException(
                 "Named IP filter policies live in IpFilterOptions. Register them with " +
-                "services.AddIpFilter(o => o.AddPolicy(\"name\", p => ...)), or pass a policy " +
+                "builder.AddIpFilter(o => o.AddPolicy(\"name\", p => ...)), or pass a policy " +
                 "inline with app.UseIpFilter(p => ...)."
             );
 

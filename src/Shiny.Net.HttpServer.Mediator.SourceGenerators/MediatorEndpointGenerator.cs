@@ -575,13 +575,30 @@ public sealed class MediatorEndpointGenerator : IIncrementalGenerator
         return new AuthorizationModel(true, false, policies.ToEquatableArray(), roles.ToEquatableArray());
     }
 
+    /// <summary>
+    /// Reads the policy names off the mediator's own HTTP attributes.
+    /// <para>
+    /// The last three groups — timeouts, output caching, antiforgery — are read by the same names
+    /// this repo's own attributes use, so they light up if the mediator's attributes ever carry
+    /// them. Until then they read as absent, which is exactly right: a mediator endpoint gets
+    /// whatever the pipeline's default policy says, the same as any other unmarked route.
+    /// </para>
+    /// </summary>
     static EndpointPolicyModel BuildPolicies(AttributeData? group, AttributeData attribute) => new(
         attribute.GetNamedString("CorsPolicy") ?? group?.GetNamedString("CorsPolicy"),
         GetNamedBool(attribute, "DisableCors") || GetNamedBool(group, "DisableCors"),
         attribute.GetNamedString("RateLimitingPolicy") ?? group?.GetNamedString("RateLimitingPolicy"),
         GetNamedBool(attribute, "DisableRateLimiting") || GetNamedBool(group, "DisableRateLimiting"),
         attribute.GetNamedString("IpFilterPolicy") ?? group?.GetNamedString("IpFilterPolicy"),
-        GetNamedBool(attribute, "AllowAnyIp") || GetNamedBool(group, "AllowAnyIp")
+        GetNamedBool(attribute, "AllowAnyIp") || GetNamedBool(group, "AllowAnyIp"),
+        attribute.GetNamedString("RequestTimeoutPolicy") ?? group?.GetNamedString("RequestTimeoutPolicy"),
+        attribute.GetNamedInt("RequestTimeoutMilliseconds") ?? group?.GetNamedInt("RequestTimeoutMilliseconds"),
+        GetNamedBool(attribute, "DisableRequestTimeout") || GetNamedBool(group, "DisableRequestTimeout"),
+        attribute.GetNamedString("OutputCachePolicy") ?? group?.GetNamedString("OutputCachePolicy"),
+        attribute.GetNamedInt("OutputCacheSeconds") ?? group?.GetNamedInt("OutputCacheSeconds"),
+        GetNamedBool(attribute, "NoOutputCache") || GetNamedBool(group, "NoOutputCache"),
+        GetNamedBool(attribute, "ValidateAntiforgery") || GetNamedBool(group, "ValidateAntiforgery"),
+        GetNamedBool(attribute, "DisableAntiforgery") || GetNamedBool(group, "DisableAntiforgery")
     );
 
     static EquatableArray<string> MergeTags(AttributeData? group, AttributeData attribute)

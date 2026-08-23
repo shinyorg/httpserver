@@ -321,16 +321,16 @@ public static class StaticFileExtensions
     /// Registers static file options in the container, for apps that configure everything through
     /// DI and resolve the middleware with <c>Use&lt;StaticFileMiddleware&gt;()</c>.
     /// </summary>
-    public static IServiceCollection AddStaticFiles(
-        this IServiceCollection services,
+    public static ShinyHttpServerBuilder AddStaticFiles(
+        this ShinyHttpServerBuilder builder,
         IStaticFileSource source,
         Action<StaticFileOptions>? configure = null
     )
     {
-        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(source);
 
-        services.AddSingleton(_ =>
+        builder.Services.AddSingleton(_ =>
         {
             var options = new StaticFileOptions { Source = source };
             configure?.Invoke(options);
@@ -338,6 +338,8 @@ public static class StaticFileExtensions
             return options;
         });
 
-        return services.AddSingleton(sp => new StaticFileMiddleware(sp.GetRequiredService<StaticFileOptions>()));
+        builder.Services.AddSingleton(sp => new StaticFileMiddleware(sp.GetRequiredService<StaticFileOptions>()));
+
+        return builder;
     }
 }

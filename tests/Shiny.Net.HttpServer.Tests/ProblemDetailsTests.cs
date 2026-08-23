@@ -232,7 +232,7 @@ public class ProblemDetailsEndToEndTests
     {
         await using var server = await TestServer.StartAsync(
             app => app.MapGet("/boom", _ => throw new InvalidOperationException("connection string is Server=secret")),
-            builder => builder.Services.AddProblemDetails()
+            builder => builder.AddProblemDetails()
         );
 
         var response = await server.Client.GetAsync("/boom", TestContext.Current.CancellationToken);
@@ -255,7 +255,7 @@ public class ProblemDetailsEndToEndTests
     {
         await using var server = await TestServer.StartAsync(
             app => app.MapGet("/bad", _ => throw new ArgumentException("id must be positive")),
-            builder => builder.Services.AddProblemDetails()
+            builder => builder.AddProblemDetails()
         );
 
         var response = await server.Client.GetAsync("/bad", TestContext.Current.CancellationToken);
@@ -269,7 +269,7 @@ public class ProblemDetailsEndToEndTests
     {
         await using var server = await TestServer.StartAsync(
             app => app.MapGet("/gone", _ => throw new MissingThingException()),
-            builder => builder.Services.AddProblemDetails(o => o.MapException<MissingThingException>(StatusCodes.Status404NotFound))
+            builder => builder.AddProblemDetails(o => o.MapException<MissingThingException>(StatusCodes.Status404NotFound))
         );
 
         var response = await server.Client.GetAsync("/gone", TestContext.Current.CancellationToken);
@@ -282,7 +282,7 @@ public class ProblemDetailsEndToEndTests
     {
         await using var server = await TestServer.StartAsync(
             app => app.MapGet("/boom", _ => throw new InvalidOperationException("the real reason")),
-            builder => builder.Services.AddProblemDetails(o => o.IncludeExceptionDetails = true)
+            builder => builder.AddProblemDetails(o => o.IncludeExceptionDetails = true)
         );
 
         var response = await server.Client.GetAsync("/boom", TestContext.Current.CancellationToken);
@@ -300,7 +300,7 @@ public class ProblemDetailsEndToEndTests
             app => app.MapGet("/boom", _ => throw new MissingThingException()),
             builder =>
             {
-                builder.Services.AddExceptionHandler(async (ctx, ex, ct) =>
+                builder.AddExceptionHandler(async (ctx, ex, ct) =>
                 {
                     if (ex is not MissingThingException)
                         return false;
@@ -311,7 +311,7 @@ public class ProblemDetailsEndToEndTests
                     return true;
                 });
 
-                builder.Services.AddProblemDetails();
+                builder.AddProblemDetails();
             }
         );
 
@@ -337,7 +337,7 @@ public class ProblemDetailsEndToEndTests
                 app.UseProblemDetails();
                 app.MapGet("/known", ctx => ctx.Response.WriteTextAsync("here"));
             },
-            builder => builder.Services.AddProblemDetails()
+            builder => builder.AddProblemDetails()
         );
 
         var response = await server.Client.GetAsync("/unknown", TestContext.Current.CancellationToken);
@@ -365,7 +365,7 @@ public class ProblemDetailsEndToEndTests
                     await ctx.Response.WriteTextAsync("my own words");
                 });
             },
-            builder => builder.Services.AddProblemDetails()
+            builder => builder.AddProblemDetails()
         );
 
         var response = await server.Client.GetAsync("/nope", TestContext.Current.CancellationToken);
@@ -382,7 +382,7 @@ public class ProblemDetailsEndToEndTests
                 app.UseProblemDetails();
                 app.MapGet("/fine", ctx => ctx.Response.WriteTextAsync("ok"));
             },
-            builder => builder.Services.AddProblemDetails()
+            builder => builder.AddProblemDetails()
         );
 
         var response = await server.Client.GetAsync("/fine", TestContext.Current.CancellationToken);
@@ -395,7 +395,7 @@ public class ProblemDetailsEndToEndTests
     {
         await using var server = await TestServer.StartAsync(
             app => app.MapGet("/boom", _ => throw new InvalidOperationException("nope")),
-            builder => builder.Services.AddProblemDetails(o =>
+            builder => builder.AddProblemDetails(o =>
                 o.Customize = ctx => ctx.ProblemDetails.Extensions["supportId"] = "S-1234"
             )
         );

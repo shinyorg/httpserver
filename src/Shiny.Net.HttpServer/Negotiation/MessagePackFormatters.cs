@@ -158,10 +158,10 @@ public static class MessagePackFormatterExtensions
     }
 
     /// <summary>Registers content negotiation with MessagePack added, for an app that wants nothing else.</summary>
-    public static IServiceCollection AddMessagePackFormatters(
-        this IServiceCollection services,
+    public static ShinyHttpServerBuilder AddMessagePackFormatters(
+        this ShinyHttpServerBuilder builder,
         Action<ContentNegotiationOptions>? configure = null
-    ) => services.AddContentNegotiation(o =>
+    ) => builder.AddContentNegotiation(o =>
     {
         o.AddMessagePack();
         configure?.Invoke(o);

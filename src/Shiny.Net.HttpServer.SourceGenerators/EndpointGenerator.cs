@@ -41,6 +41,12 @@ public sealed class EndpointGenerator : IIncrementalGenerator
     const string DisableRateLimitingAttributeName = "Shiny.Net.HttpServer.DisableRateLimitingAttribute";
     const string RequireIpFilterAttributeName = "Shiny.Net.HttpServer.RequireIpFilterAttribute";
     const string AllowAnyIpAttributeName = "Shiny.Net.HttpServer.AllowAnyIpAttribute";
+    const string RequestTimeoutAttributeName = "Shiny.Net.HttpServer.RequestTimeoutAttribute";
+    const string DisableRequestTimeoutAttributeName = "Shiny.Net.HttpServer.DisableRequestTimeoutAttribute";
+    const string OutputCacheAttributeName = "Shiny.Net.HttpServer.OutputCacheAttribute";
+    const string NoOutputCacheAttributeName = "Shiny.Net.HttpServer.NoOutputCacheAttribute";
+    const string ValidateAntiforgeryAttributeName = "Shiny.Net.HttpServer.ValidateAntiforgeryAttribute";
+    const string DisableAntiforgeryAttributeName = "Shiny.Net.HttpServer.DisableAntiforgeryAttribute";
 
     const string ProducesAttributeName = "Shiny.Net.HttpServer.ProducesAttribute";
     const string ApiTagsAttributeName = "Shiny.Net.HttpServer.ApiTagsAttribute";
@@ -415,23 +421,41 @@ public sealed class EndpointGenerator : IIncrementalGenerator
         var rateLimitDisabled = HasAttribute(DisableRateLimitingAttributeName);
         var ipFilterDisabled = HasAttribute(AllowAnyIpAttributeName);
 
+        var timeoutDisabled = HasAttribute(DisableRequestTimeoutAttributeName);
+        var cacheDisabled = HasAttribute(NoOutputCacheAttributeName);
+        var antiforgeryDisabled = HasAttribute(DisableAntiforgeryAttributeName);
+
+        var timeout = timeoutDisabled ? null : Nearest(RequestTimeoutAttributeName);
+        var cache = cacheDisabled ? null : Nearest(OutputCacheAttributeName);
+
         var model = new EndpointPolicyModel(
             corsDisabled ? null : PolicyName(EnableCorsAttributeName),
             corsDisabled,
             rateLimitDisabled ? null : PolicyName(EnableRateLimitingAttributeName),
             rateLimitDisabled,
             ipFilterDisabled ? null : PolicyName(RequireIpFilterAttributeName),
-            ipFilterDisabled
+            ipFilterDisabled,
+
+            // A duration given inline wins over a named policy, matching what the metadata itself
+            // does at runtime — [RequestTimeout(2000)] is unambiguous and needs no registration.
+            timeout?.GetConstructorString(0),
+            timeout?.GetConstructorInt(0),
+            timeoutDisabled,
+            cache?.GetConstructorString(0),
+            cache?.GetNamedInt("Seconds"),
+            cacheDisabled,
+            !antiforgeryDisabled && HasAttribute(ValidateAntiforgeryAttributeName),
+            antiforgeryDisabled
         );
 
-        return model.HasCors || model.HasRateLimit || model.HasIpFilter ? model : EndpointPolicyModel.None;
+        return model.HasAny ? model : EndpointPolicyModel.None;
 
         bool HasAttribute(string name)
             => method.FindAttribute(name) is not null || type.FindAttribute(name) is not null;
 
         string? PolicyName(string name)
         {
-            var attribute = method.FindAttribute(name) ?? type.FindAttribute(name);
+            var attribute = Nearest(name);
             if (attribute is null)
                 return null;
 
@@ -439,6 +463,8 @@ public sealed class EndpointGenerator : IIncrementalGenerator
 
             return string.IsNullOrWhiteSpace(policy) ? null : policy;
         }
+
+        AttributeData? Nearest(string name) => method.FindAttribute(name) ?? type.FindAttribute(name);
     }
 
     /// <summary>

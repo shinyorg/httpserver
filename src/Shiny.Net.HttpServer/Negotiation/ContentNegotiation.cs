@@ -247,19 +247,21 @@ public static class ContentNegotiationExtensions
     /// );
     /// </code>
     /// </summary>
-    public static IServiceCollection AddContentNegotiation(
-        this IServiceCollection services,
+    public static ShinyHttpServerBuilder AddContentNegotiation(
+        this ShinyHttpServerBuilder builder,
         Action<ContentNegotiationOptions>? configure = null
     )
     {
-        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(builder);
 
-        return services.AddSingleton(_ =>
+        builder.Services.AddSingleton(_ =>
         {
             var options = new ContentNegotiationOptions();
             configure?.Invoke(options);
 
             return options;
         });
+
+        return builder;
     }
 }

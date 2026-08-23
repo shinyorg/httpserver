@@ -11,6 +11,14 @@ namespace Shiny.Net.HttpServer.Http3;
 /// HTTP/3 endpoint from the TCP one with <c>Alt-Svc</c>, since a client has no way to know QUIC is
 /// available until something tells it.
 /// </para>
+/// <para>
+/// <b>No datagrams, and therefore no WebTransport.</b> HTTP Datagrams (RFC 9297) and WebTransport
+/// both need QUIC's unreliable datagram frames, and <c>System.Net.Quic</c> exposes no API for them
+/// — <c>QuicConnection</c> has no send or receive datagram surface at all. Nothing here can add one
+/// without reimplementing the QUIC layer, so this endpoint speaks reliable HTTP/3 request streams
+/// and stops there. WebSockets and Server-Sent Events remain the streaming answers; both work over
+/// this server's other protocol versions today.
+/// </para>
 /// </summary>
 public sealed class Http3Options
 {

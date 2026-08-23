@@ -75,35 +75,35 @@ public static class ExceptionHandlerServiceCollectionExtensions
     /// Adds a handler to the chain. Call it several times to build a chain — order of registration
     /// is the order they are tried, so put the specific ones before the catch-all.
     /// </summary>
-    public static IServiceCollection AddExceptionHandler<
+    public static ShinyHttpServerBuilder AddExceptionHandler<
         [System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembers(
             System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.PublicConstructors
         )] THandler
-    >(this IServiceCollection services) where THandler : class, IExceptionHandler
+    >(this ShinyHttpServerBuilder builder) where THandler : class, IExceptionHandler
     {
-        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(builder);
 
-        services.AddSingleton<IExceptionHandler, THandler>();
-        return services.AddExceptionHandlerPipeline();
+        builder.Services.AddSingleton<IExceptionHandler, THandler>();
+        return builder.AddExceptionHandlerPipeline();
     }
 
     /// <summary>Adds a handler built by a factory, avoiding reflective activation entirely.</summary>
-    public static IServiceCollection AddExceptionHandler<THandler>(
-        this IServiceCollection services,
+    public static ShinyHttpServerBuilder AddExceptionHandler<THandler>(
+        this ShinyHttpServerBuilder builder,
         Func<IServiceProvider, THandler> factory
     ) where THandler : class, IExceptionHandler
     {
-        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(factory);
 
-        services.AddSingleton<IExceptionHandler>(factory);
-        return services.AddExceptionHandlerPipeline();
+        builder.Services.AddSingleton<IExceptionHandler>(factory);
+        return builder.AddExceptionHandlerPipeline();
     }
 
     /// <summary>
     /// Adds an inline handler, for the cases that do not earn a type.
     /// <code>
-    /// services.AddExceptionHandler((ctx, ex, ct) =>
+    /// builder.AddExceptionHandler((ctx, ex, ct) =>
     /// {
     ///     if (ex is not TimeoutException) return new ValueTask&lt;bool&gt;(false);
     ///     ctx.Response.StatusCode = StatusCodes.Status504GatewayTimeout;
@@ -111,30 +111,30 @@ public static class ExceptionHandlerServiceCollectionExtensions
     /// });
     /// </code>
     /// </summary>
-    public static IServiceCollection AddExceptionHandler(
-        this IServiceCollection services,
+    public static ShinyHttpServerBuilder AddExceptionHandler(
+        this ShinyHttpServerBuilder builder,
         Func<HttpContext, Exception, CancellationToken, ValueTask<bool>> handler
     )
     {
-        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(handler);
 
-        services.AddSingleton<IExceptionHandler>(new DelegateExceptionHandler(handler));
-        return services.AddExceptionHandlerPipeline();
+        builder.Services.AddSingleton<IExceptionHandler>(new DelegateExceptionHandler(handler));
+        return builder.AddExceptionHandlerPipeline();
     }
 
     /// <summary>
     /// Registers the pipeline itself, built by an explicit factory so nothing is activated by
     /// reflection and a missing logger is simply absent rather than a resolution failure.
     /// </summary>
-    static IServiceCollection AddExceptionHandlerPipeline(this IServiceCollection services)
+    static ShinyHttpServerBuilder AddExceptionHandlerPipeline(this ShinyHttpServerBuilder builder)
     {
-        services.TryAddSingleton(sp => new ExceptionHandlerPipeline(
+        builder.Services.TryAddSingleton(sp => new ExceptionHandlerPipeline(
             sp.GetServices<IExceptionHandler>(),
             sp.GetService<ILogger<ExceptionHandlerPipeline>>()
         ));
 
-        return services;
+        return builder;
     }
 }
 

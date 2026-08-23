@@ -28,31 +28,31 @@ public static class SecurityServiceCollectionExtensions
     /// Registers the authentication pipeline. Add handlers to the returned builder — one per scheme,
     /// tried in registration order.
     /// </summary>
-    public static AuthenticationBuilder AddAuthentication(this IServiceCollection services)
+    public static AuthenticationBuilder AddAuthentication(this ShinyHttpServerBuilder builder)
     {
-        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(builder);
 
-        services.TryAddSingleton<AuthenticationMiddleware>();
-        return new AuthenticationBuilder(services);
+        builder.Services.TryAddSingleton<AuthenticationMiddleware>();
+        return new AuthenticationBuilder(builder.Services);
     }
 
     /// <summary>Registers the authorization policies and the middleware that enforces them.</summary>
-    public static IServiceCollection AddAuthorization(
-        this IServiceCollection services,
+    public static ShinyHttpServerBuilder AddAuthorization(
+        this ShinyHttpServerBuilder builder,
         Action<AuthorizationOptions>? configure = null
     )
     {
-        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(builder);
 
-        services.TryAddSingleton(_ =>
+        builder.Services.TryAddSingleton(_ =>
         {
             var options = new AuthorizationOptions();
             configure?.Invoke(options);
             return options;
         });
 
-        services.TryAddSingleton<AuthorizationMiddleware>();
-        return services;
+        builder.Services.TryAddSingleton<AuthorizationMiddleware>();
+        return builder;
     }
 }
 

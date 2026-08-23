@@ -31,7 +31,7 @@ sealed class TestServer : IAsyncDisposable
 
     public static async Task<TestServer> StartAsync(
         Action<HttpServer> configure,
-        Action<HttpServerBuilder>? configureBuilder = null
+        Action<ShinyHttpServerBuilder>? configureBuilder = null
     )
     {
         var builder = HttpServer.CreateBuilder();

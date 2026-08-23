@@ -349,18 +349,23 @@ public class MediatorAuthorizationTests
             app.UseAuthorization();
             app.MapSecureGadgetHandlersMediatorEndpoints();
         },
-        builder => builder.Services
-            .AddShinyMediator(_ => { })
-            .AddScoped<IRequestHandler<SecretGadget, Gadget>, SecureGadgetHandlers>()
-            .AddScoped<IRequestHandler<OpenGadget, Gadget>, SecureGadgetHandlers>()
-            .AddAuthentication()
-            .AddBasic((Action<BasicAuthenticationOptions>)(o =>
-            {
-                o.Realm = "test";
-                o.AddUser("u", "p");
-            }))
-            .Services
-            .AddAuthorization()
+        builder =>
+        {
+            builder.Services
+                .AddShinyMediator(_ => { })
+                .AddScoped<IRequestHandler<SecretGadget, Gadget>, SecureGadgetHandlers>()
+                .AddScoped<IRequestHandler<OpenGadget, Gadget>, SecureGadgetHandlers>();
+
+            builder
+                .AddAuthentication()
+                .AddBasic((Action<BasicAuthenticationOptions>)(o =>
+                {
+                    o.Realm = "test";
+                    o.AddUser("u", "p");
+                }));
+
+            builder.AddAuthorization();
+        }
     );
 
     [Fact]

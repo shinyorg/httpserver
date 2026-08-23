@@ -59,7 +59,7 @@ public class AuthorizationTests
         },
         builder =>
         {
-            builder.Services
+            builder
                 .AddAuthentication()
                 .AddJwtBearer(o =>
                 {
@@ -68,7 +68,7 @@ public class AuthorizationTests
                     o.SigningKey = JwtSigningKey.FromSecret(Secret);
                 });
 
-            builder.Services.AddAuthorization(o =>
+            builder.AddAuthorization(o =>
             {
                 o.AddPolicy("admin", p => p.RequireRole("admin"));
                 authorization?.Invoke(o);
@@ -267,13 +267,13 @@ public class AuthorizationTests
             },
             builder =>
             {
-                builder.Services.AddAuthentication().AddJwtBearer(o =>
+                builder.AddAuthentication().AddJwtBearer(o =>
                 {
                     o.Issuer = Issuer;
                     o.Audience = Audience;
                     o.SigningKey = JwtSigningKey.FromSecret(Secret);
                 });
-                builder.Services.AddAuthorization();
+                builder.AddAuthorization();
             }
         );
 

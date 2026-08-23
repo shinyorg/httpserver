@@ -29,16 +29,16 @@ public static class AzureRelayServiceCollectionExtensions
     /// <see cref="AzureRelayTunnel"/> and call <see cref="AzureRelayTunnel.StartAsync"/> when the
     /// user flips the switch, which is usually what an app with a "remote access" toggle wants.
     /// </param>
-    public static IServiceCollection AddAzureRelayTunnel(
-        this IServiceCollection services,
+    public static ShinyHttpServerBuilder AddAzureRelayTunnel(
+        this ShinyHttpServerBuilder builder,
         Action<AzureRelayOptions> configureOptions,
         bool autoStart = true
     )
     {
-        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(configureOptions);
 
-        services.TryAddSingleton(sp =>
+        builder.Services.TryAddSingleton(sp =>
         {
             var options = new AzureRelayOptions();
             configureOptions(options);
@@ -51,9 +51,9 @@ public static class AzureRelayServiceCollectionExtensions
         });
 
         if (autoStart)
-            services.AddHostedService<AzureRelayHostedService>();
+            builder.Services.AddHostedService<AzureRelayHostedService>();
 
-        return services;
+        return builder;
     }
 }
 

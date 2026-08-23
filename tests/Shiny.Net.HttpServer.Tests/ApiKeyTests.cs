@@ -25,8 +25,8 @@ public class ApiKeyAuthenticationTests
         },
         builder =>
         {
-            builder.Services.AddAuthentication().AddApiKey(configure);
-            builder.Services.AddAuthorization(o => o.AddPolicy("writers-only", p => p.RequireRole("writer")));
+            builder.AddAuthentication().AddApiKey(configure);
+            builder.AddAuthorization(o => o.AddPolicy("writers-only", p => p.RequireRole("writer")));
         }
     );
 
@@ -175,8 +175,8 @@ public class ApiKeyAuthenticationTests
     [Fact]
     public void Refuses_to_register_with_no_keys_and_no_validator()
     {
-        var services = new ServiceCollection();
+        var builder = new ShinyHttpServerBuilder(new ServiceCollection());
 
-        Assert.Throws<InvalidOperationException>(() => services.AddAuthentication().AddApiKey(_ => { }));
+        Assert.Throws<InvalidOperationException>(() => builder.AddAuthentication().AddApiKey(_ => { }));
     }
 }

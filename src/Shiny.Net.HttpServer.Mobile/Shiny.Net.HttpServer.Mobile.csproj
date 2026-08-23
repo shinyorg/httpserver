@@ -1,0 +1,63 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <!-- Cleared because src/Directory.Build.props sets the single-target property for every other
+             project here, and TargetFramework wins over TargetFrameworks when both are set. -->
+        <TargetFramework></TargetFramework>
+        <TargetFrameworks>net10.0;net10.0-android;net10.0-ios;net10.0-maccatalyst</TargetFrameworks>
+
+        <RootNamespace>Shiny.Net.HttpServer.Mobile</RootNamespace>
+        <Description>Mobile lifecycle for Shiny.Net.HttpServer, built on Shiny.Core — stops the server when the app is backgrounded and starts it again on resume, keeps it alive on Android through a foreground service, rebinds when the device changes network, and reports the manifest entries that otherwise fail silently. For iOS and Android, with or without MAUI.</Description>
+
+        <SupportedOSPlatformVersion Condition="$(TargetFramework.Contains('-android'))">21.0</SupportedOSPlatformVersion>
+        <SupportedOSPlatformVersion Condition="$(TargetFramework.Contains('-ios'))">15.0</SupportedOSPlatformVersion>
+        <SupportedOSPlatformVersion Condition="$(TargetFramework.Contains('-maccatalyst'))">15.0</SupportedOSPlatformVersion>
+    </PropertyGroup>
+
+    <!-- Shiny.Core's own sources key platform code off PLATFORM/APPLE. This package builds against it
+         and uses the same spelling, so the constants have to be defined here too — they come from
+         Shiny's build props, not from the package. -->
+    <PropertyGroup Condition="$(TargetFramework.Contains('-android'))">
+        <DefineConstants>$(DefineConstants);PLATFORM</DefineConstants>
+
+        <!-- The foreground service type constants are annotated as API 29+, and this package's floor is
+             21 so the lifecycle half works on older devices. Android below 29 ignores the type rather
+             than rejecting it: ServiceCompat.startForeground drops the argument, and the service starts
+             exactly as it did before types existed. So the call is safe on every version the package
+             supports, and the analyzer has no way to express that. -->
+        <NoWarn>$(NoWarn);CA1416</NoWarn>
+    </PropertyGroup>
+
+    <PropertyGroup Condition="$(TargetFramework.Contains('-ios')) OR $(TargetFramework.Contains('-maccatalyst'))">
+        <DefineConstants>$(DefineConstants);PLATFORM;APPLE</DefineConstants>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Shiny.Core"/>
+        <PackageReference Include="Microsoft.Extensions.Logging.Abstractions"/>
+        <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="../Shiny.Net.HttpServer/Shiny.Net.HttpServer.csproj"/>
+    </ItemGroup>
+
+    <!-- Platform folders are opt-in per TFM, the same arrangement Shiny itself uses. -->
+    <ItemGroup>
+        <Compile Remove="Platforms/**/*.cs"/>
+        <None Include="Platforms/**/*.cs"/>
+    </ItemGroup>
+
+    <ItemGroup Condition="$(TargetFramework.Contains('-android'))">
+        <Compile Include="Platforms/Android/**/*.cs"/>
+    </ItemGroup>
+
+    <ItemGroup Condition="$(TargetFramework.Contains('-ios')) OR $(TargetFramework.Contains('-maccatalyst'))">
+        <Compile Include="Platforms/Apple/**/*.cs"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <InternalsVisibleTo Include="Shiny.Net.HttpServer.Tests"/>
+    </ItemGroup>
+
+</Project>

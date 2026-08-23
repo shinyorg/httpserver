@@ -1,49 +1,52 @@
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
 
 namespace Shiny.Net.HttpServer;
 
 /// <summary>
-/// Registration for apps that already own a container — a generic host, a MAUI app, a Shiny host.
+/// Registration for an app that already owns a container — a generic host, a MAUI app, a Shiny host.
 /// </summary>
 public static class ServiceCollectionExtensions
 {
     /// <summary>
-    /// Registers the server as a singleton and starts it with the host.
+    /// Registers the server and everything configured on the builder.
     /// <code>
-    /// builder.Services.AddHttpServer(o => o.Port = 8080, server =>
+    /// builder.Services.AddShinyHttpServer(server =>
     /// {
-    ///     server.MapGet("/ping", ctx => ctx.Response.WriteTextAsync("pong"));
+    ///     server.Options.Port = 8080;
+    ///     server.AddAuthentication().AddBasic(o => o.AddUser("ada", pw));
+    ///     server.AddHealthChecks().AddServerCheck();
+    ///     server.Configure(app =>
+    ///     {
+    ///         app.UseAuthentication();
+    ///         app.MapMyAppEndpoints();
+    ///     });
     /// });
     /// </code>
-    /// <paramref name="configureServer"/> runs once, immediately before the server starts, so it
-    /// can resolve anything in the container while registering routes.
+    /// <para>
+    /// The callback runs immediately — it is registration, not deferred work — while the routes and
+    /// middleware in <see cref="ShinyHttpServerBuilder.Configure(Action{HttpServer})"/> are applied
+    /// when the server is first resolved, so they can take dependencies out of the container.
+    /// </para>
     /// </summary>
-    public static IServiceCollection AddHttpServer(
+    /// <param name="services">The app's services.</param>
+    /// <param name="configure">Options, registrations, routes and middleware.</param>
+    /// <param name="autoStart">
+    /// Starts the server with the host. Turn it off for an app with a "share over Wi-Fi" toggle: the
+    /// server is still registered and fully configured, just not listening until something calls
+    /// <see cref="HttpServer.StartAsync"/>.
+    /// </param>
+    public static IServiceCollection AddShinyHttpServer(
         this IServiceCollection services,
-        Action<HttpServerOptions>? configureOptions = null,
-        Action<HttpServer>? configureServer = null,
+        Action<ShinyHttpServerBuilder>? configure = null,
         bool autoStart = true
     )
     {
         ArgumentNullException.ThrowIfNull(services);
 
-        services.TryAddSingleton(sp =>
-        {
-            var options = new HttpServerOptions();
-            configureOptions?.Invoke(options);
+        var builder = new ShinyHttpServerBuilder(services);
+        configure?.Invoke(builder);
 
-            var server = new HttpServer(options, sp, sp.GetService<ILoggerFactory>());
-            configureServer?.Invoke(server);
-
-            return server;
-        });
-
-        // With autoStart off the server is still registered and fully configured, just not
-        // listening — which is what an app with a "share over Wi-Fi" toggle wants. Resolve the
-        // HttpServer and call StartAsync when the user says so.
         if (autoStart)
             services.AddHostedService<HttpServerHostedService>();
 

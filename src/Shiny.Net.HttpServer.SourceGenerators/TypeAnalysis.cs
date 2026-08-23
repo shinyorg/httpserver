@@ -142,4 +142,14 @@ static class TypeAnalysis
         => attribute.ConstructorArguments.Length > index
             ? attribute.ConstructorArguments[index].Value as string
             : null;
+
+    /// <summary>Reads a constructor argument that is a number, e.g. <c>[RequestTimeout(2000)]</c>.</summary>
+    public static int? GetConstructorInt(this AttributeData attribute, int index)
+        => attribute.ConstructorArguments.Length > index && attribute.ConstructorArguments[index].Value is int value
+            ? value
+            : null;
+
+    /// <summary>Reads a named argument that is a number, e.g. <c>[OutputCache(Seconds = 30)]</c>.</summary>
+    public static int? GetNamedInt(this AttributeData attribute, string name)
+        => attribute.NamedArguments.FirstOrDefault(a => a.Key == name).Value.Value is int value ? value : null;
 }

@@ -88,11 +88,11 @@ sealed class DocumentServer : IAsyncDisposable
                 builder.Services.AddScoped<ICustomerContext, CustomerContext>();
                 // A scheme has to exist for the authorization middleware to have something to challenge
                 // with; without one a protected route is a 500 rather than a 401.
-                builder.Services
+                builder
                     .AddAuthentication()
                     .AddBasic((Action<BasicAuthenticationOptions>)(o => o.AddUser("u", "p")));
 
-                builder.Services.AddAuthorization();
+                builder.AddAuthorization();
                 builder.Services.AddDocumentStore(o =>
                 {
                     o.DatabaseProvider = new SqliteDatabaseProvider(database);

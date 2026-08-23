@@ -251,8 +251,8 @@ public static class BinaryFormatterExtensions
     }
 
     /// <summary>Registers content negotiation with protobuf added, for an app that wants nothing else.</summary>
-    public static IServiceCollection AddProtobufFormatters(
-        this IServiceCollection services,
+    public static ShinyHttpServerBuilder AddProtobufFormatters(
+        this ShinyHttpServerBuilder builder,
         Action<BinaryCodecRegistry> configure
-    ) => services.AddContentNegotiation(o => o.AddProtobuf(configure));
+    ) => builder.AddContentNegotiation(o => o.AddProtobuf(configure));
 }

@@ -154,7 +154,7 @@ public class SessionTests
 
             app.MapGet("/nothing", ctx => ctx.Response.WriteTextAsync("no session used"));
         },
-        builder => builder.Services.AddSessions(o =>
+        builder => builder.AddSessions(o =>
         {
             o.Protector = new TicketProtector(Key);
             extra?.Invoke(o);
@@ -328,7 +328,7 @@ public class SessionTests
 
                 app.MapGet("/progress", ctx => ctx.Response.WriteTextAsync(ctx.Session!.GetString("progress") ?? "none"));
             },
-            builder => builder.Services.AddSessions(o => o.Protector = new TicketProtector(Key))
+            builder => builder.AddSessions(o => o.Protector = new TicketProtector(Key))
         );
 
         using var client = Client(server);
@@ -381,7 +381,7 @@ public class SessionTests
                     ));
                 });
             },
-            builder => builder.Services.AddSessions(o => o.Protector = new TicketProtector(Key))
+            builder => builder.AddSessions(o => o.Protector = new TicketProtector(Key))
         );
 
         using var client = Client(server);
@@ -414,7 +414,7 @@ public class SessionTests
                     return ctx.Response.WriteTextAsync(string.Join(',', session.Keys));
                 });
             },
-            builder => builder.Services.AddSessions(o => o.Protector = new TicketProtector(Key))
+            builder => builder.AddSessions(o => o.Protector = new TicketProtector(Key))
         );
 
         using var client = Client(server);
@@ -453,7 +453,7 @@ public class SessionTests
                     return ctx.Response.WriteTextAsync("ok");
                 });
             },
-            builder => builder.Services.AddSessions(_ => store, o => o.Protector = new TicketProtector(Key))
+            builder => builder.AddSessions(_ => store, o => o.Protector = new TicketProtector(Key))
         );
 
         using var client = Client(server);

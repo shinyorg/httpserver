@@ -50,10 +50,12 @@ public sealed class WebSocket : IAsyncDisposable
     readonly PipeWriter output;
     readonly SemaphoreSlim writeGate = new(1, 1);
     readonly long maxMessageLength;
+    readonly CancellationTokenSource keepAliveStopped = new();
 
     bool closeSent;
     bool closeReceived;
     int disposed;
+    int pendingPings;
 
     internal WebSocket(IConnection connection, long maxMessageLength)
     {
@@ -65,6 +67,15 @@ public sealed class WebSocket : IAsyncDisposable
 
     /// <summary>The sub-protocol agreed during the handshake, if any.</summary>
     public string? SubProtocol { get; internal init; }
+
+    /// <summary>True when permessage-deflate was negotiated, so messages are compressed both ways.</summary>
+    public bool PerMessageDeflate { get; internal init; }
+
+    /// <summary>The minimum payload worth compressing. Below it, deflate makes a message larger.</summary>
+    internal int CompressionThreshold { get; init; } = 256;
+
+    /// <summary>Anything the app wants to hang off this socket — a user id, a subscription set.</summary>
+    public IDictionary<string, object?> Items { get; } = new Dictionary<string, object?>(StringComparer.Ordinal);
 
     /// <summary>True until a close frame has been both sent and received.</summary>
     public bool IsOpen => !this.closeSent || !this.closeReceived;
@@ -81,6 +92,7 @@ public sealed class WebSocket : IAsyncDisposable
         var payload = new ArrayBufferWriter<byte>();
         var messageType = WebSocketOpcode.Continuation;
         var fragmented = false;
+        var compressed = false;
 
         while (true)
         {
@@ -113,6 +125,10 @@ public sealed class WebSocket : IAsyncDisposable
 
                 case WebSocketOpcode.Text or WebSocketOpcode.Binary:
                     messageType = frame.Opcode;
+
+                    // RFC 7692 §6.1: RSV1 is set on the first frame of a message and describes the
+                    // whole message, continuation frames included.
+                    compressed = frame.Rsv1;
                     break;
 
                 case WebSocketOpcode.Continuation when !fragmented:
@@ -128,7 +144,13 @@ public sealed class WebSocket : IAsyncDisposable
             await this.ReadPayloadAsync(frame, payload, cancellationToken).ConfigureAwait(false);
 
             if (frame.Fin)
-                return new WebSocketMessage(messageType, payload.WrittenSpan.ToArray());
+            {
+                var body = compressed
+                    ? Shiny.Net.HttpServer.WebSockets.PerMessageDeflate.Decompress(payload.WrittenSpan, this.maxMessageLength)
+                    : payload.WrittenSpan.ToArray();
+
+                return new WebSocketMessage(messageType, body);
+            }
 
             fragmented = true;
         }
@@ -151,6 +173,19 @@ public sealed class WebSocket : IAsyncDisposable
 
         if (this.closeSent)
             throw new InvalidOperationException("The socket has already been closed.");
+
+        if (this.PerMessageDeflate && payload.Length >= this.CompressionThreshold)
+        {
+            var compressed = Shiny.Net.HttpServer.WebSockets.PerMessageDeflate.Compress(payload.Span);
+
+            // Only when it actually helped. Compression that makes a message bigger is a cost with
+            // no benefit, and the peer cannot tell the difference — RSV1 says which one it got.
+            if (compressed.Length < payload.Length)
+            {
+                await this.WriteFrameAsync(opcode, compressed, cancellationToken, rsv1: true).ConfigureAwait(false);
+                return;
+            }
+        }
 
         await this.WriteFrameAsync(opcode, payload, cancellationToken).ConfigureAwait(false);
     }
@@ -200,7 +235,7 @@ public sealed class WebSocket : IAsyncDisposable
             try
             {
                 var remaining = buffer;
-                if (WebSocketFrameCodec.TryReadHeader(ref remaining, out var header))
+                if (WebSocketFrameCodec.TryReadHeader(ref remaining, out var header, this.PerMessageDeflate))
                 {
                     this.input.AdvanceTo(remaining.Start);
                     return header;
@@ -269,6 +304,9 @@ public sealed class WebSocket : IAsyncDisposable
                 return false;
 
             case WebSocketOpcode.Pong:
+                // Any pong proves the peer is alive, whoever asked. That is all the keepalive
+                // loop wants to know.
+                Interlocked.Exchange(ref this.pendingPings, 0);
                 return false;
 
             case WebSocketOpcode.Close:
@@ -301,13 +339,18 @@ public sealed class WebSocket : IAsyncDisposable
         return new WebSocketCloseResult(status, description);
     }
 
-    async ValueTask WriteFrameAsync(WebSocketOpcode opcode, ReadOnlyMemory<byte> payload, CancellationToken cancellationToken)
+    async ValueTask WriteFrameAsync(
+        WebSocketOpcode opcode,
+        ReadOnlyMemory<byte> payload,
+        CancellationToken cancellationToken,
+        bool rsv1 = false
+    )
     {
         // Serialized: two concurrent sends would interleave their frames and corrupt both.
         await this.writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            WebSocketFrameCodec.WriteHeader(this.output, opcode, fin: true, payload.Length);
+            WebSocketFrameCodec.WriteHeader(this.output, opcode, fin: true, payload.Length, rsv1);
 
             if (!payload.IsEmpty)
                 this.output.Write(payload.Span);
@@ -327,10 +370,55 @@ public sealed class WebSocket : IAsyncDisposable
         or InvalidOperationException
         or IOException;
 
+    /// <summary>
+    /// Pings the peer on an interval and tears the socket down when the pongs stop.
+    /// <para>
+    /// Not a nicety on a mobile network. A phone that loses signal, a laptop that sleeps, a NAT
+    /// that drops an idle mapping — none of these close the socket, and a server that never asks
+    /// will hold a connection object and its buffers open for a peer that has been gone for hours.
+    /// This is also what keeps a tunnelled socket alive through an intermediary that reaps idle
+    /// connections.
+    /// </para>
+    /// </summary>
+    internal void StartKeepAlive(TimeSpan interval, int missedPingsBeforeClosing)
+        => _ = Task.Run(async () =>
+        {
+            var token = this.keepAliveStopped.Token;
+
+            try
+            {
+                using var timer = new PeriodicTimer(interval);
+
+                while (await timer.WaitForNextTickAsync(token).ConfigureAwait(false))
+                {
+                    if (this.disposed != 0 || this.closeSent)
+                        return;
+
+                    if (Interlocked.Increment(ref this.pendingPings) > missedPingsBeforeClosing)
+                    {
+                        // The peer has stopped answering. Aborting rather than closing politely,
+                        // because a close handshake needs a peer that is still there.
+                        this.connection.Abort();
+                        return;
+                    }
+
+                    await this.PingAsync(default, token).ConfigureAwait(false);
+                }
+            }
+            catch (Exception ex) when (IsDisconnect(ex))
+            {
+                // The socket went away underneath the keepalive. That is the outcome it exists to
+                // detect, so there is nothing to report.
+            }
+        }, CancellationToken.None);
+
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref this.disposed, 1) != 0)
             return;
+
+        await this.keepAliveStopped.CancelAsync().ConfigureAwait(false);
+        this.keepAliveStopped.Dispose();
 
         this.writeGate.Dispose();
         await this.connection.DisposeAsync().ConfigureAwait(false);

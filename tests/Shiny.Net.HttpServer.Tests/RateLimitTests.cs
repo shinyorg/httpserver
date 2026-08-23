@@ -302,7 +302,7 @@ public class RateLimitMiddlewareTests
                 app.MapGet("/cheap", ctx => ctx.Response.WriteAsync("ok"));
                 app.MapPost("/upload", ctx => ctx.Response.WriteAsync("ok")).RequireRateLimiting("uploads");
             },
-            builder => builder.Services.AddRateLimiter(o =>
+            builder => builder.AddRateLimiter(o =>
             {
                 o.GlobalPolicy = Global(100);
                 o.AddPolicy("uploads", new FixedWindowRateLimitPolicy(1, TimeSpan.FromMinutes(5))
@@ -329,7 +329,7 @@ public class RateLimitMiddlewareTests
                 app.MapGet("/x", ctx => ctx.Response.WriteAsync("ok"));
                 app.MapGet("/health", ctx => ctx.Response.WriteAsync("ok")).DisableRateLimiting();
             },
-            builder => builder.Services.AddRateLimiter(o => o.GlobalPolicy = Global(1))
+            builder => builder.AddRateLimiter(o => o.GlobalPolicy = Global(1))
         );
 
         Assert.Equal(HttpStatusCode.OK, (await server.Client.GetAsync("/x", Token)).StatusCode);
@@ -348,7 +348,7 @@ public class RateLimitMiddlewareTests
                 app.UseRateLimiter();
                 app.MapGet("/x", ctx => ctx.Response.WriteAsync("ok"));
             },
-            builder => builder.Services.AddRateLimiter(o =>
+            builder => builder.AddRateLimiter(o =>
             {
                 o.GlobalPolicy = Global(1);
                 o.OnRejected = (ctx, lease) =>
@@ -407,7 +407,7 @@ public class RateLimitMiddlewareTests
                 app.UseRateLimiter();
                 app.MapGet("/x", ctx => ctx.Response.WriteAsync("ok")).RequireRateLimiting("missing");
             },
-            builder => builder.Services.AddRateLimiter(o => o.GlobalPolicy = Global(10))
+            builder => builder.AddRateLimiter(o => o.GlobalPolicy = Global(10))
         );
 
         var response = await server.Client.GetAsync("/x", Token);

@@ -26,6 +26,22 @@ public static class HttpMethods
     public static bool IsOptions(string method) => Equals(Options, method);
     public static bool IsConnect(string method) => Equals(Connect, method);
 
+    /// <summary>
+    /// True for the nine methods defined in RFC 9110. Extension methods — WebDAV's PROPFIND, a
+    /// private verb — are not "unknown" in any interesting sense, but telemetry has to bound what
+    /// it reports on a caller-controlled value, and this is the line the semantic conventions draw.
+    /// </summary>
+    public static bool IsKnown(string method)
+        => IsGet(method)
+            || IsHead(method)
+            || IsPost(method)
+            || IsPut(method)
+            || IsPatch(method)
+            || IsDelete(method)
+            || IsOptions(method)
+            || IsConnect(method)
+            || Equals(Trace, method);
+
     public static bool Equals(string a, string b)
         => ReferenceEquals(a, b) || string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
 

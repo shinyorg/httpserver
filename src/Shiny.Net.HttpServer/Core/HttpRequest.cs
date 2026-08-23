@@ -99,7 +99,15 @@ public sealed class HttpRequest
     PipeReader? bodyReader;
 
     /// <summary>True when a body is present (either a positive Content-Length or chunked).</summary>
-    public bool HasBody => this.IsChunked || this.ContentLength > 0;
+    public bool HasBody => this.IsChunked || this.ContentLength > 0 || this.BodyDecoded;
+
+    /// <summary>
+    /// Set when a middleware replaced <see cref="Body"/> with a decoded stream whose length is not
+    /// known — request decompression, today. Without it, dropping the now-wrong Content-Length
+    /// would make <see cref="HasBody"/> answer false and the binder would skip a body that is
+    /// sitting right there.
+    /// </summary>
+    internal bool BodyDecoded { get; set; }
 
     internal void Reset()
     {
@@ -111,6 +119,7 @@ public sealed class HttpRequest
         this.QueryString = null;
         this.RawTarget = "/";
         this.IsChunked = false;
+        this.BodyDecoded = false;
         this.body = null;
         this.bodyReader = null;
         this.Headers.Reset();

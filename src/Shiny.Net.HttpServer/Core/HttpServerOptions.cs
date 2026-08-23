@@ -118,6 +118,29 @@ public sealed class HttpServerOptions
     /// Turn it off in development to return the exception text instead.
     /// </summary>
     public bool HideExceptionDetails { get; set; } = true;
+
+    /// <summary>
+    /// Restarts the listeners when the machine's IP addresses change.
+    /// <para>
+    /// For a device that moves. A listener bound to the Wi-Fi address it had at startup is dead the
+    /// moment the phone joins a different network or switches to a hotspot — the socket survives,
+    /// the address does not, and nothing reports it. With this on, the server rebinds; with it off,
+    /// <see cref="HttpServer.NetworkAddressesChanged"/> still fires so an app can react itself.
+    /// </para>
+    /// <para>
+    /// Off by default, because a restart drops in-flight requests and a server on a fixed machine
+    /// has nothing to gain. Binding to <see cref="IPAddress.Any"/> does not need it either — that
+    /// socket keeps working across an address change; what needs it is a bind to a specific address.
+    /// </para>
+    /// </summary>
+    public bool RebindOnNetworkChange { get; set; }
+
+    /// <summary>
+    /// How long to wait for the addresses to settle before acting on a change. One transition
+    /// raises several events — interface down, up, address acquired — and rebinding on each of
+    /// them restarts the server three times for one event.
+    /// </summary>
+    public TimeSpan NetworkChangeDebounce { get; set; } = TimeSpan.FromSeconds(2);
 }
 
 /// <summary>

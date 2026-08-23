@@ -34,6 +34,13 @@ readonly struct WebSocketFrameHeader
 {
     public required bool Fin { get; init; }
     public required WebSocketOpcode Opcode { get; init; }
+
+    /// <summary>
+    /// The first reserved bit. With permessage-deflate negotiated it means "this message is
+    /// compressed", set on the first frame of a message only; with no extension negotiated it is a
+    /// protocol error.
+    /// </summary>
+    public bool Rsv1 { get; init; }
     public required bool Masked { get; init; }
     public required long PayloadLength { get; init; }
     public required uint MaskingKey { get; init; }
@@ -60,7 +67,7 @@ static class WebSocketFrameCodec
     /// <summary>
     /// Reads a frame header if a whole one is buffered, advancing <paramref name="buffer"/> past it.
     /// </summary>
-    public static bool TryReadHeader(ref ReadOnlySequence<byte> buffer, out WebSocketFrameHeader header)
+    public static bool TryReadHeader(ref ReadOnlySequence<byte> buffer, out WebSocketFrameHeader header, bool allowRsv1 = false)
     {
         header = default;
 
@@ -71,15 +78,21 @@ static class WebSocketFrameCodec
         buffer.Slice(0, 2).CopyTo(prefix);
 
         var fin = (prefix[0] & 0x80) != 0;
-        var reserved = prefix[0] & 0x70;
+        var rsv1 = (prefix[0] & 0x40) != 0;
+        var reserved = prefix[0] & (allowRsv1 ? 0x30 : 0x70);
         var opcode = (WebSocketOpcode)(prefix[0] & 0x0F);
         var masked = (prefix[1] & 0x80) != 0;
         long length = prefix[1] & 0x7F;
 
-        // No extensions are negotiated, so any reserved bit set means the peer is speaking a
-        // protocol this server never agreed to.
+        // A reserved bit only means something when an extension defined it. Anything else set is
+        // the peer speaking a protocol this server never agreed to.
         if (reserved != 0)
             throw new WebSocketProtocolException(WebSocketCloseStatus.ProtocolError, "Reserved bits are set.");
+
+        // RFC 7692 §6: compression applies to data messages. A compressed control frame would have
+        // to be inflated before it could be acted on, which the spec forbids for good reason.
+        if (rsv1 && ((byte)(prefix[0] & 0x0F) & 0x8) != 0)
+            throw new WebSocketProtocolException(WebSocketCloseStatus.ProtocolError, "A control frame cannot be compressed.");
 
         var offset = 2;
 
@@ -138,6 +151,7 @@ static class WebSocketFrameCodec
         {
             Fin = fin,
             Opcode = opcode,
+            Rsv1 = rsv1,
             Masked = masked,
             PayloadLength = length,
             MaskingKey = maskingKey
@@ -165,7 +179,7 @@ static class WebSocketFrameCodec
     }
 
     /// <summary>Writes a frame header. Server-to-client frames are never masked.</summary>
-    public static void WriteHeader(IBufferWriter<byte> writer, WebSocketOpcode opcode, bool fin, long length)
+    public static void WriteHeader(IBufferWriter<byte> writer, WebSocketOpcode opcode, bool fin, long length, bool rsv1 = false)
     {
         var headerSize = 2 + length switch
         {
@@ -175,7 +189,7 @@ static class WebSocketFrameCodec
         };
 
         var span = writer.GetSpan(headerSize);
-        span[0] = (byte)((fin ? 0x80 : 0x00) | (byte)opcode);
+        span[0] = (byte)((fin ? 0x80 : 0x00) | (rsv1 ? 0x40 : 0x00) | (byte)opcode);
 
         if (length <= 125)
         {

@@ -321,12 +321,12 @@ public static class SessionExtensionsForRegistration
     /// in its constructor and never reach for <see cref="HttpContext"/>.
     /// </para>
     /// </summary>
-    public static IServiceCollection AddSessions(this IServiceCollection services, Action<SessionOptions> configure)
+    public static ShinyHttpServerBuilder AddSessions(this ShinyHttpServerBuilder builder, Action<SessionOptions> configure)
     {
-        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(configure);
 
-        services.TryAddSingleton(_ =>
+        builder.Services.TryAddSingleton(_ =>
         {
             var options = new SessionOptions();
             configure(options);
@@ -334,8 +334,8 @@ public static class SessionExtensionsForRegistration
             return options;
         });
 
-        services.TryAddSingleton<ISessionStore>(_ => new InMemorySessionStore());
-        services.TryAddSingleton(sp => new SessionMiddleware(
+        builder.Services.TryAddSingleton<ISessionStore>(_ => new InMemorySessionStore());
+        builder.Services.TryAddSingleton(sp => new SessionMiddleware(
             sp.GetRequiredService<SessionOptions>(),
             sp.GetRequiredService<ISessionStore>()
         ));
@@ -343,29 +343,29 @@ public static class SessionExtensionsForRegistration
         // Resolved from the request's context rather than constructed here: the middleware owns the
         // session's lifetime, and two ISession instances for one request would each hold half the
         // state.
-        services.TryAddScoped(sp => sp.GetRequiredService<IHttpContextAccessor>().HttpContext?.Session
+        builder.Services.TryAddScoped(sp => sp.GetRequiredService<IHttpContextAccessor>().HttpContext?.Session
             ?? throw new InvalidOperationException(
                 "There is no session on this request. Add app.UseSessions() to the pipeline."
             ));
 
-        services.TryAddSingleton<IHttpContextAccessor, HttpContextAccessor>();
+        builder.Services.TryAddSingleton<IHttpContextAccessor, HttpContextAccessor>();
 
-        return services;
+        return builder;
     }
 
     /// <summary>Registers sessions with a store of your own.</summary>
-    public static IServiceCollection AddSessions<TStore>(
-        this IServiceCollection services,
+    public static ShinyHttpServerBuilder AddSessions<TStore>(
+        this ShinyHttpServerBuilder builder,
         Func<IServiceProvider, TStore> storeFactory,
         Action<SessionOptions> configure
     ) where TStore : class, ISessionStore
     {
-        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(storeFactory);
 
-        services.AddSingleton<ISessionStore>(storeFactory);
+        builder.Services.AddSingleton<ISessionStore>(storeFactory);
 
-        return services.AddSessions(configure);
+        return builder.AddSessions(configure);
     }
 
     /// <summary>

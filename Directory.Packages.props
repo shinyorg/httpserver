@@ -44,6 +44,13 @@
              so an earlier one would not compile. The SQLite provider is test-only and must stay in
              lockstep, because a provider compiled against a different engine build is a runtime
              mismatch rather than a build error. -->
+        <!-- The mobile lifecycle and mDNS packages come from the Shiny repo the same way: published,
+             versioned and released independently of this one. 5.4.0 is the floor because it is the
+             first release carrying IMdnsManager's publish path and ShinyAndroidForegroundService in
+             the shapes these packages build on. -->
+        <PackageVersion Include="Shiny.Core" Version="5.4.0"/>
+        <PackageVersion Include="Shiny.Net.Discovery" Version="5.4.0"/>
+
         <PackageVersion Include="Shiny.DocumentDb" Version="13.2.1"/>
         <PackageVersion Include="Shiny.DocumentDb.Sqlite" Version="13.2.1"/>
 

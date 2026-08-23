@@ -96,7 +96,7 @@ public class ContentNegotiationTests
             app.MapGet("/reading", _ => Results.Negotiate(new Reading("kitchen", 21.5)));
             app.MapGet("/count", _ => Results.Negotiate(42));
         },
-        builder => builder.Services.AddContentNegotiation(configure)
+        builder => builder.AddContentNegotiation(configure)
     );
 
     static async Task<HttpResponseMessage> GetAsync(TestServer server, string path, string? accept)

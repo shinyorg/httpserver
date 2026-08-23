@@ -32,16 +32,16 @@ public static class SshServiceCollectionExtensions
     /// Start the tunnel with the host. Off, the tunnel is registered but idle — resolve
     /// <see cref="SshTunnel"/> and call <see cref="SshTunnel.StartAsync"/> when the user asks for it.
     /// </param>
-    public static IServiceCollection AddSshTunnel(
-        this IServiceCollection services,
+    public static ShinyHttpServerBuilder AddSshTunnel(
+        this ShinyHttpServerBuilder builder,
         Action<SshTunnelOptions> configureOptions,
         bool autoStart = true
     )
     {
-        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(configureOptions);
 
-        services.TryAddSingleton(sp =>
+        builder.Services.TryAddSingleton(sp =>
         {
             var options = new SshTunnelOptions();
             configureOptions(options);
@@ -50,9 +50,9 @@ public static class SshServiceCollectionExtensions
         });
 
         if (autoStart)
-            services.AddHostedService<SshTunnelHostedService>();
+            builder.Services.AddHostedService<SshTunnelHostedService>();
 
-        return services;
+        return builder;
     }
 }
 

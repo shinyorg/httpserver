@@ -53,7 +53,7 @@ public static class Runner
 
         if (settings.AuthEnabled)
         {
-            builder.Services
+            builder
                 .AddAuthentication()
                 .AddBasic(o =>
                 {
@@ -64,7 +64,7 @@ public static class Runner
                         o.AddUser(user.Username, user.Password);
                 });
 
-            builder.Services.AddAuthorization(o => o.SetDefaultPolicy(p => p.RequireAuthenticatedUser()));
+            builder.AddAuthorization(o => o.SetDefaultPolicy(p => p.RequireAuthenticatedUser()));
         }
 
         await using var server = builder.Build();

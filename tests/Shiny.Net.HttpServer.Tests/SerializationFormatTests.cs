@@ -198,7 +198,7 @@ public class SerializationFormatTests
             app.MapGet("/probe/negotiated", _ => Results.Negotiate(Sample));
             app.MapGet("/point", _ => Results.Negotiate(new Point(3, 300)));
         },
-        builder => builder.Services.AddContentNegotiation(configure)
+        builder => builder.AddContentNegotiation(configure)
     );
 
     static async Task<HttpResponseMessage> GetAsync(TestServer server, string path, string accept)
@@ -462,7 +462,7 @@ public class SerializationFormatTests
                     return read.Success ? Results.Ok(read.Value!) : Results.StatusCode((int)read.Status + 900);
                 });
             },
-            builder => builder.Services.AddContentNegotiation(o => o.AddXml().AddMessagePack())
+            builder => builder.AddContentNegotiation(o => o.AddXml().AddMessagePack())
         );
 
         foreach (var mediaType in new[] { "application/xml", "application/msgpack" })
@@ -666,7 +666,7 @@ public class SuppliedCodecFormatTests
                     : Results.StatusCode(StatusCodes.Status400BadRequest);
             });
         },
-        builder => builder.Services.AddContentNegotiation(
+        builder => builder.AddContentNegotiation(
             o => o.AddProtobuf(p => p.Add<Point>(EncodePoint, DecodePoint))
         )
     );

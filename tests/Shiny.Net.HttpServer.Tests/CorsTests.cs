@@ -240,7 +240,7 @@ public class CorsTests
                 app.MapGet("/private", ctx => ctx.Response.WriteAsync("private"));
                 app.MapGet("/public", ctx => ctx.Response.WriteAsync("public")).RequireCors("public");
             },
-            builder => builder.Services.AddCors(o =>
+            builder => builder.AddCors(o =>
             {
                 o.AddDefaultPolicy(p => p.WithOrigins(Origin).AllowAnyMethod().AllowAnyHeader());
                 o.AddPolicy("public", p => p.AllowAnyOrigin().AllowAnyMethod());
@@ -267,7 +267,7 @@ public class CorsTests
                 app.UseCors();
                 app.MapPost("/public", ctx => ctx.Response.WriteAsync("public")).RequireCors("public");
             },
-            builder => builder.Services.AddCors(o =>
+            builder => builder.AddCors(o =>
             {
                 o.AddDefaultPolicy(p => p.WithOrigins(Origin).AllowAnyMethod().AllowAnyHeader());
                 o.AddPolicy("public", p => p.AllowAnyOrigin().AllowAnyMethod());
@@ -288,7 +288,7 @@ public class CorsTests
                 app.UseCors();
                 app.MapGet("/data", ctx => ctx.Response.WriteAsync("payload")).DisableCors();
             },
-            builder => builder.Services.AddCors(
+            builder => builder.AddCors(
                 o => o.AddDefaultPolicy(p => p.WithOrigins(Origin).AllowAnyMethod().AllowAnyHeader())
             )
         );

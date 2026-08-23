@@ -185,13 +185,13 @@ public class CookieAuthenticationTests
         },
         builder =>
         {
-            builder.Services.AddAuthentication().AddCookie(o =>
+            builder.AddAuthentication().AddCookie(o =>
             {
                 o.Protector = new TicketProtector(Key);
                 extra?.Invoke(o);
             });
 
-            builder.Services.AddAuthorization();
+            builder.AddAuthorization();
         }
     );
 

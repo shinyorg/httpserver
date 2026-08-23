@@ -7,18 +7,18 @@ namespace Shiny.Net.HttpServer.Cors;
 public static class CorsServiceCollectionExtensions
 {
     /// <summary>Registers the CORS options and any named policies.</summary>
-    public static IServiceCollection AddCors(this IServiceCollection services, Action<CorsOptions>? configure = null)
+    public static ShinyHttpServerBuilder AddCors(this ShinyHttpServerBuilder builder, Action<CorsOptions>? configure = null)
     {
-        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(builder);
 
-        services.TryAddSingleton(_ =>
+        builder.Services.TryAddSingleton(_ =>
         {
             var options = new CorsOptions();
             configure?.Invoke(options);
             return options;
         });
 
-        return services;
+        return builder;
     }
 }
 
@@ -75,7 +75,7 @@ public static class HttpServerCorsExtensions
                 : throw new InvalidOperationException(
                     "UseCors has no policy to apply. Either pass one inline — " +
                     "app.UseCors(p => p.WithOrigins(\"https://example.com\")) — or register them " +
-                    "with services.AddCors(o => ...)."
+                    "with builder.AddCors(o => ...)."
                 ));
 
         return server.Use(new CorsMiddleware(server.Router, options, policy));
@@ -109,7 +109,7 @@ public static class HttpServerCorsExtensions
         => server.Services?.GetService<CorsOptions>()
             ?? throw new InvalidOperationException(
                 "Named CORS policies live in CorsOptions. Register them with " +
-                "services.AddCors(o => o.AddPolicy(\"name\", p => ...)), or pass a policy inline " +
+                "builder.AddCors(o => o.AddPolicy(\"name\", p => ...)), or pass a policy inline " +
                 "with app.UseCors(p => ...)."
             );
 

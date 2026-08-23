@@ -133,14 +133,14 @@ public static class ProblemDetailsExtensions
     /// registration order, and a catch-all registered first would never let a specific one run.
     /// </para>
     /// </summary>
-    public static IServiceCollection AddProblemDetails(
-        this IServiceCollection services,
+    public static ShinyHttpServerBuilder AddProblemDetails(
+        this ShinyHttpServerBuilder builder,
         Action<ProblemDetailsOptions>? configure = null
     )
     {
-        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNull(builder);
 
-        services.TryAddSingleton(_ =>
+        builder.Services.TryAddSingleton(_ =>
         {
             var options = new ProblemDetailsOptions();
             configure?.Invoke(options);
@@ -148,7 +148,7 @@ public static class ProblemDetailsExtensions
             return options;
         });
 
-        return services.AddExceptionHandler(sp => new ProblemDetailsExceptionHandler(
+        return builder.AddExceptionHandler(sp => new ProblemDetailsExceptionHandler(
             sp.GetRequiredService<ProblemDetailsOptions>(),
             sp.GetService<ILogger<ProblemDetailsExceptionHandler>>()
         ));

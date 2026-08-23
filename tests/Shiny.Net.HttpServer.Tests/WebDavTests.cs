@@ -968,8 +968,8 @@ public class WebDavTests
         },
         builder =>
         {
-            builder.Services.AddAuthentication().AddBasic(o => o.AddUser("ada", "hunter2"));
-            builder.Services.AddAuthorization();
+            builder.AddAuthentication().AddBasic(o => o.AddUser("ada", "hunter2"));
+            builder.AddAuthorization();
         }
     );
 

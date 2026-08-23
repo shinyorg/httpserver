@@ -53,6 +53,9 @@
     <ProjectReference Include="../../src/Shiny.Net.HttpServer.AzureRelay/Shiny.Net.HttpServer.AzureRelay.csproj" />
     <ProjectReference Include="../../src/Shiny.Net.HttpServer.Mcp/Shiny.Net.HttpServer.Mcp.csproj" />
     <ProjectReference Include="../../src/Shiny.Net.HttpServer.Ssh/Shiny.Net.HttpServer.Ssh.csproj" />
+    <ProjectReference Include="../../src/Shiny.Net.HttpServer.Tunnels/Shiny.Net.HttpServer.Tunnels.csproj" />
+    <ProjectReference Include="../../src/Shiny.Net.HttpServer.Discovery/Shiny.Net.HttpServer.Discovery.csproj" />
+    <ProjectReference Include="../../src/Shiny.Net.HttpServer.Testing/Shiny.Net.HttpServer.Testing.csproj" />
     <ProjectReference Include="../../src/Shiny.Net.HttpServer.WebDav/Shiny.Net.HttpServer.WebDav.csproj" />
     <ProjectReference Include="../../src/Shiny.Net.HttpServer.Mediator/Shiny.Net.HttpServer.Mediator.csproj" />
     <ProjectReference Include="../../src/Shiny.Net.HttpServer.DocumentDb/Shiny.Net.HttpServer.DocumentDb.csproj" />

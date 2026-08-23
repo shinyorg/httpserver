@@ -42,6 +42,7 @@ public sealed class HttpServer : IAsyncDisposable
     // linked to would turn a normal shutdown into an ObjectDisposedException.
     CancellationTokenSource stopping = new();
 
+    NetworkChangeWatcher? networkWatcher;
     RequestDelegate? terminalHandler;
     RequestDelegate? pipeline;
     IReadOnlyList<SocketConnectionListener> listeners = [];
@@ -63,8 +64,13 @@ public sealed class HttpServer : IAsyncDisposable
             this.connectionLimit = new SemaphoreSlim(max, max);
     }
 
-    /// <summary>Entry point for the DI-first path: configure services, then <c>Build()</c>.</summary>
-    public static HttpServerBuilder CreateBuilder() => new();
+    /// <summary>
+    /// Entry point for a server that owns its own container: configure, then <c>Build()</c>. An app
+    /// that already has a container calls <c>services.AddShinyHttpServer(...)</c> instead and gets
+    /// the same builder.
+    /// </summary>
+    public static ShinyHttpServerBuilder CreateBuilder()
+        => new(new Microsoft.Extensions.DependencyInjection.ServiceCollection(), ownsContainer: true);
 
     public HttpServerOptions Options { get; }
 
@@ -90,6 +96,20 @@ public sealed class HttpServer : IAsyncDisposable
     public IReadOnlyList<string> ListenUrls => [.. this.listeners.Select(x => x.ListenDescription)];
 
     public bool IsRunning => this.State == HttpServerState.Running;
+
+    /// <summary>
+    /// Connections currently being served, tunnelled ones included. This is connections, not
+    /// requests: one keep-alive connection serving a hundred requests counts once, and an HTTP/2
+    /// connection with a dozen concurrent streams also counts once.
+    /// </summary>
+    public int ActiveConnections
+    {
+        get
+        {
+            lock (this.connectionsLock)
+                return this.connections.Count;
+        }
+    }
 
     // ---- Tier 0: one delegate ----
 
@@ -298,6 +318,18 @@ public sealed class HttpServer : IAsyncDisposable
     public event EventHandler<HttpServerState>? StateChanged;
 
     /// <summary>
+    /// Raised when the machine's IP addresses change while the server is running — a phone moving
+    /// between Wi-Fi networks, a hotspot coming up, cellular taking over.
+    /// <para>
+    /// Raised whether or not <see cref="HttpServerOptions.RebindOnNetworkChange"/> is on, and after
+    /// the rebind when it is, so a handler always sees the addresses the server is actually on. The
+    /// obvious things to do with it: re-render the QR code, re-announce the mDNS advertisement,
+    /// update the "reachable at" line in the UI.
+    /// </para>
+    /// </summary>
+    public event EventHandler<IReadOnlyList<System.Net.IPAddress>>? NetworkAddressesChanged;
+
+    /// <summary>
     /// Binds the listener and begins accepting. Returns as soon as the server is listening.
     /// <para>
     /// Idempotent: starting an already-running server does nothing rather than throwing, because
@@ -438,6 +470,7 @@ public sealed class HttpServer : IAsyncDisposable
             foreach (var connectionListener in bound)
                 this.logger.LogInformation("Listening on {Url}", connectionListener.ListenDescription);
 
+            this.StartWatchingTheNetwork();
             this.SetState(HttpServerState.Running);
         }
         catch
@@ -469,6 +502,9 @@ public sealed class HttpServer : IAsyncDisposable
 
         this.SetState(HttpServerState.Stopping);
         this.logger.LogInformation("Shutting down");
+
+        this.networkWatcher?.Dispose();
+        this.networkWatcher = null;
 
         foreach (var connectionListener in this.listeners)
             await connectionListener.UnbindAsync(cancellationToken).ConfigureAwait(false);
@@ -785,6 +821,53 @@ public sealed class HttpServer : IAsyncDisposable
 
             return head.SequenceEqual(Http2Frame.Preface[..count]);
         }
+    }
+
+    /// <summary>
+    /// Starts watching for address changes, if anything is going to act on them.
+    /// <para>
+    /// Skipped entirely when nobody is listening and rebinding is off, so a server on a machine
+    /// that never moves does not pay for an event subscription it will never use.
+    /// </para>
+    /// </summary>
+    void StartWatchingTheNetwork()
+    {
+        if (this.networkWatcher is not null)
+            return;
+
+        if (!this.Options.RebindOnNetworkChange && this.NetworkAddressesChanged is null)
+            return;
+
+        this.networkWatcher = new NetworkChangeWatcher(
+            this.OnNetworkChangedAsync,
+            this.Options.NetworkChangeDebounce,
+            this.logger
+        );
+    }
+
+    async Task OnNetworkChangedAsync(CancellationToken cancellationToken)
+    {
+        if (this.Options.RebindOnNetworkChange && this.acceptLoops is not null)
+        {
+            try
+            {
+                await this.RestartAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // The server was stopped while this change was settling. Restarting it now would
+                // bring back a server the caller has already shut down.
+                return;
+            }
+            catch (Exception ex)
+            {
+                // The new network may not be ready, or the old port may still be held. The server
+                // is left stopped rather than pretending, and the next change tries again.
+                this.logger.LogError(ex, "Failed to rebind after a network address change");
+            }
+        }
+
+        this.NetworkAddressesChanged?.Invoke(this, LocalAddresses.Current());
     }
 
     void ThrowIfStarted()

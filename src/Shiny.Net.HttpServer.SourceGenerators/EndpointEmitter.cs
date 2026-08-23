@@ -33,6 +33,9 @@ static class EndpointEmitter
     const string CorsMetadata = "global::Shiny.Net.HttpServer.Cors.CorsMetadata";
     const string RateLimitMetadata = "global::Shiny.Net.HttpServer.RateLimiting.RateLimitMetadata";
     const string IpFilterMetadata = "global::Shiny.Net.HttpServer.Security.IpFilterMetadata";
+    const string RequestTimeoutMetadata = "global::Shiny.Net.HttpServer.Timeouts.RequestTimeoutMetadata";
+    const string OutputCacheMetadata = "global::Shiny.Net.HttpServer.Caching.OutputCacheMetadata";
+    const string AntiforgeryMetadata = "global::Shiny.Net.HttpServer.Security.AntiforgeryMetadata";
     const string Context = "global::Shiny.Net.HttpServer.HttpContext";
     const string Server = "global::Shiny.Net.HttpServer.HttpServer";
     const string Results = "global::Shiny.Net.HttpServer.Results";
@@ -133,7 +136,48 @@ static class EndpointEmitter
         if (policies.HasIpFilter)
             metadata.Add($"new {IpFilterMetadata} {{ {Assignments(policies.IpFilterPolicy, policies.IpFilterDisabled)} }}");
 
+        if (policies.HasRequestTimeout)
+            metadata.Add($"new {RequestTimeoutMetadata} {{ {TimeoutAssignments(policies)} }}");
+
+        if (policies.HasOutputCache)
+            metadata.Add($"new {OutputCacheMetadata} {{ {CacheAssignments(policies)} }}");
+
+        if (policies.HasAntiforgery)
+        {
+            metadata.Add(policies.AntiforgeryDisabled
+                ? $"new {AntiforgeryMetadata} {{ Disabled = true }}"
+                : $"new {AntiforgeryMetadata} {{ Required = true }}");
+        }
+
         return metadata;
+
+        static string TimeoutAssignments(EndpointPolicyModel policies)
+        {
+            if (policies.RequestTimeoutDisabled)
+                return "Disabled = true";
+
+            // Emitted as a TimeSpan built from milliseconds so the generated code reads the way the
+            // attribute did, and so nothing has to parse a string at startup.
+            return policies.RequestTimeoutMilliseconds is { } milliseconds
+                ? $"Timeout = global::System.TimeSpan.FromMilliseconds({milliseconds})"
+                : $"PolicyName = {Literal(policies.RequestTimeoutPolicy!)}";
+        }
+
+        static string CacheAssignments(EndpointPolicyModel policies)
+        {
+            if (policies.OutputCacheDisabled)
+                return "Disabled = true";
+
+            if (policies.OutputCacheSeconds is { } seconds)
+                return $"Duration = global::System.TimeSpan.FromSeconds({seconds})";
+
+            return policies.OutputCachePolicy is { } policy
+                ? $"PolicyName = {Literal(policy)}"
+
+                // A bare [OutputCache] means "the default policy applies", which is what an empty
+                // metadata object says: not disabled, nothing named.
+                : string.Empty;
+        }
 
         static string Assignments(string? policy, bool disabled)
             => disabled ? "Disabled = true" : $"PolicyName = {Literal(policy!)}";
