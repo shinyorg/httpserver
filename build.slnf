@@ -3,7 +3,7 @@
         "path": "Shiny.Net.HttpServer.slnx",
         "projects": [
             "src\\Shiny.Net.HttpServer\\Shiny.Net.HttpServer.csproj",
-            "src\\Shiny.Net.HttpServer\\Shiny.Net.HttpServer.Mobile.csproj",
+            "src\\Shiny.Net.HttpServer.Mobile\\Shiny.Net.HttpServer.Mobile.csproj",
             "src\\Shiny.Net.HttpServer.SourceGenerators\\Shiny.Net.HttpServer.SourceGenerators.csproj",
             "src\\Shiny.Net.HttpServer.Jwt\\Shiny.Net.HttpServer.Jwt.csproj",
             "src\\Shiny.Net.HttpServer.Grpc\\Shiny.Net.HttpServer.Grpc.csproj",

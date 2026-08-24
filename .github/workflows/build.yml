@@ -9,9 +9,6 @@ on:
         default: 'warning'
   push:
     branches:
-    - main
-    - dev
-    - preview
     - v*
     paths-ignore:
       - '.claude-plugins/**'
