@@ -37,6 +37,26 @@ server.MapGet("/ping", ctx => ctx.Response.WriteAsync("pong"));
 await server.RunAsync();
 ```
 
+Every registration this library owns hangs off one builder, in both hosting shapes:
+
+```csharp
+var builder = HttpServer.CreateBuilder();
+builder.Options.Port = 8080;
+builder.AddAuthentication().AddJwtBearer(o => o.SigningKey = key);
+builder.AddRateLimiter(o => o.GlobalPolicy = new FixedWindowRateLimitPolicy(100, TimeSpan.FromMinutes(1)));
+builder.AddHealthChecks().AddServerCheck();
+
+var app = builder.Build();
+
+// …or, inside an app that already owns a container — the same calls:
+services.AddShinyHttpServer(http =>
+{
+    http.Options.Port = 8080;
+    http.AddHealthChecks().AddServerCheck();
+    http.Configure(server => server.MapMyAppEndpoints());
+});
+```
+
 Typed endpoints, generated at compile time:
 
 ```csharp
@@ -79,13 +99,19 @@ public partial class ToolJson : JsonSerializerContext;
 On a phone, where the server has to be found and has to survive the device moving:
 
 ```csharp
-builder.Services.AddHttpServer(o => o.Address = IPAddress.Any, autoStart: false);
+builder.Services.AddShinyHttpServer(
+    http =>
+    {
+        http.Options.Address = IPAddress.Any;
 
-// Stops on background, starts on resume, rebinds when the network changes.
-builder.Services.AddHttpServerLifecycle(o => o.BackgroundMode = BackgroundServerMode.KeepAlive);
+        // Stops on background, starts on resume, rebinds when the network changes.
+        http.AddHttpServerLifecycle(o => o.BackgroundMode = BackgroundServerMode.KeepAlive);
 
-// Advertises on the local link, so the other device does not need an IP address.
-builder.Services.AddHttpServerAdvertisement(o => o.ServiceType = "_myapp._tcp");
+        // Advertises on the local link, so the other device does not need an IP address.
+        http.AddHttpServerAdvertisement(o => o.ServiceType = "_myapp._tcp");
+    },
+    autoStart: false
+);
 ```
 
 and on the other device:

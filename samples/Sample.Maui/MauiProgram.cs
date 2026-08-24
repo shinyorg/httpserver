@@ -50,10 +50,6 @@ public static class MauiProgram
         builder.Services.AddSingleton<TrafficBadge>();
         builder.Services.AddSingleton<IMauiInitializeService>(sp => sp.GetRequiredService<TrafficBadge>());
 
-        // The accounts live in the app's own storage and change from the Server screen, so the
-        // validator is a service rather than a list handed over at startup.
-        builder.Services.AddAuthentication().AddBasic<CredentialStore>(o => o.Realm = "Shiny device");
-
         // An MCP server, in a phone app. The MCP SDK's own HTTP transport is an ASP.NET Core package,
         // so this is the part that cannot be done any other way.
         //
@@ -83,77 +79,82 @@ public static class MauiProgram
                 // user happens to have open driving the server behind their back.
             });
 
-        builder.Services.AddHttpServer(
-            options =>
+        builder.Services.AddShinyHttpServer(
+            http =>
             {
                 // Any, not loopback: the point is for another device to reach this one. Port 0
                 // lets the OS pick, so two copies of the app on one network do not collide.
-                options.Address = IPAddress.Any;
-                options.Port = 0;
-            },
-            server =>
-            {
-                var services = server.Services!;
+                http.Options.Address = IPAddress.Any;
+                http.Options.Port = 0;
 
-                // First in the pipeline, ahead of authentication, so the Traffic tab shows the
-                // requests that were turned away as well as the ones that were answered.
-                server.Use(services.GetRequiredService<RequestLog>());
+                // The accounts live in the app's own storage and change from the Server screen, so
+                // the validator is a service rather than a list handed over at startup.
+                http.AddAuthentication().AddBasic<CredentialStore>(o => o.Realm = "Shiny device");
 
-                // Identify the caller, then insist on one. Both run before the static file handler,
-                // because that handler answers before routing and would otherwise serve the page to
-                // anyone with the link.
-                server.UseAuthentication();
-                server.Use(services.GetRequiredService<RequireAuthenticationMiddleware>());
+                // localhost.run: no account, no key, nothing installed. The URL it assigns is what
+                // the app shows on screen.
+                http.AddQuickTunnel();
 
-                // The page a visitor lands on, served straight out of the assembly — a packaged app
-                // has no wwwroot on disk to point at.
-                server.UseEmbeddedFiles(typeof(MauiProgram).Assembly, "Sample.Maui.wwwroot");
-
-                DeviceApi.Map(server, services.GetRequiredService<NoteStore>());
-
-                // Deliberately not added to RequireAuthenticationMiddleware.AllowAnonymous: this
-                // endpoint hands out the device's state and lets a caller write to it, so it sits
-                // behind the same password as everything else. An MCP client reaches it by sending
-                // the Basic credentials from the settings screen.
-                server.MapMcp();
-
-                // The app's own storage, over HTTP. Mapped as routes rather than middleware so
-                // authorization can differ per verb — here everything is already behind the password
-                // gate, so this asks for nothing further.
-                server.MapFileBrowser("/files", o =>
+                http.Configure(server =>
                 {
-                    o.RootPath = FileSystem.AppDataDirectory;
-                    o.AllowWrite = true;
-                    o.AllowDelete = true;
-                });
+                    var services = server.Services!;
 
-                // The same directory again, over WebDAV — and the difference is who the client is.
-                // /files is a JSON API for a script; this is the protocol a desktop already speaks,
-                // so the phone's storage opens as a drive in Finder or Windows Explorer with nothing
-                // installed on either end. Point them at http://<device>:<port>/dav and sign in with
-                // the same account as everything else - or open that URL in a browser, where the
-                // same mount answers with a file manager: the phone's storage, uploaded to and
-                // deleted from, with no app on the other machine at all.
-                //
-                // Locking is left on, and that is not a detail: Finder and the Windows redirector
-                // both check for DAV class 2 at mount time and mount read-only without it, however
-                // much AllowWrite allows.
-                server.MapWebDav("/dav", o =>
-                {
-                    o.RootPath = FileSystem.AppDataDirectory;
-                    o.AllowWrite = true;
-                    o.AllowDelete = true;
-                    o.DisplayName = DeviceInfo.Name;
+                    // First in the pipeline, ahead of authentication, so the Traffic tab shows the
+                    // requests that were turned away as well as the ones that were answered.
+                    server.Use(services.GetRequiredService<RequestLog>());
+
+                    // Identify the caller, then insist on one. Both run before the static file handler,
+                    // because that handler answers before routing and would otherwise serve the page to
+                    // anyone with the link.
+                    server.UseAuthentication();
+                    server.Use(services.GetRequiredService<RequireAuthenticationMiddleware>());
+
+                    // The page a visitor lands on, served straight out of the assembly — a packaged app
+                    // has no wwwroot on disk to point at.
+                    server.UseEmbeddedFiles(typeof(MauiProgram).Assembly, "Sample.Maui.wwwroot");
+
+                    DeviceApi.Map(server, services.GetRequiredService<NoteStore>());
+
+                    // Deliberately not added to RequireAuthenticationMiddleware.AllowAnonymous: this
+                    // endpoint hands out the device's state and lets a caller write to it, so it sits
+                    // behind the same password as everything else. An MCP client reaches it by sending
+                    // the Basic credentials from the settings screen.
+                    server.MapMcp();
+
+                    // The app's own storage, over HTTP. Mapped as routes rather than middleware so
+                    // authorization can differ per verb — here everything is already behind the password
+                    // gate, so this asks for nothing further.
+                    server.MapFileBrowser("/files", o =>
+                    {
+                        o.RootPath = FileSystem.AppDataDirectory;
+                        o.AllowWrite = true;
+                        o.AllowDelete = true;
+                    });
+
+                    // The same directory again, over WebDAV — and the difference is who the client is.
+                    // /files is a JSON API for a script; this is the protocol a desktop already speaks,
+                    // so the phone's storage opens as a drive in Finder or Windows Explorer with nothing
+                    // installed on either end. Point them at http://<device>:<port>/dav and sign in with
+                    // the same account as everything else - or open that URL in a browser, where the
+                    // same mount answers with a file manager: the phone's storage, uploaded to and
+                    // deleted from, with no app on the other machine at all.
+                    //
+                    // Locking is left on, and that is not a detail: Finder and the Windows redirector
+                    // both check for DAV class 2 at mount time and mount read-only without it, however
+                    // much AllowWrite allows.
+                    server.MapWebDav("/dav", o =>
+                    {
+                        o.RootPath = FileSystem.AppDataDirectory;
+                        o.AllowWrite = true;
+                        o.AllowDelete = true;
+                        o.DisplayName = DeviceInfo.Name;
+                    });
                 });
             },
 
             // Started by the UI instead, so the app does not open a port before anyone asked it to.
             autoStart: false
         );
-
-        // localhost.run: no account, no key, nothing installed. The URL it assigns is what the app
-        // shows on screen.
-        builder.Services.AddQuickTunnel();
 
         return builder.Build();
     }

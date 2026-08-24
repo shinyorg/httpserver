@@ -9,7 +9,8 @@ triggers:
 - http server in MAUI
 - web server on device
 - HttpServerOptions
-- HttpServerBuilder
+- ShinyHttpServerBuilder
+- AddShinyHttpServer
 - AddHttpServer
 - MapGet
 - MapPost
@@ -338,19 +339,36 @@ await server.RunAsync();
 
 // (b) The builder — a console app or service that wants DI
 var builder = HttpServer.CreateBuilder();
-builder.Configure(o => o.Port = 8080);
-builder.Services.AddSingleton<IWidgetStore, WidgetStore>();
+builder.Options.Port = 8080;
+builder.AddAuthentication().AddJwtBearer(o => o.SigningKey = key);   // server features: on the builder
+builder.Services.AddSingleton<IWidgetStore, WidgetStore>();          // your own: on Services
 var app = builder.Build();
 app.MapMyAppEndpoints();
 await app.RunAsync();
 
-// (c) An existing container — MAUI, generic host
-builder.Services.AddHttpServer(
-    o => { o.Address = IPAddress.Any; o.Port = 0; },
-    server => server.MapMyAppEndpoints(),
+// (c) An existing container — MAUI, generic host. Same builder, same calls.
+services.AddShinyHttpServer(
+    http =>
+    {
+        http.Options.Address = IPAddress.Any;
+        http.Options.Port = 0;
+
+        http.AddAuthentication().AddBasic<CredentialStore>(o => o.Realm = "Device");
+        http.Configure(server => server.MapMyAppEndpoints());
+    },
     autoStart: false     // for an app with a "share" toggle
 );
 ```
+
+**Every registration in this library is an extension on `ShinyHttpServerBuilder`, not on
+`IServiceCollection`** — `AddAuthentication`, `AddCors`, `AddRateLimiter`, `AddHealthChecks`,
+`AddOutputCache`, `AddSessions`, the tunnels, discovery, the mobile lifecycle. Generate
+`builder.AddX(...)`, never `builder.Services.AddX(...)`, for anything this library owns;
+`builder.Services` is for the app's own registrations. The one exception is
+`services.AddHttpServerLocator()`, which is the client half of mDNS and has no server to hang off.
+
+`http.Configure(server => ...)` is where routes and middleware go in shape (c) — it runs when the
+server is first resolved, so it can pull things out of the container.
 
 `autoStart: false` + `server.StartAsync()` from the UI is the right shape for MAUI. `Port = 0` lets
 the OS pick; read it back from `server.ListenUrl`.
@@ -491,7 +509,7 @@ build. Register a formatter instead. Formats plug into content negotiation, whic
 (configuration) and applies to all four tiers above it:
 
 ```csharp
-builder.Services.AddContentNegotiation(o =>
+builder.AddContentNegotiation(o =>
 {
     o.NegotiateByDefault = true;   // Results.Ok(value) honours Accept; off by default
     o.AddXml();                    // application/xml, text/xml
@@ -627,13 +645,13 @@ content type whether a body is worth keeping at all and cap what you store.
 ## Security
 
 ```csharp
-builder.Services.AddAuthentication()
+builder.AddAuthentication()
     .AddJwtBearer(o => { o.Issuer = "app"; o.Audience = "app"; o.SigningKey = key; });
     // or .AddBasic(o => o.AddUser("ada", pw, "admin")) / .AddBasic<UserStore>()
     // or .AddApiKey(o => o.AddKey(key, "ci", "deploy"))
     // or .AddCookie(o => { o.Protector = new TicketProtector(k); o.LoginPath = "/login"; })
 
-builder.Services.AddAuthorization(o =>
+builder.AddAuthorization(o =>
 {
     o.AddPolicy("admin", p => p.RequireRole("admin"));
     // o.SetFallbackPolicy(p => p.RequireAuthenticatedUser());   // deny by default
@@ -741,7 +759,7 @@ A handler owns one socket and cannot reach the others. `IWebSocketRegistry` is t
 and the dead-socket cleanup, so an app does not hand-roll all three.
 
 ```csharp
-builder.Services.AddWebSocketRegistry();
+builder.AddWebSocketRegistry();
 
 app.MapGet("/ws", async ctx =>
 {
@@ -773,12 +791,12 @@ await registry.SendToUserAsync("ada", "your build finished");
 ## Timeouts, caching and conditional requests
 
 ```csharp
-builder.Services.AddRequestTimeouts(o =>
+builder.AddRequestTimeouts(o =>
 {
     o.DefaultPolicy = new RequestTimeoutPolicy(TimeSpan.FromSeconds(30));
     o.AddPolicy("reports", TimeSpan.FromMinutes(2));
 });
-builder.Services.AddOutputCache(o => o.AddPolicy("lists", new OutputCachePolicy(TimeSpan.FromSeconds(30))
+builder.AddOutputCache(o => o.AddPolicy("lists", new OutputCachePolicy(TimeSpan.FromSeconds(30))
 {
     VaryByHeaders = ["Accept"]
 }));
@@ -827,7 +845,7 @@ well as the bytes.
 ## Diagnostics — health checks and telemetry
 
 ```csharp
-builder.Services.AddHealthChecks()
+builder.AddHealthChecks()
     .AddServerCheck()                                    // is the listener actually up
     .AddCheck("database", async ct => await db.CanConnectAsync(ct)
         ? HealthCheckResult.Healthy()
@@ -891,7 +909,7 @@ appliance, a customer's machine.
 ## Antiforgery, security headers and HTTPS redirect
 
 ```csharp
-builder.Services.AddAntiforgery();
+builder.AddAntiforgery();
 app.UseAntiforgery();
 app.UseSecurityHeaders(o => o.ContentSecurityPolicy = SecurityHeaderOptions.SelfOnlyContentSecurityPolicy);
 app.UseHttpsRedirection();          // port taken from the first TLS endpoint
@@ -926,11 +944,11 @@ through this route will not work.
 
 ```csharp
 // Zero-account public HTTPS from a phone — pinggy by default, nothing to configure
-builder.Services.AddQuickTunnel();
+builder.AddQuickTunnel();
 // then, from a button: await tunnel.StartAsync();
 
 // A host you own
-builder.Services.AddSshTunnel(o =>
+builder.AddSshTunnel(o =>
 {
     o.Host = "tunnel.example.com"; o.Username = "tunnel"; o.PrivateKeyPath = keyPath;
     o.RemoteBindAddress = "0.0.0.0"; o.RemotePort = 8080;
@@ -972,7 +990,7 @@ await app.RunTunnelAsync(provider, logger, ct);
   var url = await tunnel.StartAsync(server);       // reads the port off the server
 
   // or with a host: registered after AddHttpServer, so the port exists when the agent starts
-  builder.Services.AddCloudflareTunnel();          // AddNgrokTunnel() / AddTailscaleFunnel()
+  builder.AddCloudflareTunnel();          // AddNgrokTunnel() / AddTailscaleFunnel()
   ```
 
   A missing binary throws `TunnelAgentException` naming what to install; an agent that dies during
@@ -1063,7 +1081,7 @@ An MCP client that meets a bare 401 has no idea where to log in. RFC 9728 is the
 the challenge names a metadata document, and the document names the authorization server.
 
 ```csharp
-builder.Services.AddMcpProtectedResource(o =>
+builder.AddMcpProtectedResource(o =>
 {
     o.AuthorizationServers.Add("https://login.example.com");
     o.ScopesSupported.Add("mcp:tools");
@@ -1167,12 +1185,19 @@ missing, because none of these produce an error you could diagnose from.
 ### Lifecycle — the server has to follow the app and the network
 
 ```csharp
-builder.Services.AddHttpServer(o => o.Address = IPAddress.Any, autoStart: false);
-builder.Services.AddHttpServerLifecycle(o =>
-{
-    o.BackgroundMode = BackgroundServerMode.Stop;      // or KeepAlive on Android
-    o.RestartOnConnectivityChange = true;              // default
-});
+services.AddShinyHttpServer(
+    http =>
+    {
+        http.Options.Address = IPAddress.Any;
+
+        http.AddHttpServerLifecycle(o =>
+        {
+            o.BackgroundMode = BackgroundServerMode.Stop;      // or KeepAlive on Android
+            o.RestartOnConnectivityChange = true;              // default
+        });
+    },
+    autoStart: false
+);
 ```
 
 Needs a Shiny host (`UseShiny()` in `MauiProgram`) — that is what delivers the platform callbacks.
@@ -1194,8 +1219,8 @@ whatever network the device joined and changes when it moves. That leaves a QR c
 mDNS.
 
 ```csharp
-// the device that serves
-builder.Services.AddHttpServerAdvertisement(o =>
+// the device that serves — inside AddShinyHttpServer / on the builder
+http.AddHttpServerAdvertisement(o =>
 {
     o.ServiceType = "_myapp._tcp";        // a private type: browsing _http._tcp finds printers too
     o.TxtRecords["role"] = "controller";

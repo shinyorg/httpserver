@@ -42,7 +42,7 @@ builder.Services.AddSingleton<IUserDirectory, InMemoryUserDirectory>();
 // issued.
 var signingKey = JwtSigningKey.CreateSecret();
 
-builder.Services
+builder
     .AddAuthentication()
     .AddJwtBearer(o =>
     {
@@ -51,7 +51,7 @@ builder.Services
         o.SigningKey = signingKey;
     });
 
-builder.Services.AddAuthorization(o =>
+builder.AddAuthorization(o =>
 {
     o.AddPolicy("admin", p => p.RequireRole("admin"));
 
@@ -61,13 +61,13 @@ builder.Services.AddAuthorization(o =>
 });
 
 // --- Who may reach the server, how often, and from where ---
-builder.Services.AddCors(o =>
+builder.AddCors(o =>
 {
     o.AddDefaultPolicy(p => p.WithOrigins("https://app.example.com").AllowAnyHeader().AllowAnyMethod());
     o.AddPolicy("public", p => p.AllowAnyOrigin().WithMethods("GET"));
 });
 
-builder.Services.AddRateLimiter(o =>
+builder.AddRateLimiter(o =>
 {
     // Per caller address by default. A hundred requests a minute is generous for a demo and small
     // enough to see working.
@@ -75,7 +75,7 @@ builder.Services.AddRateLimiter(o =>
     o.AddTokenBucket("uploads", capacity: 5, tokensPerPeriod: 1, period: TimeSpan.FromSeconds(10));
 });
 
-builder.Services.AddIpFilter(o =>
+builder.AddIpFilter(o =>
     // Nothing is filtered by default here — an "admin" policy is registered for the one route that
     // wants it. Setting a DefaultPolicy would apply to every request, including the 404s.
     o.AddPolicy("admin", p => p.AllowLoopback())
@@ -237,7 +237,7 @@ app.MapWebDav("/dav", o =>
 //
 // The server is an ordinary object: hold onto it and start, stop or restart it whenever. This
 // sample exposes it over HTTP for demonstration, but the same two calls sit behind a toggle in a
-// MAUI app. With AddHttpServer(..., autoStart: false) the server is registered and configured but
+// MAUI app. With AddShinyHttpServer(..., autoStart: false) the server is registered and configured but
 // never listening until something asks it to.
 app.MapGet("/server/status", ctx => ctx.Response.WriteAsync($"{app.State} {app.ListenUrl}"));
 
