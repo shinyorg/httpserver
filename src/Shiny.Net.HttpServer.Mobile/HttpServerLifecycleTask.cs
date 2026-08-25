@@ -21,6 +21,7 @@ public partial class HttpServerLifecycleTask(
 ) : ShinyLifecycleTask, IDisposable
 {
     bool stoppedByLifecycle;
+    bool restoreOnForeground;
     bool subscribed;
 
     public override void Start()
@@ -32,6 +33,10 @@ public partial class HttpServerLifecycleTask(
             connectivity.Changed += this.OnConnectivityChanged;
             this.subscribed = true;
         }
+
+        // The foreground service follows the server, not only the app's lifecycle transitions -
+        // see OnServerStateChanged for why that difference matters.
+        server.StateChanged += this.OnServerStateChanged;
     }
 
     protected override void OnStateChanged(bool backgrounding)
@@ -67,6 +72,7 @@ public partial class HttpServerLifecycleTask(
 
             case BackgroundServerMode.KeepAlive when server.IsRunning:
                 this.StartBackgroundExecution();
+                this.TrackForRestore(true);
                 break;
         }
     }
@@ -74,6 +80,21 @@ public partial class HttpServerLifecycleTask(
     async Task OnForegroundingAsync()
     {
         this.StopBackgroundExecution();
+
+        if (this.restoreOnForeground)
+        {
+            this.restoreOnForeground = false;
+
+            // Restarted, not started. The server object was never told anything happened, so it
+            // still reports Running - and StartAsync, being idempotent, would agree with it and do
+            // nothing, leaving the dead listener dead. RestartAsync unbinds and binds again, which
+            // is also the right call if the suspension took the socket but the server survived, and
+            // is harmless if it was in fact stopped underneath us.
+            logger.LogInformation("Restarting the server after the background suspension");
+
+            await server.RestartAsync().ConfigureAwait(false);
+            return;
+        }
 
         if (!this.stoppedByLifecycle && !options.AlwaysStartOnForeground)
             return;
@@ -85,6 +106,99 @@ public partial class HttpServerLifecycleTask(
 
         await server.StartAsync().ConfigureAwait(false);
         this.stoppedByLifecycle = false;
+    }
+
+    /// <summary>
+    /// Remembers, on a platform that cannot keep a listener answering in the background, whether the
+    /// server was running when the app went away - so the resume can put back what the suspension
+    /// took.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is the Apple half of <see cref="BackgroundServerMode.KeepAlive"/>. Android has a
+    /// foreground service and needs none of it; iOS has nothing that will hold a socket open, so the
+    /// process is suspended, the listener stops answering, and the <see cref="HttpServer"/> object
+    /// goes on reporting <see cref="HttpServer.IsRunning"/> because nothing on the platform tells it
+    /// otherwise. Left alone, the user comes back to an app that says it is serving and a client
+    /// that cannot connect - and no amount of pressing the toggle fixes it, because the toggle is
+    /// already in the position it should be in.
+    /// </para>
+    /// <para>
+    /// Recorded rather than inferred at resume: <see cref="HttpServer.IsRunning"/> is exactly the
+    /// thing that has gone stale, so it cannot answer "was it on?". Only an explicit stop while
+    /// backgrounded clears this - see <see cref="OnServerStateChanged"/> - so a server the app or
+    /// the user switched off stays off. That restraint is exactly what
+    /// <see cref="HttpServerLifecycleOptions.AlwaysStartOnForeground"/> exists to lift, and lifting
+    /// it is a separate and more opinionated choice than restoring what was already on.
+    /// </para>
+    /// </remarks>
+    void TrackForRestore(bool running)
+    {
+        if (SupportsBackgroundExecution)
+            return;
+
+        this.restoreOnForeground = running;
+    }
+
+    /// <summary>
+    /// Keeps the background execution in step with the server itself.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Without this the foreground service is decided once, at the moment the app is backgrounded,
+    /// and never revisited - so it answers "was the server running when the user left?" rather than
+    /// "is the server running now?". Those come apart in both directions, and both are wrong in a
+    /// way the user sees:
+    /// </para>
+    /// <list type="bullet">
+    /// <item>A server stopped while the app is in the background - by a toggle in a notification
+    /// action, by the app's own code, by a rebind that failed - leaves the ongoing notification up,
+    /// holding the process alive and telling the user something is being served when nothing is.</item>
+    /// <item>A server started while the app is in the background gets no service at all, so Android
+    /// reclaims the process within minutes and the listener dies with it. The app did everything
+    /// right and the server simply stops.</item>
+    /// </list>
+    /// <para>
+    /// Only the settled states act. <see cref="HttpServerState.Starting"/> and
+    /// <see cref="HttpServerState.Stopping"/> deliberately leave it as it is: a bind that fails goes
+    /// Starting then Stopped, and acting on the first would flash a notification for a server that
+    /// never came up, while a stop waits in Stopping for in-flight requests - which is precisely
+    /// when the process still needs holding up.
+    /// </para>
+    /// </remarks>
+    void OnServerStateChanged(object? sender, HttpServerState state)
+    {
+        if (options.BackgroundMode != BackgroundServerMode.KeepAlive)
+            return;
+
+        // Only while backgrounded. Null is "no transition yet", which is treated as the foreground:
+        // of the two ways to be wrong before the app has ever been left, a missing notification is
+        // recoverable at the next transition and an unasked-for one is just wrong.
+        if (this.IsInForeground != false)
+            return;
+
+        try
+        {
+            switch (state)
+            {
+                case HttpServerState.Running:
+                    this.StartBackgroundExecution();
+                    this.TrackForRestore(true);
+                    break;
+
+                case HttpServerState.Stopped:
+                    this.StopBackgroundExecution();
+                    this.TrackForRestore(false);
+                    break;
+            }
+        }
+        catch (Exception ex)
+        {
+            // This runs inside the server's own state machine, on the thread that called Start or
+            // Stop - so an exception here would surface out of StartAsync as though the server had
+            // failed. The service is a platform concern and its failure is not the server's.
+            logger.LogWarning(ex, "Failed to update background execution for the {State} server", state);
+        }
     }
 
     void OnConnectivityChanged(object? sender, EventArgs e) => _ = Task.Run(async () =>
@@ -108,6 +222,13 @@ public partial class HttpServerLifecycleTask(
         }
     });
 
+    /// <summary>
+    /// Whether the platform can actually keep the listener answering with the app in the background.
+    /// Android can, through a foreground service; Apple cannot, at any price - so the Apple build
+    /// restores the server on resume instead. Everything that differs between the two hangs off this.
+    /// </summary>
+    static partial bool SupportsBackgroundExecution { get; }
+
     /// <summary>Android starts a foreground service here; the Apple build has nothing to start.</summary>
     partial void StartBackgroundExecutionPlatform();
 
@@ -124,6 +245,8 @@ public partial class HttpServerLifecycleTask(
             connectivity.Changed -= this.OnConnectivityChanged;
             this.subscribed = false;
         }
+
+        server.StateChanged -= this.OnServerStateChanged;
 
         GC.SuppressFinalize(this);
     }

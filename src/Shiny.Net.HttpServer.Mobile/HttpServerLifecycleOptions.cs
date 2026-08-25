@@ -20,10 +20,24 @@ public enum BackgroundServerMode
     /// <para>
     /// On Android this starts a foreground service, which is the only supported way to keep a
     /// socket answering with the app in the background — and it means a permanent notification,
-    /// which is the deal Android offers. On iOS nothing can be done: this behaves as
-    /// <see cref="Stop"/> once the process is actually suspended, which is why the server is left
-    /// running rather than stopped — a few seconds of background execution is sometimes exactly
-    /// enough to finish the request in flight.
+    /// which is the deal Android offers.
+    /// </para>
+    /// <para>
+    /// On iOS nothing keeps the listener open, so this means the other half of the promise: the
+    /// server is left running as the app goes away — a few seconds of background execution is
+    /// sometimes exactly enough to finish the request in flight — and it is <b>restarted when the
+    /// app comes back</b>, because the suspension took the socket while leaving
+    /// <see cref="HttpServer.IsRunning"/> saying otherwise. A server that was serving when the user
+    /// switched away is serving again by the time they are looking at the app. One that was
+    /// switched off before they left stays off; this is not
+    /// <see cref="HttpServerLifecycleOptions.AlwaysStartOnForeground"/>.
+    /// </para>
+    /// <para>
+    /// Both platforms follow the server, not only the app's transitions: on Android, stop the server
+    /// while the app is backgrounded and the notification goes with it rather than claiming to serve
+    /// nothing, and start it while backgrounded and the service comes up rather than leaving the
+    /// process to be reclaimed; on iOS the same transitions decide whether the resume restores it.
+    /// Nothing to call for either.
     /// </para>
     /// </summary>
     KeepAlive,

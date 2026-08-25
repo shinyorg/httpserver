@@ -24,7 +24,7 @@ JWT, OpenAPI, HPACK, QPACK — is built on what is in the box.
 | [Shiny.Net.HttpServer.WebDav](https://www.nuget.org/packages/Shiny.Net.HttpServer.WebDav) | A WebDAV (RFC 4918) class 1 & 2 server over a directory — mount an app's storage in Finder, Windows Explorer or any WebDAV client, and open the same URL in a browser for a file manager with upload, rename and delete |
 | [Shiny.Net.HttpServer.Grpc](https://www.nuget.org/packages/Shiny.Net.HttpServer.Grpc) | gRPC and gRPC-Web — unary, streaming and bidirectional methods over the same HTTP/2 stack, with serialization you supply |
 | [Shiny.Net.HttpServer.Discovery](https://www.nuget.org/packages/Shiny.Net.HttpServer.Discovery) | mDNS/DNS-SD (Bonjour) — advertises the server on the local link and finds the ones other devices advertise, so nobody has to type an IP address |
-| [Shiny.Net.HttpServer.Mobile](https://www.nuget.org/packages/Shiny.Net.HttpServer.Mobile) | Mobile lifecycle on Shiny.Core — stop on background and start on resume, an Android foreground service to keep serving, rebind when the device changes network, and a check for the manifest entries that silently break local networking. iOS and Android, with or without MAUI |
+| [Shiny.Net.HttpServer.Mobile](https://www.nuget.org/packages/Shiny.Net.HttpServer.Mobile) | Mobile lifecycle on Shiny.Core — stop on background and start on resume, an Android foreground service that follows the server's own running state to keep serving, an iOS resume that restarts the server the suspension took, rebind when the device changes network, and a check for the manifest entries that silently break local networking. iOS and Android, with or without MAUI |
 | [Shiny.Net.HttpServer.Testing](https://www.nuget.org/packages/Shiny.Net.HttpServer.Testing) | An `HttpClient` wired to the server through memory — endpoint tests with no port, no listener and no socket, but the real parser, router and middleware |
 | [Shiny.Net.HttpServer.Tunnels](https://www.nuget.org/packages/Shiny.Net.HttpServer.Tunnels) | Agent-backed tunnels — supervises `cloudflared`, `ngrok` or `tailscale` and reports the public URL. Desktop, server and CLI; on a phone use the SSH provider or the relay |
 | [Shiny.Net.HttpServer.CommandLine](https://www.nuget.org/packages/Shiny.Net.HttpServer.CommandLine) | A .NET tool — `shinyhttpserver` — that serves a directory over WebDAV, so one address is both a browser file manager (browse, upload, rename, delete) and a drive Finder or Explorer can mount, with basic auth, per-operation permissions, and a QR code in the banner so a phone can scan its way in — `--tunnel` swaps the LAN address for a public pinggy.io tunnel so the phone need not be on the same network |
@@ -104,7 +104,8 @@ builder.Services.AddShinyHttpServer(
     {
         http.Options.Address = IPAddress.Any;
 
-        // Stops on background, starts on resume, rebinds when the network changes.
+        // Keeps serving in the background on Android through a foreground service; on iOS, where
+        // nothing can, restores the server on resume if it was running. Both rebind on a network change.
         http.AddHttpServerLifecycle(o => o.BackgroundMode = BackgroundServerMode.KeepAlive);
 
         // Advertises on the local link, so the other device does not need an IP address.

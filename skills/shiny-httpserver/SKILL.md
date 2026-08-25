@@ -1192,7 +1192,7 @@ services.AddShinyHttpServer(
 
         http.AddHttpServerLifecycle(o =>
         {
-            o.BackgroundMode = BackgroundServerMode.Stop;      // or KeepAlive on Android
+            o.BackgroundMode = BackgroundServerMode.Stop;      // or KeepAlive
             o.RestartOnConnectivityChange = true;              // default
         });
     },
@@ -1204,9 +1204,24 @@ Needs a Shiny host (`UseShiny()` in `MauiProgram`) — that is what delivers the
 
 - **iOS suspends the app within seconds of backgrounding**, and no background mode legitimately keeps
   a listener answering. `Stop` makes that visible: `IsRunning` goes false, the UI can say so, and
-  clients get a refused connection instead of a hang. `KeepAlive` behaves the same once suspended.
+  clients get a refused connection instead of a hang.
 - **Android `KeepAlive` starts a foreground service** with a permanent notification, which is the
   only supported way to hold a socket open in the background. That notification is the deal.
+- **iOS `KeepAlive` restores the server on resume** instead. It cannot keep the listener open, so it
+  does the other useful thing: the server is left running as the app goes away (a few seconds is
+  often enough to finish the request in flight) and is *restarted* when the app comes back. This
+  matters because the suspension takes the socket while `IsRunning` goes on saying `true`, so an app
+  that only re-checked `IsRunning` would find nothing wrong and serve nothing — and calling
+  `StartAsync()` yourself would not help either, since it is idempotent and agrees with the stale
+  state. `RestartAsync()` is what fixes it, and this does it for you.
+- **This is not `AlwaysStartOnForeground`.** A server that was off when the user left stays off; only
+  one that was running is put back. Set `AlwaysStartOnForeground = true` if you want it on at every
+  resume regardless — that overrides a toggle the user switched off, so make it a deliberate choice.
+- **Both platforms follow the server, not just the app's transitions.** On Android, stopping the
+  server while the app is backgrounded takes the notification down with it and starting it brings
+  the service up, so Android does not reclaim the process and kill the listener; on iOS the same
+  transitions decide whether the resume restores it. Nothing to call — the package tracks
+  `HttpServer.StateChanged` — so an app whose server is a toggle does not need its own bookkeeping.
 - A phone's address changes when it moves. The lifecycle package rebinds on connectivity changes;
   the core has the same thing without Shiny.Core via `options.RebindOnNetworkChange`, and raises
   `server.NetworkAddressesChanged` either way so a QR code or advertisement can be refreshed.

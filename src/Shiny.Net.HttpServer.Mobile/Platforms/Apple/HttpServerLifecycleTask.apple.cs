@@ -3,6 +3,17 @@ namespace Shiny.Net.HttpServer.Mobile;
 public partial class HttpServerLifecycleTask
 {
     /// <summary>
+    /// No, and there is no version of iOS where the answer changes.
+    /// <para>
+    /// So <see cref="BackgroundServerMode.KeepAlive"/> means something different here than it does
+    /// on Android: not "keep it running", which is not on offer, but "put it back on resume". The
+    /// server that was serving when the user switched away is serving again by the time they are
+    /// looking at the app, without the app having to notice the suspension or hold the flag itself.
+    /// </para>
+    /// </summary>
+    static partial bool SupportsBackgroundExecution => false;
+
+    /// <summary>
     /// Nothing to start.
     /// <para>
     /// iOS has no equivalent of a foreground service. The background modes that exist — audio,
