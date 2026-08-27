@@ -271,16 +271,46 @@ public class W3CLoggingTests : IDisposable
         await test.Client.GetStringAsync("/hello", Token);
         await test.Server.StopAsync(Token);
 
-        // StateChanged runs the flush; give the handler a moment to land the file.
-        var deadline = DateTime.UtcNow.AddSeconds(5);
-        while (!Directory.Exists(this.directory) && DateTime.UtcNow < deadline)
-            await Task.Delay(20, Token);
+        // StateChanged runs the flush on a task of its own, and the writer creates the directory
+        // before it appends — so the directory existing says nothing about the file, and waiting on
+        // it left the read to race an append that had not started. The content is the only signal
+        // that the flush actually landed.
+        var log = await this.WaitForLogAsync("/hello", Token);
 
         await test.DisposeAsync();
 
-        var log = await File.ReadAllTextAsync(Directory.GetFiles(this.directory, "*.txt").Single(), Token);
-
         Assert.Contains("/hello", log);
+    }
+
+    /// <summary>
+    /// Polls the log directory until a file contains <paramref name="expected"/>, and returns the
+    /// last thing it read either way — a timeout then fails on the content, which says more than a
+    /// bare timeout would.
+    /// </summary>
+    async Task<string> WaitForLogAsync(string expected, CancellationToken cancellationToken)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        var log = "";
+
+        while (true)
+        {
+            if (Directory.Exists(this.directory) && Directory.GetFiles(this.directory, "*.txt") is [var file, ..])
+            {
+                try
+                {
+                    log = await File.ReadAllTextAsync(file, cancellationToken);
+                }
+                catch (IOException)
+                {
+                    // The append still holds the handle. Read it on the next pass.
+                }
+            }
+
+            if (log.Contains(expected, StringComparison.Ordinal) || DateTime.UtcNow >= deadline)
+                return log;
+
+            await Task.Delay(20, cancellationToken);
+        }
     }
 
     static List<string> Lines(string log) =>

@@ -80,7 +80,11 @@ public class HttpServerAdvertiserTests
         var advertiser = (HttpServerAdvertiser)await test.Server.AdvertiseAsync(mdns, cancellationToken: Token);
 
         await test.Server.StopAsync(Token);
-        await WaitUntil(() => advertiser.Publication is null, Token);
+
+        // The goodbye is what says the withdrawal finished, and the cleared property is not: the
+        // advertiser drops Publication before it awaits the dispose that sends the packet, so a wait
+        // on the property alone returns mid-withdrawal and races the very thing being asserted.
+        await WaitUntil(() => mdns.GoodbyesSent == 1, Token);
 
         Assert.Null(advertiser.Publication);
         Assert.Equal(1, mdns.GoodbyesSent);
@@ -326,10 +330,26 @@ public class HttpServerLocatorTests
 sealed class FakeMdns : IMdnsManager
 {
     readonly List<MdnsBrowseResult> announcements = [];
+    readonly List<MdnsServiceRegistration> published = [];
+    readonly Lock sync = new();
 
-    public List<MdnsServiceRegistration> Published { get; } = [];
+    int goodbyes;
+    int attempts;
 
-    public int GoodbyesSent { get; private set; }
+    /// <summary>
+    /// A snapshot, because the advertiser publishes and withdraws on its own task while the test
+    /// thread is polling this — an unsynchronized list read that way tears or throws under load.
+    /// </summary>
+    public IReadOnlyList<MdnsServiceRegistration> Published
+    {
+        get
+        {
+            lock (this.sync)
+                return [.. this.published];
+        }
+    }
+
+    public int GoodbyesSent => Volatile.Read(ref this.goodbyes);
 
     /// <summary>Simulates the responder resolving a name conflict, which it is entitled to do.</summary>
     public string? RenameTo { get; set; }
@@ -338,7 +358,7 @@ sealed class FakeMdns : IMdnsManager
     public int PublishFailures { get; set; }
 
     /// <summary>Every attempt, refused ones included, so a test can see the retry rather than only its outcome.</summary>
-    public int PublishAttempts { get; private set; }
+    public int PublishAttempts => Volatile.Read(ref this.attempts);
 
     public void Announce(MdnsService service) => this.announcements.Add(new MdnsBrowseResult(MdnsBrowseStatus.Found, service));
 
@@ -363,7 +383,7 @@ sealed class FakeMdns : IMdnsManager
 
     public Task<IMdnsPublication> Publish(MdnsServiceRegistration registration, CancellationToken ct = default)
     {
-        this.PublishAttempts++;
+        Interlocked.Increment(ref this.attempts);
 
         if (this.PublishFailures > 0)
         {
@@ -371,7 +391,8 @@ sealed class FakeMdns : IMdnsManager
             return Task.FromException<IMdnsPublication>(new InvalidOperationException("the responder refused the registration"));
         }
 
-        this.Published.Add(registration);
+        lock (this.sync)
+            this.published.Add(registration);
 
         return Task.FromResult<IMdnsPublication>(new FakePublication(
             this,
@@ -389,7 +410,7 @@ sealed class FakeMdns : IMdnsManager
 
         public ValueTask DisposeAsync()
         {
-            owner.GoodbyesSent++;
+            Interlocked.Increment(ref owner.goodbyes);
             return default;
         }
     }
