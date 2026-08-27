@@ -64,7 +64,7 @@ public class HttpServerAdvertiserTests
         var first = Assert.Single(mdns.Published).Port;
 
         await test.Server.RestartAsync(Token);
-        await WaitUntil(() => mdns.Published.Count > 1 || mdns.Published[0].Port != first, Token);
+        await WaitUntil(() => mdns.Published.Count > 1 || mdns.Published[0].Port != first, Token, "the advertisement to follow the restart onto its new port");
 
         // Port 0 was configured, so the restart lands somewhere new and the advertisement follows.
         Assert.Equal(test.Server.ListenUrl, $"http://127.0.0.1:{mdns.Published[^1].Port}");
@@ -84,7 +84,7 @@ public class HttpServerAdvertiserTests
         // The goodbye is what says the withdrawal finished, and the cleared property is not: the
         // advertiser drops Publication before it awaits the dispose that sends the packet, so a wait
         // on the property alone returns mid-withdrawal and races the very thing being asserted.
-        await WaitUntil(() => mdns.GoodbyesSent == 1, Token);
+        await WaitUntil(() => mdns.GoodbyesSent == 1, Token, "the publication to be withdrawn");
 
         Assert.Null(advertiser.Publication);
         Assert.Equal(1, mdns.GoodbyesSent);
@@ -222,12 +222,24 @@ public class HttpServerAdvertiserTests
         MaxPublishRetryDelay = TimeSpan.FromMilliseconds(20)
     };
 
-    static async Task WaitUntil(Func<bool> condition, CancellationToken cancellationToken)
+    /// <summary>
+    /// Polls until the condition holds, and says so when it never does. Returning quietly on the
+    /// deadline left the timeout to be reported by whichever assert came next, which describes the
+    /// state the wait was still waiting for rather than the wait that ran out.
+    /// </summary>
+    static async Task WaitUntil(Func<bool> condition, CancellationToken cancellationToken, string? what = null)
     {
-        var deadline = DateTime.UtcNow.AddSeconds(5);
+        var deadline = DateTime.UtcNow.AddSeconds(10);
 
-        while (!condition() && DateTime.UtcNow < deadline)
+        while (DateTime.UtcNow < deadline)
+        {
+            if (condition())
+                return;
+
             await Task.Delay(20, cancellationToken);
+        }
+
+        Assert.Fail($"Timed out waiting for {what ?? "the condition"}");
     }
 }
 

@@ -171,23 +171,25 @@ public class ResilienceTests
         // The restart case the network-change path hits on a real device: the stop succeeds, and the
         // bind that follows is refused because something still holds the port. One attempt and the
         // server is stopped permanently.
+        //
+        // Forty attempts fifty milliseconds apart is a two second budget, and the retry has to outlast
+        // the observation below plus whatever else the box is doing. That is not a margin on a loaded
+        // CI runner, where the retry can exhaust itself before the port is ever handed back and the
+        // restart fails for a reason the test is not about. The budget is now long enough that
+        // reaching the end of it means the retry is genuinely broken.
         await using var server = Create(o =>
         {
-            o.StartRetryAttempts = 40;
+            o.StartRetryAttempts = 600;
             o.StartRetryDelay = TimeSpan.FromMilliseconds(50);
             o.StartRetryMaxDelay = TimeSpan.FromMilliseconds(50);
         });
 
         await server.StartAsync(Token);
 
-        // Pin the server to a fixed port, then take that port before restarting: the first binds
-        // must fail, and the retry must still be going when the port is handed back.
-        var port = GetFreePort();
-        server.Options.Port = port;
-
-        var occupier = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
-        occupier.Bind(new IPEndPoint(IPAddress.Loopback, port));
-        occupier.Listen(1);
+        // Take the port before restarting so the first binds must fail, and the retry must still be
+        // going when it is handed back.
+        var occupier = Occupy();
+        server.Options.Port = ((IPEndPoint)occupier.LocalEndPoint!).Port;
 
         var restart = server.RestartAsync(Token);
 
@@ -216,12 +218,8 @@ public class ResilienceTests
 
         await server.StartAsync(Token);
 
-        var port = GetFreePort();
-        server.Options.Port = port;
-
-        using var occupier = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
-        occupier.Bind(new IPEndPoint(IPAddress.Loopback, port));
-        occupier.Listen(1);
+        using var occupier = Occupy();
+        server.Options.Port = ((IPEndPoint)occupier.LocalEndPoint!).Port;
 
         await Assert.ThrowsAsync<IOException>(async () => await server.RestartAsync(Token));
 
@@ -244,13 +242,16 @@ public class ResilienceTests
         {
             o.Port = port;
             o.StartRetryAttempts = 20;
-            o.StartRetryDelay = TimeSpan.FromSeconds(5);
+            o.StartRetryDelay = TimeSpan.FromSeconds(60);
         });
 
         var started = Environment.TickCount64;
         await Assert.ThrowsAsync<IOException>(async () => await contender.StartAsync(Token));
 
-        Assert.True(Environment.TickCount64 - started < 5_000, "StartAsync retried a start the caller asked for");
+        // The gap between the two outcomes is what makes this safe to time: not retrying returns as
+        // fast as a refused bind, and one retry would take a minute. A ceiling sitting exactly on the
+        // retry delay would instead turn any stall on the machine into a failure.
+        Assert.True(Environment.TickCount64 - started < 10_000, "StartAsync retried a start the caller asked for");
         Assert.Equal(HttpServerStateReason.BindFailed, contender.LastStateChange!.Reason);
     }
 
@@ -336,12 +337,19 @@ public class ResilienceTests
         Assert.Equal(HttpServerStateReason.Disposed, server.LastStateChange!.Reason);
     }
 
-    static int GetFreePort()
+    /// <summary>
+    /// A listening socket holding a port the server is then pointed at. It hands back the socket
+    /// rather than the number because a port that was probed and released is not taken: between the
+    /// probe closing and the caller binding, anything else on the machine can claim it, and on a CI
+    /// box running the rest of this suite alongside, something eventually does.
+    /// </summary>
+    static Socket Occupy()
     {
-        using var probe = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
-        probe.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+        var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+        socket.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+        socket.Listen(1);
 
-        return ((IPEndPoint)probe.LocalEndPoint!).Port;
+        return socket;
     }
 
     /// <summary>An accept that never completes — the healthy idle listener, as far as the loop can tell.</summary>

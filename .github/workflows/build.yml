@@ -50,8 +50,23 @@ jobs:
     # No --no-build: build.slnf deliberately excludes the test project, so the previous step never
     # produced its output. xunit v3 runs on Microsoft.Testing.Platform, so trx comes from
     # --report-trx (the VSTest "--logger trx" spelling is silently ignored here).
+    # TestingPlatformShowTestsFailure surfaces the failing test name, assertion and stack as MSBuild
+    # errors; without it the run reports only a count and points at a log file that lives on the
+    # runner, which makes a CI-only failure impossible to diagnose from the logs alone.
     - name: Test
-      run: dotnet test tests/Shiny.Net.HttpServer.Tests/Shiny.Net.HttpServer.Tests.csproj --configuration Release -- --report-trx --report-trx-filename test-results.trx
+      run: dotnet test tests/Shiny.Net.HttpServer.Tests/Shiny.Net.HttpServer.Tests.csproj --configuration Release -p:TestingPlatformShowTestsFailure=true -p:TestingPlatformCaptureOutput=false -- --report-trx --report-trx-filename test-results.trx
+
+    # always(): the point of these is the run where the Test step failed.
+    - name: Post Test Results
+      if: ${{ always() }}
+      uses: actions/upload-artifact@v7
+      with:
+        name: test-results
+        path: |
+          tests/**/TestResults/*.trx
+          tests/**/TestResults/*.log
+        retention-days: 5
+        if-no-files-found: warn
 
     - name: Verify Native AOT
       run: dotnet publish samples/Sample.Api/Sample.Api.csproj -r osx-arm64 --configuration Release
