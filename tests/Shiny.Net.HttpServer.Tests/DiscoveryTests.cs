@@ -101,6 +101,123 @@ public class HttpServerAdvertiserTests
         Assert.Equal("Kitchen Pi (2)", advertiser.Publication!.InstanceName);
     }
 
+    /// <summary>
+    /// The moment the advertiser publishes is the moment a responder is least likely to answer — the
+    /// server has just bound after a network change and the platform's mDNS stack is coming back at
+    /// its own pace. One refused registration used to be the end of it.
+    /// </summary>
+    [Fact]
+    public async Task Retries_a_registration_the_responder_refused()
+    {
+        var mdns = new FakeMdns { PublishFailures = 2 };
+        var logger = new RecordingLogger<HttpServerAdvertiser>();
+        await using var test = await TestServer.StartAsync(server => { });
+
+        await using var advertiser = new HttpServerAdvertiser(mdns, test.Server, FastRetries(), logger);
+        await advertiser.StartAsync(Token);
+
+        Assert.Equal(3, mdns.PublishAttempts);
+        Assert.NotNull(advertiser.Publication);
+        Assert.Equal(test.Port, advertiser.Publication!.Port);
+        Assert.Empty(logger.At(Microsoft.Extensions.Logging.LogLevel.Error));
+    }
+
+    /// <summary>A server nothing on the link can find looks perfectly healthy from the inside, so it has to say so.</summary>
+    [Fact]
+    public async Task Says_so_at_error_when_the_advertisement_will_not_publish()
+    {
+        var mdns = new FakeMdns { PublishFailures = int.MaxValue };
+        var logger = new RecordingLogger<HttpServerAdvertiser>();
+        await using var test = await TestServer.StartAsync(server => { });
+
+        await using var advertiser = new HttpServerAdvertiser(mdns, test.Server, FastRetries(), logger);
+        await advertiser.StartAsync(Token);
+
+        Assert.Equal(3, mdns.PublishAttempts);
+        Assert.Null(advertiser.Publication);
+
+        var error = Assert.Single(logger.At(Microsoft.Extensions.Logging.LogLevel.Error));
+
+        Assert.NotNull(error.Exception);
+        Assert.Contains("will not be discovered", error.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A restart is a Stopped and a Running milliseconds apart. The work each one causes is pushed
+    /// off the server's lifecycle thread — it has to be — and once it is, the two are free to land in
+    /// either order. A withdrawal applied on top of the publication that followed it leaves a server
+    /// running and unfindable, with nothing further coming to correct it.
+    /// </summary>
+    [Fact]
+    public async Task A_state_change_that_lands_out_of_order_does_not_undo_the_newer_one()
+    {
+        var mdns = new FakeMdns();
+        var logger = new RecordingLogger<HttpServerAdvertiser>();
+        await using var test = await TestServer.StartAsync(server => { });
+
+        await using var advertiser = new HttpServerAdvertiser(mdns, test.Server, FastRetries(), logger);
+
+        // Stamped in the order the server actually moved in, then applied the other way round.
+        var stopped = advertiser.Next();
+        var running = advertiser.Next();
+
+        await advertiser.ApplyStateAsync(running, new HttpServerStateChange(HttpServerState.Running, HttpServerStateReason.Requested));
+        await advertiser.ApplyStateAsync(stopped, new HttpServerStateChange(HttpServerState.Stopped, HttpServerStateReason.Requested));
+
+        Assert.NotNull(advertiser.Publication);
+        Assert.Equal(test.Port, advertiser.Publication!.Port);
+        Assert.Equal(0, mdns.GoodbyesSent);
+    }
+
+    /// <summary>
+    /// A restart's stop half must not make the service blink out and back. Peers holding a resolved
+    /// address would drop it and have to find the device again, over a gap of milliseconds.
+    /// </summary>
+    [Theory]
+    [InlineData(HttpServerStateReason.Restarting)]
+    [InlineData(HttpServerStateReason.NetworkChanged)]
+    public async Task Holds_the_record_through_a_stop_that_is_half_of_a_restart(HttpServerStateReason reason)
+    {
+        var mdns = new FakeMdns();
+        await using var test = await TestServer.StartAsync(server => { });
+
+        await using var advertiser = new HttpServerAdvertiser(mdns, test.Server, FastRetries());
+        await advertiser.StartAsync(Token);
+
+        await advertiser.ApplyStateAsync(advertiser.Next(), new HttpServerStateChange(HttpServerState.Stopped, reason));
+
+        Assert.NotNull(advertiser.Publication);
+        Assert.Equal(0, mdns.GoodbyesSent);
+    }
+
+    /// <summary>The other half of it: when the start never lands, that stop is real and the record has to go.</summary>
+    [Fact]
+    public async Task Withdraws_when_the_restart_it_was_holding_for_fails_to_bind()
+    {
+        var mdns = new FakeMdns();
+        await using var test = await TestServer.StartAsync(server => { });
+
+        await using var advertiser = new HttpServerAdvertiser(mdns, test.Server, FastRetries());
+        await advertiser.StartAsync(Token);
+
+        await advertiser.ApplyStateAsync(advertiser.Next(), new HttpServerStateChange(HttpServerState.Stopped, HttpServerStateReason.Restarting));
+        await advertiser.ApplyStateAsync(
+            advertiser.Next(),
+            new HttpServerStateChange(HttpServerState.Stopped, HttpServerStateReason.BindFailed, new InvalidOperationException("the port is taken"))
+        );
+
+        Assert.Null(advertiser.Publication);
+        Assert.Equal(1, mdns.GoodbyesSent);
+    }
+
+    /// <summary>The shipped policy with the waiting taken out of it.</summary>
+    static HttpServerAdvertisementOptions FastRetries() => new()
+    {
+        PublishAttempts = 3,
+        PublishRetryDelay = TimeSpan.FromMilliseconds(5),
+        MaxPublishRetryDelay = TimeSpan.FromMilliseconds(20)
+    };
+
     static async Task WaitUntil(Func<bool> condition, CancellationToken cancellationToken)
     {
         var deadline = DateTime.UtcNow.AddSeconds(5);
@@ -217,6 +334,12 @@ sealed class FakeMdns : IMdnsManager
     /// <summary>Simulates the responder resolving a name conflict, which it is entitled to do.</summary>
     public string? RenameTo { get; set; }
 
+    /// <summary>How many registrations to refuse before letting one through — a responder that is not up yet.</summary>
+    public int PublishFailures { get; set; }
+
+    /// <summary>Every attempt, refused ones included, so a test can see the retry rather than only its outcome.</summary>
+    public int PublishAttempts { get; private set; }
+
     public void Announce(MdnsService service) => this.announcements.Add(new MdnsBrowseResult(MdnsBrowseStatus.Found, service));
 
     public async IAsyncEnumerable<MdnsBrowseResult> Browse(
@@ -240,6 +363,14 @@ sealed class FakeMdns : IMdnsManager
 
     public Task<IMdnsPublication> Publish(MdnsServiceRegistration registration, CancellationToken ct = default)
     {
+        this.PublishAttempts++;
+
+        if (this.PublishFailures > 0)
+        {
+            this.PublishFailures--;
+            return Task.FromException<IMdnsPublication>(new InvalidOperationException("the responder refused the registration"));
+        }
+
         this.Published.Add(registration);
 
         return Task.FromResult<IMdnsPublication>(new FakePublication(

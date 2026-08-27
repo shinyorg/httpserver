@@ -20,6 +20,15 @@ public partial class HttpServerLifecycleTask(
     ILogger<HttpServerLifecycleTask> logger
 ) : ShinyLifecycleTask, IDisposable
 {
+    // Android has no callback for "the foreground service never started", so the only way to know is
+    // to look afterwards. Five seconds is long enough for the start to have been dispatched on a
+    // main looper that is busy resuming an app, and short enough that the log lands near its cause.
+    static readonly TimeSpan BackgroundExecutionStartTimeout = TimeSpan.FromSeconds(5);
+
+    // Every start and restart this class drives goes through here rather than being awaited once and
+    // hoped over. See ServerTransitionRunner for why a single attempt is the bug being fixed.
+    readonly ServerTransitionRunner transitions = new(options, logger);
+
     bool stoppedByLifecycle;
     bool restoreOnForeground;
     bool subscribed;
@@ -66,6 +75,11 @@ public partial class HttpServerLifecycleTask(
             case BackgroundServerMode.Stop when server.IsRunning:
                 logger.LogInformation("Stopping the server for the background");
 
+                // Anything still retrying its way back up is abandoned first. It is trying to bind
+                // a listener for an app that has just decided it does not want one, and a rebind
+                // that lands after this stop leaves a socket open with nothing watching it.
+                this.transitions.Cancel();
+
                 await server.StopAsync().ConfigureAwait(false);
                 this.stoppedByLifecycle = true;
                 break;
@@ -77,7 +91,10 @@ public partial class HttpServerLifecycleTask(
         }
     }
 
-    async Task OnForegroundingAsync()
+    // Not async: everything it does either completes synchronously or is handed to the retry runner,
+    // which owns the outcome and the logging from there. Kept returning a Task so the two lifecycle
+    // halves read the same way at the call site.
+    Task OnForegroundingAsync()
     {
         this.StopBackgroundExecution();
 
@@ -92,20 +109,29 @@ public partial class HttpServerLifecycleTask(
             // is harmless if it was in fact stopped underneath us.
             logger.LogInformation("Restarting the server after the background suspension");
 
-            await server.RestartAsync().ConfigureAwait(false);
-            return;
+            // Through the runner, because this resume is the same hole as a connectivity change: the
+            // first thing an app does on resume is race the OS for a network that is still coming
+            // back, and a single refused bind here strands the user on a screen that says the server
+            // is on. The flag is already cleared, so nothing else will try again if this does not.
+            this.transitions.Run("Restart after the background suspension", server.RestartAsync);
+            return Task.CompletedTask;
         }
 
         if (!this.stoppedByLifecycle && !options.AlwaysStartOnForeground)
-            return;
+            return Task.CompletedTask;
 
         if (server.IsRunning)
-            return;
+            return Task.CompletedTask;
 
         logger.LogInformation("Starting the server for the foreground");
 
-        await server.StartAsync().ConfigureAwait(false);
+        // Cleared before the start rather than after it. The retry owns getting the listener up from
+        // here, and a flag left set would have the next foreground transition queue a second start
+        // behind the one already trying.
         this.stoppedByLifecycle = false;
+        this.transitions.Run("Start for the foreground", server.StartAsync);
+
+        return Task.CompletedTask;
     }
 
     /// <summary>
@@ -197,30 +223,34 @@ public partial class HttpServerLifecycleTask(
             // This runs inside the server's own state machine, on the thread that called Start or
             // Stop - so an exception here would surface out of StartAsync as though the server had
             // failed. The service is a platform concern and its failure is not the server's.
-            logger.LogWarning(ex, "Failed to update background execution for the {State} server", state);
+            //
+            // Error rather than warning, though, because of what the failure means: with no
+            // foreground service holding it up, Android reclaims this process within minutes and
+            // takes the listener with it. From inside the app that is indistinguishable from the
+            // server stopping on its own, which is exactly the report this is here to answer.
+            logger.LogError(ex, "Failed to update background execution for the {State} server; on Android the process will be reclaimed and the listener will stop with it", state);
         }
     }
 
-    void OnConnectivityChanged(object? sender, EventArgs e) => _ = Task.Run(async () =>
+    void OnConnectivityChanged(object? sender, EventArgs e)
     {
-        try
-        {
-            if (!server.IsRunning)
-                return;
+        if (!server.IsRunning)
+            return;
 
-            // Restarted rather than left alone, because the listener is bound to an address the
-            // device may no longer hold. A restart on a device that kept its address costs a
-            // dropped keep-alive connection; not restarting on one that did not costs everything.
-            logger.LogInformation("Connectivity changed to {Access} ({Types}); rebinding", connectivity.Access, connectivity.ConnectionTypes);
+        // Restarted rather than left alone, because the listener is bound to an address the
+        // device may no longer hold. A restart on a device that kept its address costs a
+        // dropped keep-alive connection; not restarting on one that did not costs everything.
+        logger.LogInformation("Connectivity changed to {Access} ({Types}); rebinding", connectivity.Access, connectivity.ConnectionTypes);
 
-            await server.RestartAsync().ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            // A network in transition often refuses the bind. The next change tries again.
-            logger.LogWarning(ex, "Failed to rebind the server after a connectivity change");
-        }
-    });
+        // The single most likely way this package leaves a phone with a dead server, and the reason
+        // the retry runner exists. RestartAsync unbinds first and then binds, so a bind refused on a
+        // half-up network - the new interface not routable yet, the old port not released yet -
+        // leaves the server Stopped. Nothing else here is watching for that, so waiting for "the
+        // next connectivity change" is waiting for an event that may not come until the user walks
+        // somewhere else. It is retried as the network settles, and if it still will not come up the
+        // give-up is an Error carrying the bind exception rather than a warning nobody collects.
+        this.transitions.Run("Rebind after a connectivity change", server.RestartAsync);
+    }
 
     /// <summary>
     /// Whether the platform can actually keep the listener answering with the app in the background.
@@ -229,14 +259,64 @@ public partial class HttpServerLifecycleTask(
     /// </summary>
     static partial bool SupportsBackgroundExecution { get; }
 
+    /// <summary>
+    /// Whether the platform's background execution is up <em>right now</em>, as opposed to having
+    /// been asked for. On Android that is the foreground service actually running; on Apple there is
+    /// nothing to be up, which is what <see cref="SupportsBackgroundExecution"/> already says.
+    /// </summary>
+    static partial bool BackgroundExecutionIsActive { get; }
+
     /// <summary>Android starts a foreground service here; the Apple build has nothing to start.</summary>
     partial void StartBackgroundExecutionPlatform();
 
     partial void StopBackgroundExecutionPlatform();
 
-    void StartBackgroundExecution() => this.StartBackgroundExecutionPlatform();
+    void StartBackgroundExecution()
+    {
+        this.StartBackgroundExecutionPlatform();
+
+        if (SupportsBackgroundExecution)
+            _ = this.VerifyBackgroundExecutionAsync();
+    }
 
     void StopBackgroundExecution() => this.StopBackgroundExecutionPlatform();
+
+    /// <summary>
+    /// Checks that the background execution asked for above actually came up, and says so loudly
+    /// when it did not.
+    /// </summary>
+    /// <remarks>
+    /// Starting it is fire-and-forget on Android by construction: <c>StartService</c> posts an
+    /// intent and returns, and the service comes up — or is refused — on the main looper afterwards.
+    /// Android refuses it outright when the app is not entitled to a foreground service at that
+    /// moment (a background start without an exemption on API 31+, a missing
+    /// <c>FOREGROUND_SERVICE_DATA_SYNC</c>, a revoked notification permission), and the refusal is
+    /// thrown inside the service, where this caller cannot see it. Unchecked, the first anyone knows
+    /// is the process being reclaimed some minutes later with the listener inside it — a server that
+    /// "stopped randomly" whose cause was five seconds after the app was backgrounded.
+    /// </remarks>
+    async Task VerifyBackgroundExecutionAsync()
+    {
+        try
+        {
+            await Task.Delay(BackgroundExecutionStartTimeout).ConfigureAwait(false);
+
+            // Not a failure if the server has since stopped: OnServerStateChanged will have taken
+            // the service down on purpose, and that is the arrangement working.
+            if (BackgroundExecutionIsActive || !server.IsRunning)
+                return;
+
+            logger.LogError(
+                "The background service did not start within {Timeout}. The server is still listening but nothing is holding this process up, so the OS will reclaim it and the listener will stop with it. Check FOREGROUND_SERVICE, FOREGROUND_SERVICE_DATA_SYNC and POST_NOTIFICATIONS - LocalNetworkAccess.Check() reports which are missing",
+                BackgroundExecutionStartTimeout
+            );
+        }
+        catch (Exception ex)
+        {
+            // Nothing awaits this, so an escaping exception is one reported nowhere.
+            logger.LogError(ex, "Failed to confirm that the background service started");
+        }
+    }
 
     public void Dispose()
     {
@@ -247,6 +327,7 @@ public partial class HttpServerLifecycleTask(
         }
 
         server.StateChanged -= this.OnServerStateChanged;
+        this.transitions.Dispose();
 
         GC.SuppressFinalize(this);
     }

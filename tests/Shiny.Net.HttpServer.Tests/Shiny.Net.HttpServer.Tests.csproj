@@ -55,6 +55,12 @@
     <ProjectReference Include="../../src/Shiny.Net.HttpServer.Ssh/Shiny.Net.HttpServer.Ssh.csproj" />
     <ProjectReference Include="../../src/Shiny.Net.HttpServer.Tunnels/Shiny.Net.HttpServer.Tunnels.csproj" />
     <ProjectReference Include="../../src/Shiny.Net.HttpServer.Discovery/Shiny.Net.HttpServer.Discovery.csproj" />
+
+    <!-- Only the plain net10.0 slice of the mobile package is reachable from here, and that is the
+         point: the lifecycle task itself is inside `#if PLATFORM` and cannot run off a device, but
+         the retry policy it drives every start and restart through is ordinary code, and it is the
+         part whose failure is a server that never comes back. -->
+    <ProjectReference Include="../../src/Shiny.Net.HttpServer.Mobile/Shiny.Net.HttpServer.Mobile.csproj" />
     <ProjectReference Include="../../src/Shiny.Net.HttpServer.Testing/Shiny.Net.HttpServer.Testing.csproj" />
     <ProjectReference Include="../../src/Shiny.Net.HttpServer.WebDav/Shiny.Net.HttpServer.WebDav.csproj" />
     <ProjectReference Include="../../src/Shiny.Net.HttpServer.Mediator/Shiny.Net.HttpServer.Mediator.csproj" />

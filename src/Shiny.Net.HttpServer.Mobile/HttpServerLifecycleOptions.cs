@@ -73,8 +73,57 @@ public sealed class HttpServerLifecycleOptions
     /// matter of course, and a listener bound to the address it had at breakfast is the single most
     /// common way an embedded server "stops working for no reason".
     /// </para>
+    /// <para>
+    /// It stays on by default even though a rebind is the riskiest thing this package does — a
+    /// restart on a half-up network unbinds a listener that worked and may fail to bind the
+    /// replacement. What makes that acceptable is <see cref="RestartAttempts"/>: the rebind keeps
+    /// trying as the network settles, and the one outcome that is not on the table any more is a
+    /// server that quietly stays down.
+    /// </para>
     /// </summary>
     public bool RestartOnConnectivityChange { get; set; } = true;
+
+    /// <summary>
+    /// How many times a start or restart that this package drove is attempted before it is given
+    /// up on. Three by default.
+    /// <para>
+    /// Every transition here is provoked by the device — the network changed, the app resumed — and
+    /// that is exactly the moment a bind is refused, because the new interface is not routable yet
+    /// or the old port is still in TIME_WAIT. One attempt that loses that race leaves the listener
+    /// down for good, with the app still showing a toggle that is already switched on. Set to 1 to
+    /// get the old single-attempt behaviour back.
+    /// </para>
+    /// <para>
+    /// This sits <em>outside</em> <see cref="HttpServerOptions.StartRetryAttempts"/>, which retries
+    /// the bind itself within one <c>RestartAsync</c>, so the two multiply — hence the smaller count
+    /// here. It is not redundant with it. The core deliberately never retries a start the caller
+    /// asked for, on the grounds that the caller is a button and should be told; on this path the
+    /// caller is a lifecycle callback with nobody to tell, which is the case that used to end in
+    /// silence. It also covers a restart that failed before it ever reached the bind — an unbind
+    /// that threw — and it keeps trying past the core's window, which is spent in about fifteen
+    /// seconds while a phone changing networks indoors is often not done in fifteen seconds.
+    /// </para>
+    /// <para>
+    /// When the last attempt fails it is logged at <c>Error</c> with the exception, not at
+    /// <c>Warning</c> — a crash reporter's logging bridge files an event for the first and only a
+    /// breadcrumb for the second, and a server that stopped is worth an event.
+    /// </para>
+    /// </summary>
+    public int RestartAttempts { get; set; } = 3;
+
+    /// <summary>
+    /// How long to wait before the second attempt. Five seconds by default, doubling for each
+    /// attempt after it up to <see cref="MaxRestartRetryDelay"/>.
+    /// <para>
+    /// Longer than the core's equivalent on purpose: by the time an attempt gets back here the core
+    /// has already spent its own backoff on the same bind, so whatever is wrong is not something
+    /// another second was going to fix.
+    /// </para>
+    /// </summary>
+    public TimeSpan RestartRetryDelay { get; set; } = TimeSpan.FromSeconds(5);
+
+    /// <summary>The ceiling the doubling backoff stops at. Thirty seconds by default.</summary>
+    public TimeSpan MaxRestartRetryDelay { get; set; } = TimeSpan.FromSeconds(30);
 
     /// <summary>
     /// The title on the Android foreground-service notification, when

@@ -115,6 +115,21 @@ triggers:
 - RebindOnNetworkChange
 - NetworkAddressesChanged
 - LocalAddresses
+- StateChanged
+- StateTransitioned
+- HttpServerStateChange
+- HttpServerStateReason
+- LastStateChange
+- HttpServerListenerException
+- RecoverFromListenerFaults
+- StartRetryAttempts
+- AcceptRetryAttempts
+- RestartAttempts
+- RestartRetryDelay
+- MaxRestartRetryDelay
+- PublishAttempts
+- PublishRetryDelay
+- MaxPublishRetryDelay
 - TestHttpServer
 - CreateInMemoryClient
 - InMemoryConnectionHandler
@@ -378,6 +393,52 @@ the OS pick; read it back from `server.ListenUrl`.
 - Binds **loopback** by default. Set `Address = IPAddress.Any` for LAN access — deliberately.
 - `Limits.MaxRequestBodySize` is 30 MB; raise it for uploads.
 - `HideExceptionDetails` is on; turn it off in development only.
+
+## Lifecycle — and knowing *why* the server stopped
+
+Start and stop are runtime operations, not just process startup and shutdown. An app with a toggle
+flips this switch repeatedly, so the transitions are serialized, idempotent and restartable.
+
+```csharp
+await server.StartAsync();     // binds and begins accepting
+await server.StopAsync();      // unbinds, then drains in-flight requests
+await server.RestartAsync();   // both as one operation, re-reading Options
+```
+
+`StateChanged` gives a UI its transitions. **`StateTransitioned` is what to generate whenever the app
+needs to diagnose a server that went down** — it carries an `HttpServerStateChange` with the reason
+and the exception:
+
+```csharp
+server.StateTransitioned += (_, change) =>
+{
+    // Restarting is the stop half of a rebind — a start is coming, so leave the UI alone.
+    if (change is { State: HttpServerState.Stopped, Reason: not HttpServerStateReason.Requested and not HttpServerStateReason.Restarting })
+        logger.LogError(change.Exception, "The server went down: {Reason}", change.Reason);
+};
+```
+
+| `HttpServerStateReason` | Meaning |
+| --- | --- |
+| `Requested` | The app called `StartAsync`/`StopAsync`. The only reason that is never a fault |
+| `Restarting` | Part of a `RestartAsync` — **including the stop half**, so a subscriber knows a start is coming |
+| `NetworkChanged` | A rebind driven by the addresses changing |
+| `BindFailed` | The bind was refused and the retries are spent; `Exception` says why |
+| `ListenerFaulted` | The listener stopped accepting while the server believed it was running |
+| `Disposed` | The server was disposed |
+
+`server.LastStateChange` is the same record, for code that was not subscribed at the time — a crash
+report, a diagnostics screen, a background task that woke up to find the server down.
+
+**Resilience is on by default; do not generate an opt-in for it.** A transient accept failure is
+retried with backoff; a listener that dies underneath a running server is logged at error, reported
+as `ListenerFaulted`, and rebound; the start half of a restart or a network rebind retries
+(`StartRetryAttempts`, default 5). A plain `StartAsync` is deliberately **not** retried — its caller
+gets the exception. Tune with `RecoverFromListenerFaults`, `StartRetry*` and `AcceptRetry*` only when
+asked.
+
+Handlers on `StateChanged`, `StateTransitioned` and `NetworkAddressesChanged` are isolated: one that
+throws is logged and the rest still run. Do not wrap them in defensive try/catch of your own.
 
 ## Tier 3: typed endpoints (preferred)
 
@@ -1194,6 +1255,10 @@ services.AddShinyHttpServer(
         {
             o.BackgroundMode = BackgroundServerMode.Stop;      // or KeepAlive
             o.RestartOnConnectivityChange = true;              // default
+
+            o.RestartAttempts = 3;                             // default
+            o.RestartRetryDelay = TimeSpan.FromSeconds(5);     // default, doubling
+            o.MaxRestartRetryDelay = TimeSpan.FromSeconds(30); // default
         });
     },
     autoStart: false
@@ -1225,7 +1290,27 @@ Needs a Shiny host (`UseShiny()` in `MauiProgram`) — that is what delivers the
 - A phone's address changes when it moves. The lifecycle package rebinds on connectivity changes;
   the core has the same thing without Shiny.Core via `options.RebindOnNetworkChange`, and raises
   `server.NetworkAddressesChanged` either way so a QR code or advertisement can be refreshed.
-  Binding to `IPAddress.Any` survives an address change; binding to a specific address does not.
+  Binding to `IPAddress.Any` survives an address change; binding to a specific address does not. The
+  rebind retries on a network that is still coming up — see
+  [Lifecycle](#lifecycle--and-knowing-why-the-server-stopped) — and its transitions carry
+  `NetworkChanged`, so a subscriber can tell a rebind from a shutdown.
+- **Every start and restart this package drives is retried, and the give-up is an `Error`.** A
+  connectivity rebind, an Apple resume restart and a foreground start all run through the same
+  bounded backoff — `RestartAttempts` (3), `RestartRetryDelay` (5s, doubling), `MaxRestartRetryDelay`
+  (30s) — because the moment they run is the moment a bind is refused: the new interface is not
+  routable yet, or the old port is still in `TIME_WAIT`. Do not "fix" a rebind failure by wrapping
+  these calls in your own retry; set the options instead. This is *outside* the core's
+  `StartRetryAttempts`, so the two multiply — the core never retries a start the caller asked for,
+  and on this path the caller is a lifecycle callback with nobody to tell.
+- **Never downgrade these to `LogWarning` when generating similar code.** A crash reporter's
+  `Microsoft.Extensions.Logging` bridge files an event at `Error` and only a breadcrumb at `Warning`,
+  so a server that stopped and logged a warning is a server that told nobody. The same rule applies
+  to any handler an app writes on `StateTransitioned`.
+- **On Android, a foreground service that never started is now reported.** `StartService` posts an
+  intent and returns; Android refuses it inside the service when the app is not entitled to one, and
+  the package checks five seconds later and logs at `Error` naming the manifest entries to look at.
+  If the OS stops the service while the server is still listening, that is logged at `Error` too. If
+  an app generates its own foreground service, do the same — do not assume `StartService` worked.
 
 ### Discovery — the other half of hosting on a phone
 
@@ -1254,6 +1339,17 @@ await foreach (var change in locator.WatchAsync("_myapp._tcp", ct)) { … }
 The advertisement follows the server — published when it starts, withdrawn (with a goodbye packet)
 when it stops, re-announced when the device changes network. Read the final instance name back from
 `IHttpServerAdvertiser.Publication`: the responder renames a service whose name is already taken.
+
+It follows the **reason** as well as the state, which is the pattern to copy for any handler that
+tears something down on `Stopped`: it subscribes to `StateTransitioned`, and a `Stopped` carrying
+`Restarting` or `NetworkChanged` leaves the record standing rather than sending a goodbye and a fresh
+announcement for a service that never actually went away. If the start half never lands, the
+`Stopped` that follows carries `BindFailed`, and that one withdraws.
+
+Publishing is retried — `PublishAttempts` (3), `PublishRetryDelay` (1s, doubling),
+`MaxPublishRetryDelay` (15s) — with an `Error` carrying the exception when the attempts are spent. A
+responder is least likely to answer at exactly the moment this runs, and the failure it leaves behind
+is the hard kind: a server running perfectly, findable by nobody, looking healthy from inside the app.
 
 ### TLS on a device
 
@@ -1330,3 +1426,6 @@ replaces the class's, and a `Disable` anywhere wins.
 13. **Never cache a response for an authenticated caller** without adding the identity to the key.
 14. **Prefer the in-memory harness for endpoint tests**, and a real socket for anything about the
     socket.
+15. **Subscribe to `StateTransitioned`, not `StateChanged`, when the app has to report why the server
+    stopped.** `StateChanged` cannot tell "the user switched it off" from "the listener died", and on
+    a device that distinction is the whole bug report. Treat `Reason == Restarting` as *not* down.

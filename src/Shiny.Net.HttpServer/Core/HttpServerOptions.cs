@@ -141,6 +141,81 @@ public sealed class HttpServerOptions
     /// them restarts the server three times for one event.
     /// </summary>
     public TimeSpan NetworkChangeDebounce { get; set; } = TimeSpan.FromSeconds(2);
+
+    // ---- Resilience ----
+    //
+    // These defaults are deliberately on. A server embedded in an app has nobody watching it: the
+    // failures below happen on a device in someone's pocket, hours after the last line of app code
+    // ran, and an app that has to opt in to not-silently-dying will not have opted in.
+
+    /// <summary>
+    /// How many times a start the <em>server itself</em> initiated is attempted before it is
+    /// reported as failed — the second half of a <see cref="HttpServer.RestartAsync"/>, a rebind
+    /// after the addresses moved, a recovery from a listener that died.
+    /// <para>
+    /// A start the app asked for is never retried, whatever this is set to:
+    /// <see cref="HttpServer.StartAsync"/> throws and the caller decides, which is both louder and
+    /// more useful than a button that appears stuck for fifteen seconds. These are the starts with
+    /// nobody to tell — and the reason a phone that moved between networks used to stay unreachable
+    /// until another address change happened along.
+    /// </para>
+    /// <para>Set to 1 to disable the retry and have the first failure be the last.</para>
+    /// </summary>
+    public int StartRetryAttempts { get; set; } = 5;
+
+    /// <summary>
+    /// Delay before the first start retry; each further attempt doubles it, up to
+    /// <see cref="StartRetryMaxDelay"/>.
+    /// <para>
+    /// A second rather than immediately, because the two things that refuse a bind here — a network
+    /// that is half up, and the old port still sitting in TIME_WAIT — are both waiting on a clock,
+    /// not on us. Retrying instantly just spends the attempts before either could have cleared.
+    /// </para>
+    /// </summary>
+    public TimeSpan StartRetryDelay { get; set; } = TimeSpan.FromSeconds(1);
+
+    /// <summary>Ceiling for the start backoff. The defaults reach it on the fifth attempt, about fifteen seconds in.</summary>
+    public TimeSpan StartRetryMaxDelay { get; set; } = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// How many <em>consecutive</em> failures the accept loop absorbs before it declares the
+    /// listener dead. The counter resets on every connection accepted.
+    /// <para>
+    /// Counting rather than classifying is deliberate. Deciding transient-versus-fatal from a socket
+    /// error code is a losing game across the platforms this runs on — descriptor exhaustion, an
+    /// interface torn down mid-accept and a client that vanished all report differently on Android,
+    /// iOS and desktop, and the list changes with the OS. Time is the honest classifier: anything
+    /// that clears within a few attempts was transient, and anything that does not is fatal no
+    /// matter what its code claimed.
+    /// </para>
+    /// </summary>
+    public int AcceptRetryAttempts { get; set; } = 5;
+
+    /// <summary>
+    /// Delay after the first failed accept; doubles per consecutive failure, up to
+    /// <see cref="AcceptRetryMaxDelay"/>. Short, because most of what lands here clears immediately
+    /// and the cost of waiting is every other client on that listener.
+    /// </summary>
+    public TimeSpan AcceptRetryDelay { get; set; } = TimeSpan.FromMilliseconds(100);
+
+    /// <summary>Ceiling for the accept backoff.</summary>
+    public TimeSpan AcceptRetryMaxDelay { get; set; } = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// Rebinds when the accept loop ends while the server still believed it was running.
+    /// <para>
+    /// On by default. The alternative — the behaviour before this existed — is a server that reports
+    /// <see cref="HttpServerState.Running"/> with no listener behind it, refuses every connection,
+    /// and cannot be fixed by toggling it off and on because it already thinks it is on.
+    /// </para>
+    /// <para>
+    /// Turn it off to have the fault stop the server instead. It is still reported either way:
+    /// the transition carries <see cref="HttpServerStateReason.ListenerFaulted"/> and the cause, and
+    /// it is logged at error level. What this setting chooses is whether the server tries to come
+    /// back, not whether anyone finds out.
+    /// </para>
+    /// </summary>
+    public bool RecoverFromListenerFaults { get; set; } = true;
 }
 
 /// <summary>

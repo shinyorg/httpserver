@@ -42,10 +42,16 @@ public sealed class HttpServer : IAsyncDisposable
     // linked to would turn a normal shutdown into an ObjectDisposedException.
     CancellationTokenSource stopping = new();
 
+    // Set the moment a stop begins, before the listeners are unbound. The stopping token cannot do
+    // this job: it also cancels the in-flight connections a graceful stop is trying to drain, so it
+    // is cancelled *after* the unbind — and in that window a listener returning "no more
+    // connections" because we unbound it is indistinguishable from one that died on its own.
+    volatile bool stopRequested;
+
     NetworkChangeWatcher? networkWatcher;
     RequestDelegate? terminalHandler;
     RequestDelegate? pipeline;
-    IReadOnlyList<SocketConnectionListener> listeners = [];
+    IReadOnlyList<IConnectionListener> listeners = [];
     Task? acceptLoops;
     bool disposed;
 
@@ -312,10 +318,39 @@ public sealed class HttpServer : IAsyncDisposable
     public HttpServerState State { get; private set; } = HttpServerState.Stopped;
 
     /// <summary>
+    /// The transition that put the server in <see cref="State"/>, reason and cause included. Null
+    /// until the server first moves.
+    /// <para>
+    /// The same information <see cref="StateTransitioned"/> raises, kept for whoever was not
+    /// subscribed at the time — a crash reporter assembling context, a diagnostics screen the user
+    /// opens after the fact, a background task that woke up to find the server down.
+    /// </para>
+    /// </summary>
+    public HttpServerStateChange? LastStateChange { get; private set; }
+
+    /// <summary>
     /// Raised on every state transition, on the thread that caused it. Useful for binding a UI to
     /// the server without polling.
+    /// <para>
+    /// Says what happened and not why; <see cref="StateTransitioned"/> carries the reason and the
+    /// exception. A handler that throws is caught and logged rather than taking the transition — or
+    /// the server — down with it.
+    /// </para>
     /// </summary>
     public event EventHandler<HttpServerState>? StateChanged;
+
+    /// <summary>
+    /// The same transitions as <see cref="StateChanged"/>, each carrying why it happened and the
+    /// exception behind it when there was one.
+    /// <para>
+    /// This is the event to subscribe to when the question is "the server stopped, was that us?".
+    /// <see cref="HttpServerStateReason.Requested"/> means the app asked;
+    /// <see cref="HttpServerStateReason.BindFailed"/> and
+    /// <see cref="HttpServerStateReason.ListenerFaulted"/> mean it fell over, and
+    /// <see cref="HttpServerStateChange.Exception"/> says what with.
+    /// </para>
+    /// </summary>
+    public event EventHandler<HttpServerStateChange>? StateTransitioned;
 
     /// <summary>
     /// Raised when the machine's IP addresses change while the server is running — a phone moving
@@ -343,7 +378,7 @@ public sealed class HttpServer : IAsyncDisposable
         await this.lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await this.StartCoreAsync(cancellationToken).ConfigureAwait(false);
+            await this.StartCoreAsync(cancellationToken, HttpServerStateReason.Requested).ConfigureAwait(false);
         }
         finally
         {
@@ -360,7 +395,7 @@ public sealed class HttpServer : IAsyncDisposable
         await this.lifecycle.WaitAsync(CancellationToken.None).ConfigureAwait(false);
         try
         {
-            await this.StopCoreAsync(cancellationToken).ConfigureAwait(false);
+            await this.StopCoreAsync(cancellationToken, HttpServerStateReason.Requested).ConfigureAwait(false);
         }
         finally
         {
@@ -374,6 +409,14 @@ public sealed class HttpServer : IAsyncDisposable
     /// <para>
     /// Routes and middleware are not re-read: the pipeline is composed once and stays composed.
     /// </para>
+    /// <para>
+    /// The start half retries — see <see cref="HttpServerOptions.StartRetryAttempts"/>. A restart is
+    /// the one operation where a failure leaves the server worse off than not having tried: it was
+    /// running a moment ago, and a bind refused because the network is half up or the old port is
+    /// still in TIME_WAIT would otherwise leave it stopped for good. If the retries are spent this
+    /// still throws, and the transition to <see cref="HttpServerState.Stopped"/> carries
+    /// <see cref="HttpServerStateReason.BindFailed"/> with the exception attached.
+    /// </para>
     /// </summary>
     public async Task RestartAsync(CancellationToken cancellationToken = default)
     {
@@ -382,8 +425,7 @@ public sealed class HttpServer : IAsyncDisposable
         await this.lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await this.StopCoreAsync(cancellationToken).ConfigureAwait(false);
-            await this.StartCoreAsync(cancellationToken).ConfigureAwait(false);
+            await this.RestartCoreAsync(cancellationToken, HttpServerStateReason.Restarting).ConfigureAwait(false);
         }
         finally
         {
@@ -418,14 +460,28 @@ public sealed class HttpServer : IAsyncDisposable
 
         this.disposed = true;
 
-        await this.StopAsync(CancellationToken.None).ConfigureAwait(false);
+        await this.lifecycle.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        try
+        {
+            await this.StopCoreAsync(CancellationToken.None, HttpServerStateReason.Disposed).ConfigureAwait(false);
+        }
+        finally
+        {
+            this.lifecycle.Release();
+        }
 
         this.stopping.Dispose();
         this.lifecycle.Dispose();
         this.connectionLimit?.Dispose();
     }
 
-    async Task StartCoreAsync(CancellationToken cancellationToken)
+    async Task RestartCoreAsync(CancellationToken cancellationToken, HttpServerStateReason reason)
+    {
+        await this.StopCoreAsync(cancellationToken, reason).ConfigureAwait(false);
+        await this.StartCoreAsync(cancellationToken, reason).ConfigureAwait(false);
+    }
+
+    async Task StartCoreAsync(CancellationToken cancellationToken, HttpServerStateReason reason)
     {
         if (this.acceptLoops is not null)
         {
@@ -433,13 +489,92 @@ public sealed class HttpServer : IAsyncDisposable
             return;
         }
 
-        this.SetState(HttpServerState.Starting);
+        this.SetState(HttpServerState.Starting, reason);
 
-        var bound = new List<SocketConnectionListener>();
+        // A start the app asked for reports its failure straight back to the caller, which is the
+        // loudest signal available and the one a "share over Wi-Fi" toggle already handles; retrying
+        // behind its back would only make the button appear stuck. A start the *server* asked for —
+        // the second half of a restart, a rebind after the addresses moved, a recovery from a dead
+        // listener — has nobody to throw to, and that is the one that used to leave a device
+        // silently unreachable until some unrelated event happened along.
+        var attempts = reason == HttpServerStateReason.Requested
+            ? 1
+            : Math.Max(1, this.Options.StartRetryAttempts);
+
+        for (var attempt = 1; ; attempt++)
+        {
+            TimeSpan retryIn;
+            try
+            {
+                await this.BindAndBeginAcceptingAsync(cancellationToken).ConfigureAwait(false);
+                this.SetState(HttpServerState.Running, reason);
+                return;
+            }
+            catch (OperationCanceledException)
+            {
+                // Not a fault: the caller gave up, or a stop landed while the bind was in flight.
+                // The server is where it was asked to be, so the reason stays what it was.
+                this.SetState(HttpServerState.Stopped, reason);
+                throw;
+            }
+            catch (Exception ex) when (attempt < attempts)
+            {
+                retryIn = Backoff(this.Options.StartRetryDelay, this.Options.StartRetryMaxDelay, attempt);
+                this.logger.LogWarning(
+                    ex,
+                    "Failed to start the server ({Reason}); attempt {Attempt} of {Attempts}, retrying in {Delay}",
+                    reason,
+                    attempt,
+                    attempts,
+                    retryIn
+                );
+            }
+            catch (Exception ex)
+            {
+                // The end of the line. Logged at Error and not Warning on purpose: from here the
+                // server is down and nothing in this library will bring it back, so this line is the
+                // one that has to survive a production log filter.
+                this.logger.LogError(
+                    ex,
+                    "The server failed to start after {Attempts} attempt(s) ({Reason}) and is now stopped; it will not come back on its own",
+                    attempts,
+                    reason
+                );
+
+                this.SetState(HttpServerState.Stopped, HttpServerStateReason.BindFailed, ex);
+                throw;
+            }
+
+            try
+            {
+                await Task.Delay(retryIn, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                this.SetState(HttpServerState.Stopped, reason);
+                throw;
+            }
+        }
+    }
+
+    /// <summary>
+    /// One start attempt: bind every endpoint, start accepting, arrange for the accept loops to be
+    /// watched. Throws on failure with nothing left bound, which is what makes it safe to retry.
+    /// <para>
+    /// Split out from <see cref="StartCoreAsync"/> so the retry loop lives above the state machine
+    /// rather than inside it — a server that is on its third attempt is still
+    /// <see cref="HttpServerState.Starting"/>, not flickering between Starting and Stopped once per
+    /// attempt and telling every subscriber about it.
+    /// </para>
+    /// </summary>
+    async Task BindAndBeginAcceptingAsync(CancellationToken cancellationToken)
+    {
+        var bound = new List<IConnectionListener>();
         try
         {
             this.EnsurePipeline();
             this.stopping = new CancellationTokenSource();
+            this.stopRequested = false;
 
             var endpoints = this.Options.ResolveEndpoints();
             if (endpoints.Count == 0)
@@ -447,12 +582,7 @@ public sealed class HttpServer : IAsyncDisposable
 
             for (var i = 0; i < endpoints.Count; i++)
             {
-                var connectionListener = new SocketConnectionListener(
-                    this.Options,
-                    endpoints[i],
-                    this.loggerFactory.CreateLogger<SocketConnectionListener>(),
-                    i
-                );
+                var connectionListener = this.CreateListener(endpoints[i], i);
 
                 // Bound one at a time so a partial failure — the second port already in use —
                 // is caught here and unwound, rather than leaving the server half listening.
@@ -463,20 +593,35 @@ public sealed class HttpServer : IAsyncDisposable
             this.listeners = bound;
 
             var token = this.stopping.Token;
-            this.acceptLoops = Task.WhenAll(
+            var loops = Task.WhenAll(
                 bound.Select(x => Task.Run(() => this.AcceptLoopAsync(x, token), CancellationToken.None))
+            );
+
+            this.acceptLoops = loops;
+
+            // Nothing awaits the accept loops until StopCoreAsync, and on a server that has quietly
+            // stopped listening that call may never come — so a faulted loop sat unobserved until
+            // the finalizer thread surfaced it through TaskScheduler.UnobservedTaskException, if
+            // ever. This continuation is the only thing between a dead listener and a server that
+            // goes on reporting Running with nothing behind it.
+            _ = loops.ContinueWith(
+                this.OnListeningEnded,
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default
             );
 
             foreach (var connectionListener in bound)
                 this.logger.LogInformation("Listening on {Url}", connectionListener.ListenDescription);
 
             this.StartWatchingTheNetwork();
-            this.SetState(HttpServerState.Running);
         }
         catch
         {
-            // A failed bind must not leave the server claiming to be starting forever, nor leave
-            // the endpoints that did bind holding their ports.
+            // A failed attempt must not leave the endpoints that did bind holding their ports, nor
+            // an accept-loop task that the next attempt would mistake for a running server.
+            this.acceptLoops = null;
+
             foreach (var connectionListener in bound)
             {
                 try
@@ -490,17 +635,20 @@ public sealed class HttpServer : IAsyncDisposable
             }
 
             this.listeners = [];
-            this.SetState(HttpServerState.Stopped);
             throw;
         }
     }
 
-    async Task StopCoreAsync(CancellationToken cancellationToken)
+    async Task StopCoreAsync(CancellationToken cancellationToken, HttpServerStateReason reason, Exception? cause = null)
     {
         if (this.acceptLoops is null)
             return;
 
-        this.SetState(HttpServerState.Stopping);
+        // Before anything is unbound, so the accept loops can tell an ordinary shutdown from a
+        // listener disappearing underneath them.
+        this.stopRequested = true;
+
+        this.SetState(HttpServerState.Stopping, reason, cause);
         this.logger.LogInformation("Shutting down");
 
         this.networkWatcher?.Dispose();
@@ -518,6 +666,13 @@ public sealed class HttpServer : IAsyncDisposable
         catch (OperationCanceledException)
         {
             // Expected: cancelling the accept loop is how we stop.
+        }
+        catch (Exception ex)
+        {
+            // A loop that faulted has already been reported by OnListeningEnded — this await is here
+            // to drain it, not to discover it. Letting it out would turn a stop the app asked for
+            // into a throw from StopAsync, over a listener that was going away regardless.
+            this.logger.LogDebug(ex, "An accept loop had already faulted when the server was stopped");
         }
 
         Task[] inFlight;
@@ -537,16 +692,95 @@ public sealed class HttpServer : IAsyncDisposable
 
         this.acceptLoops = null;
         this.listeners = [];
-        this.SetState(HttpServerState.Stopped);
+        this.SetState(HttpServerState.Stopped, reason, cause);
     }
 
-    void SetState(HttpServerState state)
+    void SetState(HttpServerState state, HttpServerStateReason reason, Exception? exception = null)
     {
         if (this.State == state)
             return;
 
         this.State = state;
-        this.StateChanged?.Invoke(this, state);
+
+        var change = new HttpServerStateChange(state, reason, exception);
+        this.LastStateChange = change;
+
+        // The level says who caused it. A transition the app asked for is one the app already knows
+        // about, so it stays at Debug; one the server decided on its own — a rebind, a recovery, a
+        // listener that died — is the line whoever is reading a production log actually needs. An
+        // attached exception makes it an error whatever the reason was.
+        if (exception is not null)
+            this.logger.LogError(exception, "Server state -> {State} ({Reason})", state, reason);
+        else if (reason == HttpServerStateReason.Requested)
+            this.logger.LogDebug("Server state -> {State} ({Reason})", state, reason);
+        else
+            this.logger.LogInformation("Server state -> {State} ({Reason})", state, reason);
+
+        this.Raise(this.StateChanged, state, nameof(this.StateChanged));
+        this.Raise(this.StateTransitioned, change, nameof(this.StateTransitioned));
+    }
+
+    /// <summary>
+    /// Raises an event without letting a subscriber's failure become the server's.
+    /// <para>
+    /// These run on the lifecycle thread, inside <see cref="StartCoreAsync"/>'s own catch, so a UI
+    /// handler that threw used to be caught there — which unwound a start that had already succeeded
+    /// and took the server down over something drawing a button.
+    /// </para>
+    /// <para>
+    /// Subscribers are invoked one at a time rather than through the multicast delegate, because
+    /// <c>Invoke</c> stops at the first one that throws and silently skips the rest: a broken UI
+    /// binding would also stop the mDNS advertiser and the background-execution task from ever
+    /// hearing that the server moved. The array this allocates is paid for at most a handful of
+    /// times per start/stop cycle, which is not a rate worth optimising.
+    /// </para>
+    /// </summary>
+    void Raise<TArgs>(EventHandler<TArgs>? handlers, TArgs args, string eventName)
+    {
+        if (handlers is null)
+            return;
+
+        foreach (var handler in handlers.GetInvocationList())
+        {
+            try
+            {
+                ((EventHandler<TArgs>)handler).Invoke(this, args);
+            }
+            catch (Exception ex)
+            {
+                this.logger.LogError(ex, "A {Event} handler threw and was ignored", eventName);
+            }
+        }
+    }
+
+    IConnectionListener CreateListener(HttpServerEndpoint endpoint, int index)
+        => this.ListenerFactory?.Invoke(this.Options, endpoint, index)
+            ?? new SocketConnectionListener(
+                this.Options,
+                endpoint,
+                this.loggerFactory.CreateLogger<SocketConnectionListener>(),
+                index
+            );
+
+    /// <summary>
+    /// Test seam. Everything this class does about resilience is a reaction to a listener
+    /// misbehaving, and a real socket listener cannot be made to abort, return null, or fail to
+    /// accept on demand — the only behaviour worth testing is the behaviour the OS will not perform
+    /// to order.
+    /// </summary>
+    internal Func<HttpServerOptions, HttpServerEndpoint, int, IConnectionListener>? ListenerFactory { get; set; }
+
+    /// <summary>
+    /// Doubling backoff, clamped. Computed in ticks from the attempt number rather than by repeated
+    /// addition so a long-lived failure cannot shift its way to a negative delay.
+    /// </summary>
+    static TimeSpan Backoff(TimeSpan initial, TimeSpan max, int attempt)
+    {
+        if (initial <= TimeSpan.Zero)
+            return TimeSpan.Zero;
+
+        var ticks = initial.Ticks * (1L << Math.Min(attempt - 1, 16));
+        return TimeSpan.FromTicks(Math.Min(ticks, Math.Max(max.Ticks, initial.Ticks)));
     }
 
     /// <summary>
@@ -651,8 +885,17 @@ public sealed class HttpServer : IAsyncDisposable
         return default;
     }
 
+    /// <summary>
+    /// Accepts until told to stop — and, crucially, never ends quietly for any other reason. Every
+    /// exit that is not a stop leaves through <see cref="HttpServerListenerException"/>, which
+    /// <see cref="OnListeningEnded"/> turns into a logged fault and a rebind.
+    /// </summary>
     async Task AcceptLoopAsync(IConnectionListener connectionListener, CancellationToken cancellationToken)
     {
+        // Consecutive, and reset by every connection accepted: see AcceptRetryAttempts for why the
+        // loop counts failures instead of classifying them.
+        var consecutiveFailures = 0;
+
         while (!cancellationToken.IsCancellationRequested)
         {
             if (this.connectionLimit is not null)
@@ -668,6 +911,7 @@ public sealed class HttpServer : IAsyncDisposable
             }
 
             IConnection? connection = null;
+            Exception? failure = null;
             try
             {
                 connection = await connectionListener.AcceptAsync(cancellationToken).ConfigureAwait(false);
@@ -676,14 +920,143 @@ public sealed class HttpServer : IAsyncDisposable
             {
                 // Shutting down.
             }
-
-            if (connection is null)
+            catch (Exception ex)
             {
-                this.connectionLimit?.Release();
+                // Anything the listener did not handle itself: a transient SocketException, an
+                // interface torn down mid-accept, descriptor exhaustion. This used to escape and
+                // fault the accept-loop task, where nobody was looking.
+                failure = ex;
+            }
+
+            if (connection is not null)
+            {
+                consecutiveFailures = 0;
+                this.TrackConnection(connection, cancellationToken);
+                continue;
+            }
+
+            // Nothing was accepted, so the slot taken above goes back before anything below returns
+            // or throws. The alternative is a server that loses one connection slot per transient
+            // accept failure until it can accept nothing at all.
+            this.connectionLimit?.Release();
+
+            if (cancellationToken.IsCancellationRequested || this.stopRequested)
+                return;
+
+            if (failure is null)
+            {
+                // The listener said "no more connections" while nobody had asked it to stop: its
+                // socket was disposed or aborted underneath us. This is the exit that used to be a
+                // bare `return` — the server went on reporting Running with no listener behind it,
+                // which from the outside is a toggle that reads "on" and a port that refuses
+                // everything, and toggling it off and on changes nothing because it already is on.
+                throw new HttpServerListenerException(
+                    $"The listener on {connectionListener.ListenDescription} stopped accepting while the server was still running."
+                );
+            }
+
+            if (++consecutiveFailures > this.Options.AcceptRetryAttempts)
+            {
+                throw new HttpServerListenerException(
+                    $"Accepting on {connectionListener.ListenDescription} failed {consecutiveFailures} times in a row; treating the listener as dead.",
+                    failure
+                );
+            }
+
+            var retryIn = Backoff(this.Options.AcceptRetryDelay, this.Options.AcceptRetryMaxDelay, consecutiveFailures);
+            this.logger.LogWarning(
+                failure,
+                "Failed to accept on {Url}; failure {Attempt} of {Attempts}, retrying in {Delay}",
+                connectionListener.ListenDescription,
+                consecutiveFailures,
+                this.Options.AcceptRetryAttempts,
+                retryIn
+            );
+
+            try
+            {
+                await Task.Delay(retryIn, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Runs when every accept loop has finished, however it finished. The whole point is the case
+    /// where nobody asked them to.
+    /// </summary>
+    void OnListeningEnded(Task loops)
+    {
+        // The ordinary path. Note this cannot be decided from the stopping token alone:
+        // StopCoreAsync unbinds the listeners *before* it cancels — cancelling first would abort the
+        // very requests it is trying to drain — and in that window a normal shutdown is
+        // indistinguishable from a listener that died.
+        if (this.stopRequested || this.disposed)
+            return;
+
+        // Reading .Exception is also what marks the fault observed, so this must happen whatever we
+        // decide to do next. A loop that ended without throwing gets a stand-in, because "the server
+        // went down and here is no exception at all" is exactly the silence being fixed.
+        var cause = loops.Exception?.GetBaseException()
+            ?? new HttpServerListenerException("The accept loop ended while the server was still running.");
+
+        this.logger.LogError(cause, "The server stopped listening while it believed it was running");
+
+        // Off this thread: the continuation runs synchronously on whichever thread completed the
+        // last accept loop, and what follows takes the lifecycle lock and rebinds a socket.
+        _ = Task.Run(() => this.RecoverFromListenerFaultAsync(loops, cause), CancellationToken.None);
+    }
+
+    async Task RecoverFromListenerFaultAsync(Task loops, Exception cause)
+    {
+        try
+        {
+            await this.lifecycle.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (ObjectDisposedException)
+        {
+            // Disposed while this was queued. There is nothing left to recover.
+            return;
+        }
+
+        try
+        {
+            // Identity rather than state: between the loops ending and this running, a stop may have
+            // completed and a start may have put fresh listeners behind a fresh task. Acting on the
+            // old generation then would tear down a server that is perfectly healthy.
+            if (this.disposed || !ReferenceEquals(this.acceptLoops, loops))
+                return;
+
+            // Taken down first and honestly — a consumer sees Stopped with the fault attached — and
+            // only then brought back. Reporting Running throughout a rebind would be the same lie
+            // that made this bug invisible in the first place.
+            await this.StopCoreAsync(CancellationToken.None, HttpServerStateReason.ListenerFaulted, cause).ConfigureAwait(false);
+
+            if (!this.Options.RecoverFromListenerFaults)
+            {
+                this.logger.LogError(
+                    cause,
+                    "The server is stopped and {Option} is off, so it will not come back on its own",
+                    nameof(HttpServerOptions.RecoverFromListenerFaults)
+                );
                 return;
             }
 
-            this.TrackConnection(connection, cancellationToken);
+            await this.StartCoreAsync(CancellationToken.None, HttpServerStateReason.ListenerFaulted).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            // StartCoreAsync has already spent its retries and reported the failure with the reason
+            // attached. There is no caller above this to rethrow to — this method *is* the top of
+            // the stack — so it stops here rather than becoming an unhandled exception.
+            this.logger.LogError(ex, "Failed to recover from a listener fault; the server is stopped");
+        }
+        finally
+        {
+            this.lifecycle.Release();
         }
     }
 
@@ -851,7 +1224,21 @@ public sealed class HttpServer : IAsyncDisposable
         {
             try
             {
-                await this.RestartAsync(cancellationToken).ConfigureAwait(false);
+                // RestartAsync is not reused here only because the reason has to reach the
+                // transitions: a consumer watching the server go down on a train needs to see
+                // NetworkChanged rather than a bare Stopped. The retry it depends on lives in
+                // StartCoreAsync, and this path is the reason it exists — a phone that flips from
+                // Wi-Fi to cellular gets one shot at a bind on a network that is still coming up,
+                // and if no further address change ever arrives the server never comes back.
+                await this.lifecycle.WaitAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    await this.RestartCoreAsync(cancellationToken, HttpServerStateReason.NetworkChanged).ConfigureAwait(false);
+                }
+                finally
+                {
+                    this.lifecycle.Release();
+                }
             }
             catch (OperationCanceledException)
             {
@@ -861,13 +1248,16 @@ public sealed class HttpServer : IAsyncDisposable
             }
             catch (Exception ex)
             {
-                // The new network may not be ready, or the old port may still be held. The server
-                // is left stopped rather than pretending, and the next change tries again.
-                this.logger.LogError(ex, "Failed to rebind after a network address change");
+                // Every retry is spent and StartCoreAsync has already reported the failure against
+                // the transition. This line only records which path gave up, and that the server is
+                // now down for good unless another address change happens along.
+                this.logger.LogError(ex, "Failed to rebind after a network address change; the server is stopped");
             }
         }
 
-        this.NetworkAddressesChanged?.Invoke(this, LocalAddresses.Current());
+        // Same rule as the state events: a handler redrawing a QR code is not allowed to be the
+        // reason a rebind looks like a failure, nor to stop the next handler being told.
+        this.Raise(this.NetworkAddressesChanged, LocalAddresses.Current(), nameof(this.NetworkAddressesChanged));
     }
 
     void ThrowIfStarted()

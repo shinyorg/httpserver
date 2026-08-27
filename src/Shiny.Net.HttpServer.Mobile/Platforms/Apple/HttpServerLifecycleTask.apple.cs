@@ -13,6 +13,9 @@ public partial class HttpServerLifecycleTask
     /// </summary>
     static partial bool SupportsBackgroundExecution => false;
 
+    /// <summary>Nothing is ever started here, so nothing is ever active. Never consulted — the caller checks <see cref="SupportsBackgroundExecution"/> first.</summary>
+    static partial bool BackgroundExecutionIsActive => false;
+
     /// <summary>
     /// Nothing to start.
     /// <para>
