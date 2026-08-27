@@ -43,6 +43,14 @@
              traversal check: one implementation that everything goes through is the security model,
              and a copy of it is a copy that will drift. -->
         <InternalsVisibleTo Include="Shiny.Net.HttpServer.WebDav"/>
+
+        <!-- The mobile lifecycle decides whether a connectivity change is worth a rebind, and both
+             halves of that decision already exist in here: LocalAddresses.Signature is what the
+             core's own watcher diffs, and ResolveEndpoints is what says whether anything is bound
+             to an address that a network change can invalidate. Reused rather than reimplemented
+             off the public surface - two answers to "did the addresses move" that can disagree is
+             worse than the visibility. -->
+        <InternalsVisibleTo Include="Shiny.Net.HttpServer.Mobile"/>
     </ItemGroup>
 
 </Project>

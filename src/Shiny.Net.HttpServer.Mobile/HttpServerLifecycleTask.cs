@@ -29,6 +29,17 @@ public partial class HttpServerLifecycleTask(
     // hoped over. See ServerTransitionRunner for why a single attempt is the bug being fixed.
     readonly ServerTransitionRunner transitions = new(options, logger);
 
+    // The addresses as of the last time a connectivity event was acted on. Seeded on the first
+    // event rather than in the constructor: this task is created at app startup, and an address set
+    // read before the app has finished launching is not the one the running server is bound to.
+    string? addressSignature;
+
+    // Coalesces a burst into one decision. Held so a dispose can abandon a settle already waiting,
+    // and so an event arriving while one is in flight is dropped rather than queued - the settle
+    // that is already waiting will read the addresses after this event too.
+    readonly CancellationTokenSource settleStopped = new();
+    Task? settling;
+
     bool stoppedByLifecycle;
     bool restoreOnForeground;
     bool subscribed;
@@ -46,6 +57,11 @@ public partial class HttpServerLifecycleTask(
         // The foreground service follows the server, not only the app's lifecycle transitions -
         // see OnServerStateChanged for why that difference matters.
         server.StateChanged += this.OnServerStateChanged;
+
+        // A server already up before this task subscribed has no Running transition left to raise,
+        // and would leave the connectivity gate with nothing to compare against.
+        if (server.IsRunning)
+            this.addressSignature = LocalAddresses.Signature();
     }
 
     protected override void OnStateChanged(bool backgrounding)
@@ -194,6 +210,15 @@ public partial class HttpServerLifecycleTask(
     /// </remarks>
     void OnServerStateChanged(object? sender, HttpServerState state)
     {
+        // Whatever else the transition means, a server that has just bound its listener bound it to
+        // the addresses the device holds now - so that is the set a later connectivity change is
+        // asking about. Recorded here rather than on the first connectivity event, which would
+        // otherwise be spent learning the addresses and would miss the change that provoked it: a
+        // user walking out of Wi-Fi onto cellular gets one event, and it has to be the one that
+        // rebinds. Outside the KeepAlive guard below because it is true in every background mode.
+        if (state == HttpServerState.Running)
+            this.addressSignature = LocalAddresses.Signature();
+
         if (options.BackgroundMode != BackgroundServerMode.KeepAlive)
             return;
 
@@ -232,15 +257,99 @@ public partial class HttpServerLifecycleTask(
         }
     }
 
+    /// <summary>
+    /// Coalesces the connectivity events into one decision, taken once they have stopped arriving.
+    /// </summary>
+    /// <remarks>
+    /// Nothing is decided here, and that is the point. This event does not mean "the network
+    /// changed": Android raises it from <c>OnCapabilitiesChanged</c>, which fires on bandwidth and
+    /// signal-strength updates, and Apple's <c>NWPathMonitor</c> snapshot is the same shape - so a
+    /// phone on a fluctuating cellular signal delivers a continuous stream of them while sitting
+    /// still on one network. Restarting on each was this package making an app unusable on
+    /// cellular: <see cref="ServerTransitionRunner"/> supersedes rather than queues, so every event
+    /// cancelled the rebind already in flight and the listener never finished coming back up.
+    /// </remarks>
     void OnConnectivityChanged(object? sender, EventArgs e)
     {
         if (!server.IsRunning)
             return;
 
+        // Dropped rather than queued. The settle already waiting will read the addresses after this
+        // event has landed too, so a second one would only ask the same question again.
+        if (this.settling is { IsCompleted: false })
+            return;
+
+        this.settling = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(options.ConnectivityChangeDebounce, this.settleStopped.Token).ConfigureAwait(false);
+                this.RebindIfTheAddressesMoved();
+            }
+            catch (OperationCanceledException)
+            {
+                // Disposed while the burst was settling.
+            }
+            catch (Exception ex)
+            {
+                // Nothing awaits this, so an exception escaping it is one reported nowhere.
+                logger.LogError(ex, "Failed to evaluate a connectivity change");
+            }
+        }, CancellationToken.None);
+    }
+
+    /// <summary>
+    /// The decision the connectivity event is only a trigger for: rebind if, and only if, the
+    /// device's addresses actually moved and something is bound to an address that can go stale.
+    /// </summary>
+    void RebindIfTheAddressesMoved()
+    {
+        // The settle outlives the event, so the server may have been stopped - by the user, by a
+        // backgrounding - while it was waiting.
+        if (!server.IsRunning)
+            return;
+
+        // The same signature the core's own NetworkChangeWatcher diffs, deliberately: two answers
+        // to "did the device move" that can disagree is worse than the InternalsVisibleTo that
+        // sharing this costs.
+        var current = LocalAddresses.Signature();
+        var previous = this.addressSignature;
+        this.addressSignature = current;
+
+        // Defensive: the server is running, so it raised Running and seeded this. If that is
+        // somehow not so, the safe direction is to record and wait rather than to rebind a listener
+        // on no evidence at all.
+        if (previous is null)
+            return;
+
+        if (current == previous)
+        {
+            logger.LogDebug(
+                "Connectivity changed to {Access} ({Types}) but the addresses did not; leaving the server alone",
+                connectivity.Access,
+                connectivity.ConnectionTypes
+            );
+            return;
+        }
+
+        if (!ConnectivityRebindDecision.AnyEndpointCanGoStale(server.Options.ResolveEndpoints()))
+        {
+            logger.LogDebug(
+                "Addresses changed to {Addresses} but every listener is on a wildcard or loopback address; no rebind needed",
+                current.Length == 0 ? "(none)" : current
+            );
+            return;
+        }
+
         // Restarted rather than left alone, because the listener is bound to an address the
         // device may no longer hold. A restart on a device that kept its address costs a
         // dropped keep-alive connection; not restarting on one that did not costs everything.
-        logger.LogInformation("Connectivity changed to {Access} ({Types}); rebinding", connectivity.Access, connectivity.ConnectionTypes);
+        logger.LogInformation(
+            "Connectivity changed to {Access} ({Types}) and the addresses are now {Addresses}; rebinding",
+            connectivity.Access,
+            connectivity.ConnectionTypes,
+            current.Length == 0 ? "(none)" : current
+        );
 
         // The single most likely way this package leaves a phone with a dead server, and the reason
         // the retry runner exists. RestartAsync unbinds first and then binds, so a bind refused on a
@@ -327,6 +436,12 @@ public partial class HttpServerLifecycleTask(
         }
 
         server.StateChanged -= this.OnServerStateChanged;
+
+        // Abandons a burst still settling. Without this a dispose during the debounce leaves a task
+        // that wakes up afterwards and rebinds a server the app has finished with.
+        this.settleStopped.Cancel();
+        this.settleStopped.Dispose();
+
         this.transitions.Dispose();
 
         GC.SuppressFinalize(this);

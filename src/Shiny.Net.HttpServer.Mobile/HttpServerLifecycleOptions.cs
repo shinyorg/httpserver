@@ -66,22 +66,51 @@ public sealed class HttpServerLifecycleOptions
     public bool AlwaysStartOnForeground { get; set; }
 
     /// <summary>
-    /// Restarts the server when the device's connectivity changes — Wi-Fi to cellular, one network
-    /// to another, a hotspot coming up.
+    /// Watches the device's connectivity and rebinds when a change actually invalidated the
+    /// listener — Wi-Fi to cellular, one network to another, a hotspot coming up.
     /// <para>
     /// On by default here, unlike the core option it complements. A phone's addresses change as a
     /// matter of course, and a listener bound to the address it had at breakfast is the single most
     /// common way an embedded server "stops working for no reason".
     /// </para>
     /// <para>
-    /// It stays on by default even though a rebind is the riskiest thing this package does — a
-    /// restart on a half-up network unbinds a listener that worked and may fail to bind the
-    /// replacement. What makes that acceptable is <see cref="RestartAttempts"/>: the rebind keeps
-    /// trying as the network settles, and the one outcome that is not on the table any more is a
-    /// server that quietly stays down.
+    /// The connectivity event is a trigger, not the decision. It is far noisier than its name
+    /// suggests: Android raises it from <c>OnCapabilitiesChanged</c>, which fires on bandwidth and
+    /// signal-strength updates, and Apple's <c>NWPathMonitor</c> snapshot is the same shape — so a
+    /// phone on a fluctuating cellular signal produces a continuous stream of them with nothing
+    /// about the network having changed. Acting on each one restarted the server until it was
+    /// unusable, so what happens now is:
+    /// </para>
+    /// <list type="number">
+    /// <item>the burst is coalesced — see <see cref="ConnectivityChangeDebounce"/>;</item>
+    /// <item>the machine's addresses are compared against the last set, and an unchanged set stops
+    /// here. This is the same <c>LocalAddresses</c> signature the core's own watcher diffs, so the
+    /// two paths cannot disagree about whether the device moved;</item>
+    /// <item>the endpoints are checked for one that a change could invalidate. A listener on
+    /// <see cref="System.Net.IPAddress.Any"/> is bound to every interface and already serves a new
+    /// address; a loopback listener has no network to lose. Only a bind to a specific address needs
+    /// anything done about it, and a server with none is left alone.</item>
+    /// </list>
+    /// <para>
+    /// What survives all three is the case the option exists for, and the rebind is still the
+    /// riskiest thing this package does — a restart on a half-up network unbinds a listener that
+    /// worked and may fail to bind the replacement. What makes that acceptable is
+    /// <see cref="RestartAttempts"/>: the rebind keeps trying as the network settles, and the one
+    /// outcome that is not on the table any more is a server that quietly stays down.
     /// </para>
     /// </summary>
     public bool RestartOnConnectivityChange { get; set; } = true;
+
+    /// <summary>
+    /// How long to let connectivity events settle before deciding whether they meant anything. Two
+    /// seconds by default, matching <c>HttpServerOptions.NetworkChangeDebounce</c>.
+    /// <para>
+    /// One real transition raises a burst of these — the old interface drops, the new one comes up,
+    /// an address is acquired, then a second one — and the addresses are worth reading once they
+    /// have stopped moving rather than once per event.
+    /// </para>
+    /// </summary>
+    public TimeSpan ConnectivityChangeDebounce { get; set; } = TimeSpan.FromSeconds(2);
 
     /// <summary>
     /// How many times a start or restart that this package drove is attempted before it is given

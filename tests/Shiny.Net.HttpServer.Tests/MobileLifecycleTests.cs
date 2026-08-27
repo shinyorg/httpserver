@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net;
 using System.Net.Sockets;
 using Microsoft.Extensions.Logging;
 using Shiny.Net.HttpServer.Mobile;
@@ -187,5 +188,84 @@ public class ServerTransitionRunnerTests
 
         Assert.Equal(1, attempts);
         Assert.Single(logger.At(LogLevel.Error));
+    }
+}
+
+
+/// <summary>
+/// The gate a connectivity change now has to get through before the server is restarted.
+/// <para>
+/// The event that drives it is not the "the network changed" it sounds like — Android raises it from
+/// <c>OnCapabilitiesChanged</c>, which fires on bandwidth and signal-strength updates, and Apple's
+/// <c>NWPathMonitor</c> snapshot is the same shape. Acting on each one restarted the server until
+/// the app was unusable on cellular. This is the half of the fix that compiles off a device: whether
+/// a rebind could achieve anything for the addresses the server is actually bound to.
+/// </para>
+/// </summary>
+public class ConnectivityRebindDecisionTests
+{
+    [Fact]
+    public void WildcardNeverGoesStale()
+    {
+        // Bound to every interface, so an address the device acquired a moment ago is already being
+        // served. Restarting drops live connections to accomplish nothing.
+        var endpoints = new[] { new HttpServerEndpoint(IPAddress.Any, 8080) };
+
+        Assert.False(ConnectivityRebindDecision.AnyEndpointCanGoStale(endpoints));
+    }
+
+    [Fact]
+    public void IPv6WildcardNeverGoesStale()
+    {
+        var endpoints = new[] { new HttpServerEndpoint(IPAddress.IPv6Any, 8080) };
+
+        Assert.False(ConnectivityRebindDecision.AnyEndpointCanGoStale(endpoints));
+    }
+
+    [Fact]
+    public void LoopbackNeverGoesStale()
+    {
+        // No network to lose. This is the case a file-sharing app sits in whenever the user has not
+        // switched local network sharing on, which is most of the time.
+        var endpoints = new[]
+        {
+            new HttpServerEndpoint(IPAddress.Loopback, 8080),
+            new HttpServerEndpoint(IPAddress.IPv6Loopback, 8081)
+        };
+
+        Assert.False(ConnectivityRebindDecision.AnyEndpointCanGoStale(endpoints));
+    }
+
+    [Fact]
+    public void ASpecificAddressGoesStale()
+    {
+        // The case the rebind exists for: the socket stays open on an address the device stops
+        // holding the moment it leaves that network, and nothing fails loudly.
+        var endpoints = new[] { new HttpServerEndpoint(IPAddress.Parse("192.168.1.40"), 8080) };
+
+        Assert.True(ConnectivityRebindDecision.AnyEndpointCanGoStale(endpoints));
+    }
+
+    [Fact]
+    public void OneSpecificAddressAmongWildcardsIsEnough()
+    {
+        // A multi-endpoint server rebinds if any single listener can go stale — the rebind is all or
+        // nothing, and leaving the stale one alone is the failure this is here to prevent.
+        var endpoints = new[]
+        {
+            new HttpServerEndpoint(IPAddress.Any, 8080),
+            new HttpServerEndpoint(IPAddress.Loopback, 8081),
+            new HttpServerEndpoint(IPAddress.Parse("10.0.0.5"), 8082)
+        };
+
+        Assert.True(ConnectivityRebindDecision.AnyEndpointCanGoStale(endpoints));
+    }
+
+    [Fact]
+    public void NoEndpointsNeedsNothing()
+    {
+        // A tunnel-only server never binds a listener, so there is nothing for a network change to
+        // invalidate.
+        Assert.False(ConnectivityRebindDecision.AnyEndpointCanGoStale([]));
     }
 }
