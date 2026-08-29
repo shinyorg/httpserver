@@ -46,6 +46,36 @@
     <EmbeddedResource Include="TestAssets/**" />
   </ItemGroup>
 
+  <!-- The same assets again, zipped, for ZipFileSource's embedded case - the shape a packaged app
+       actually ships when its web assets are a publish output rather than a handful of files.
+       Zipped by the build instead of committed: a binary checked in beside the folder it was made
+       from is one that drifts from it silently. -->
+  <ItemGroup>
+    <TestAssetFile Include="TestAssets/**" />
+  </ItemGroup>
+
+  <!-- $(IntermediateOutputPath) is written by the SDK's targets, which are imported after this file
+       is read - so the path is built inside the targets below, where it is set, rather than in a
+       property group up here where it would still be empty and drop the archive in the project
+       root. -->
+  <Target Name="ZipTestAssets"
+          BeforeTargets="PrepareForBuild"
+          Inputs="@(TestAssetFile)"
+          Outputs="$(IntermediateOutputPath)Assets.zip">
+    <ZipDirectory SourceDirectory="$(MSBuildThisFileDirectory)TestAssets"
+                  DestinationFile="$(IntermediateOutputPath)Assets.zip"
+                  Overwrite="true" />
+  </Target>
+
+  <!-- A logical name outside the TestAssets prefix on purpose, so EmbeddedFileSource pointed at
+       that namespace does not also find the archive sitting next to the loose copies. -->
+  <Target Name="EmbedTestAssetsZip" BeforeTargets="PrepareForBuild" DependsOnTargets="ZipTestAssets">
+    <ItemGroup>
+      <EmbeddedResource Include="$(IntermediateOutputPath)Assets.zip"
+                        LogicalName="Shiny.Net.HttpServer.Tests.Assets.zip" />
+    </ItemGroup>
+  </Target>
+
   <ItemGroup>
     <ProjectReference Include="../../src/Shiny.Net.HttpServer/Shiny.Net.HttpServer.csproj" />
     <ProjectReference Include="../../src/Shiny.Net.HttpServer.Grpc/Shiny.Net.HttpServer.Grpc.csproj" />

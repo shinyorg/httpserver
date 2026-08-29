@@ -678,3 +678,302 @@ public class BlazorWebAssemblyTests
         Assert.Equal("BROTLI", await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
     }
 }
+
+/// <summary>
+/// A temporary zip archive, torn down with the test.
+/// </summary>
+sealed class ZipContent : IDisposable
+{
+    readonly List<(string Path, string Content)> pending = [];
+
+    public ZipContent()
+        => this.Path = System.IO.Path.Combine(
+            System.IO.Path.GetTempPath(),
+            "shiny-zip-" + Guid.NewGuid().ToString("n")[..8] + ".zip"
+        );
+
+    public string Path { get; }
+
+    public ZipContent With(string entryPath, string content)
+    {
+        this.pending.Add((entryPath, content));
+        return this;
+    }
+
+    /// <summary>Writes the archive and hands back its path.</summary>
+    public string Build()
+    {
+        using var file = File.Create(this.Path);
+        using var archive = new System.IO.Compression.ZipArchive(file, System.IO.Compression.ZipArchiveMode.Create);
+
+        foreach (var (path, content) in this.pending)
+        {
+            // No BOM. Encoding.UTF8 emits one, which would put three bytes in front of every
+            // entry and quietly shift the offsets a range test is asserting on.
+            using var writer = new StreamWriter(archive.CreateEntry(path).Open(), new UTF8Encoding(false));
+            writer.Write(content);
+        }
+
+        return this.Path;
+    }
+
+    public void Dispose()
+    {
+        try
+        {
+            File.Delete(this.Path);
+        }
+        catch (IOException)
+        {
+        }
+    }
+}
+
+/// <summary>
+/// Serving out of a zip, which is what a packaged app ships when its assets are a publish output:
+/// one resource in the assembly instead of a few thousand, and the paths survive intact.
+/// </summary>
+public class ZipFileSourceTests
+{
+    static readonly System.Reflection.Assembly TestAssembly = typeof(ZipFileSourceTests).Assembly;
+
+    const string EmbeddedArchive = "Shiny.Net.HttpServer.Tests.Assets.zip";
+
+    [Fact]
+    public async Task Serves_a_file_from_a_zip_on_disk()
+    {
+        using var zip = new ZipContent()
+            .With("app.js", "console.log(1);")
+            .With("css/site.css", "body { color: rebeccapurple; }");
+
+        await using var server = await TestServer.StartAsync(app => app.UseStaticFiles(new ZipFileSource(zip.Build())));
+
+        var response = await server.Client.GetAsync("/app.js", TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("text/javascript", response.Content.Headers.ContentType?.MediaType);
+        Assert.Equal("console.log(1);", await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+
+        // A path inside the archive is a path, not a mangled resource name - which is the whole
+        // reason a zip beats loose embedded resources for a publish output.
+        Assert.Contains(
+            "rebeccapurple",
+            await server.Client.GetStringAsync("/css/site.css", TestContext.Current.CancellationToken),
+            StringComparison.Ordinal
+        );
+    }
+
+    [Fact]
+    public async Task Serves_a_file_from_a_zip_embedded_in_the_assembly()
+    {
+        await using var server = await TestServer.StartAsync(
+            app => app.UseStaticFiles(new ZipFileSource(TestAssembly, EmbeddedArchive))
+        );
+
+        var response = await server.Client.GetAsync("/embedded.html", TestContext.Current.CancellationToken);
+        var body = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("text/html", response.Content.Headers.ContentType?.MediaType);
+        Assert.Contains("from the assembly", body, StringComparison.Ordinal);
+
+        Assert.Contains(
+            "rebeccapurple",
+            await server.Client.GetStringAsync("/css/site.css", TestContext.Current.CancellationToken),
+            StringComparison.Ordinal
+        );
+    }
+
+    [Fact]
+    public void Reports_a_useful_error_for_a_missing_resource()
+    {
+        var error = Assert.Throws<FileNotFoundException>(() => new ZipFileSource(TestAssembly, "Nope.zip"));
+
+        // The available names are in the message, because the one thing anyone gets wrong here is
+        // the resource name and it is not discoverable from the project file.
+        Assert.Contains(EmbeddedArchive, error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Reports_a_missing_archive_by_path()
+        => Assert.Throws<FileNotFoundException>(() => new ZipFileSource("./no-such-archive.zip"));
+
+    /// <summary>
+    /// An archive zipped with its parent folder, which is what most zip tools produce.
+    /// </summary>
+    [Fact]
+    public async Task Serves_from_a_directory_inside_the_archive()
+    {
+        using var zip = new ZipContent()
+            .With("wwwroot/index.html", "<h1>inside</h1>")
+            .With("readme.txt", "not served");
+
+        await using var server = await TestServer.StartAsync(
+            app => app.UseStaticFiles(new ZipFileSource(zip.Build(), "wwwroot"))
+        );
+
+        Assert.Contains(
+            "inside",
+            await server.Client.GetStringAsync("/index.html", TestContext.Current.CancellationToken),
+            StringComparison.Ordinal
+        );
+
+        var outside = await server.Client.GetAsync("/readme.txt", TestContext.Current.CancellationToken);
+        Assert.Equal(HttpStatusCode.NotFound, outside.StatusCode);
+    }
+
+    /// <summary>
+    /// A zipped Blazor publish carries the precompressed variants, and they are the reason the
+    /// archive is worth serving from at all rather than unpacking it.
+    /// </summary>
+    [Fact]
+    public async Task Prefers_a_precompressed_sidecar_inside_the_archive()
+    {
+        using var zip = new ZipContent()
+            .With("index.html", "<div id=app></div>")
+            .With("_framework/app.wasm", "the original bytes")
+            .With("_framework/app.wasm.br", "BROTLI")
+            .With("_framework/app.wasm.gz", "GZIP");
+
+        await using var server = await TestServer.StartAsync(
+            app => app.UseBlazorWebAssembly(new ZipFileSource(zip.Build()) { PrecompressedEncodings = ["br", "gzip"] })
+        );
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/_framework/app.wasm");
+        request.Headers.TryAddWithoutValidation("Accept-Encoding", "gzip, br");
+
+        var response = await server.Client.SendAsync(request, TestContext.Current.CancellationToken);
+
+        Assert.Equal("br", response.Content.Headers.ContentEncoding.Single());
+        Assert.Equal("BROTLI", await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        Assert.Equal("application/wasm", response.Content.Headers.ContentType?.MediaType);
+    }
+
+    /// <summary>
+    /// The single-page fallback still applies, so a deep link into a zipped Blazor app reloads.
+    /// </summary>
+    [Fact]
+    public async Task Falls_back_to_the_entry_document()
+    {
+        using var zip = new ZipContent().With("index.html", "<div id=app></div>");
+
+        await using var server = await TestServer.StartAsync(
+            app => app.UseBlazorWebAssembly(new ZipFileSource(zip.Build()))
+        );
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/orders/42");
+        request.Headers.TryAddWithoutValidation("Accept", "text/html");
+
+        var response = await server.Client.SendAsync(request, TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains(
+            "id=app",
+            await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken),
+            StringComparison.Ordinal
+        );
+    }
+
+    /// <summary>
+    /// The ETag comes from the archive's own checksum, so identical content tags identically no
+    /// matter when either archive was written.
+    /// </summary>
+    [Fact]
+    public void Tags_content_rather_than_timestamps()
+    {
+        using var first = new ZipContent().With("a.txt", "same");
+        using var second = new ZipContent().With("a.txt", "same");
+        using var different = new ZipContent().With("a.txt", "other");
+
+        var one = new ZipFileSource(first.Build());
+        var two = new ZipFileSource(second.Build());
+        var three = new ZipFileSource(different.Build());
+
+        Assert.True(one.TryGetFile("a.txt", out var a));
+        Assert.True(two.TryGetFile("a.txt", out var b));
+        Assert.True(three.TryGetFile("a.txt", out var c));
+
+        Assert.Equal(a.ETag, b.ETag);
+        Assert.NotEqual(a.ETag, c.ETag);
+    }
+
+    [Fact]
+    public void Refuses_traversal_out_of_the_archive()
+    {
+        using var zip = new ZipContent().With("app.js", "console.log(1);");
+        var source = new ZipFileSource(zip.Build());
+
+        Assert.False(source.TryGetFile("../secrets.txt", out _));
+        Assert.False(source.TryGetFile("nope.js", out _));
+        Assert.True(source.TryGetFile("app.js", out _));
+    }
+
+    /// <summary>
+    /// A deflated entry cannot seek, so a range over one is served by reading up to the start and
+    /// discarding. Worth pinning: it is the one path where a zip behaves unlike a file on disk.
+    /// </summary>
+    [Fact]
+    public async Task Serves_a_range_out_of_a_compressed_entry()
+    {
+        using var zip = new ZipContent().With("data.txt", "0123456789");
+
+        await using var server = await TestServer.StartAsync(app => app.UseStaticFiles(new ZipFileSource(zip.Build())));
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/data.txt");
+        request.Headers.Range = new RangeHeaderValue(4, 6);
+
+        var response = await server.Client.SendAsync(request, TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.PartialContent, response.StatusCode);
+        Assert.Equal("456", await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+    }
+
+    /// <summary>
+    /// One source, many requests: each response opens its own archive, so nothing is shared but the
+    /// index. Reading the same entry from several requests at once is the case that would fail if
+    /// an archive were held open and reused.
+    /// </summary>
+    [Fact]
+    public async Task Serves_the_same_entry_to_concurrent_requests()
+    {
+        using var zip = new ZipContent().With("data.txt", new string('x', 64 * 1024));
+
+        await using var server = await TestServer.StartAsync(app => app.UseStaticFiles(new ZipFileSource(zip.Build())));
+
+        var bodies = await Task.WhenAll(
+            Enumerable
+                .Range(0, 8)
+                .Select(_ => server.Client.GetStringAsync("/data.txt", TestContext.Current.CancellationToken))
+        );
+
+        Assert.All(bodies, body => Assert.Equal(64 * 1024, body.Length));
+    }
+
+    /// <summary>
+    /// A directory in front of an archive is the development arrangement, and the sidecars inside
+    /// the archive have to survive being behind it.
+    /// </summary>
+    [Fact]
+    public async Task Offers_sidecars_through_a_composite()
+    {
+        using var root = new ContentRoot().With("index.html", "<div id=app></div>");
+        using var zip = new ZipContent()
+            .With("_framework/app.wasm", "the original bytes")
+            .With("_framework/app.wasm.br", "BROTLI");
+
+        await using var server = await TestServer.StartAsync(app => app.UseBlazorWebAssembly(
+            new CompositeFileSource(
+                new PhysicalFileSource(root.Path),
+                new ZipFileSource(zip.Build()) { PrecompressedEncodings = ["br", "gzip"] }
+            )
+        ));
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/_framework/app.wasm");
+        request.Headers.TryAddWithoutValidation("Accept-Encoding", "br");
+
+        var response = await server.Client.SendAsync(request, TestContext.Current.CancellationToken);
+
+        Assert.Equal("br", response.Content.Headers.ContentEncoding.Single());
+        Assert.Equal("BROTLI", await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+    }
+}

@@ -43,13 +43,33 @@ public interface IStaticFileSource
 }
 
 /// <summary>
+/// A source that can serve a precompressed sidecar in place of the file that was asked for -
+/// <c>app.wasm.br</c> for <c>app.wasm</c>.
+/// <para>
+/// Separate from <see cref="IStaticFileSource"/> because not every source has the notion: sidecars
+/// are a property of how content was published, and a source over content that was not published
+/// that way has nothing to offer. The middleware asks for this and falls back to the plain lookup
+/// when a source does not implement it.
+/// </para>
+/// </summary>
+public interface IPrecompressedFileSource : IStaticFileSource
+{
+    /// <summary>
+    /// Resolves a path, preferring a sidecar whose coding appears in
+    /// <paramref name="acceptedEncodings"/>. Returns the original file when there is no usable one,
+    /// so a caller never has to try both.
+    /// </summary>
+    bool TryGetFile(string relativePath, IReadOnlyList<string>? acceptedEncodings, out StaticFile file);
+}
+
+/// <summary>
 /// Serves files from a directory on disk.
 /// <para>
 /// Every resolved path is checked to be inside the root after normalization *and* after following
 /// links, because a symlink is the one way a path that looks contained can leave.
 /// </para>
 /// </summary>
-public sealed class PhysicalFileSource : IStaticFileSource
+public sealed class PhysicalFileSource : IPrecompressedFileSource
 {
     readonly string root;
 
@@ -293,15 +313,27 @@ public sealed class EmbeddedFileSource : IStaticFileSource
 /// picked up without a rebuild, embedded resources behind it so the packaged app still works.
 /// </para>
 /// </summary>
-public sealed class CompositeFileSource(params IStaticFileSource[] sources) : IStaticFileSource
+public sealed class CompositeFileSource(params IStaticFileSource[] sources) : IPrecompressedFileSource
 {
     readonly IStaticFileSource[] sources = sources ?? throw new ArgumentNullException(nameof(sources));
 
     public bool TryGetFile(string relativePath, out StaticFile file)
+        => this.TryGetFile(relativePath, acceptedEncodings: null, out file);
+
+    /// <summary>
+    /// Asks each source in turn, letting the ones that understand sidecars offer theirs. Without
+    /// this the composite would flatten every source it holds down to the plain lookup, and putting
+    /// a directory in front of a published archive would quietly cost the precompressed assets.
+    /// </summary>
+    public bool TryGetFile(string relativePath, IReadOnlyList<string>? acceptedEncodings, out StaticFile file)
     {
         foreach (var source in this.sources)
         {
-            if (source.TryGetFile(relativePath, out file))
+            var found = acceptedEncodings is { Count: > 0 } && source is IPrecompressedFileSource precompressed
+                ? precompressed.TryGetFile(relativePath, acceptedEncodings, out file)
+                : source.TryGetFile(relativePath, out file);
+
+            if (found)
                 return true;
         }
 

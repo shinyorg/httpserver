@@ -55,6 +55,9 @@ triggers:
 - UseStaticFiles
 - UseEmbeddedFiles
 - UseBlazorWebAssembly
+- ZipFileSource
+- serve a zip
+- serve static files from a zip
 - MapFileBrowser
 - FileDownloadResult
 - ReadMultipartAsync
@@ -741,6 +744,28 @@ app.UseBlazorWebAssembly("./wwwroot");                            // SPA + preco
 app.MapFileBrowser("/files", o => o.RootPath = FileSystem.AppDataDirectory).RequireAuthorization();
 ```
 
+**Four sources**, all `IStaticFileSource` and all usable with any of the above:
+`PhysicalFileSource` (a directory), `EmbeddedFileSource` (loose embedded resources),
+`ZipFileSource` (a zip on disk or embedded in the assembly), `CompositeFileSource` (tried in order —
+a directory in front of the packaged copy is the development arrangement).
+
+```csharp
+// A packaged Blazor publish, zipped into the app - one embedded resource instead of thousands,
+// and the paths survive instead of being flattened into the resource name.
+app.UseBlazorWebAssembly(
+    new ZipFileSource(typeof(App).Assembly, "MyApp.wwwroot.zip")
+    {
+        PrecompressedEncodings = ["br", "gzip"]   // a publish zips its .br/.gz sidecars too
+    }
+);
+
+new ZipFileSource("./content/site.zip");            // on disk
+new ZipFileSource("./site.zip", "wwwroot");         // zipped with its parent folder
+```
+
+- Prefer `ZipFileSource` over `EmbeddedFileSource` for a **publish output**: `EmbeddedFileSource` has
+  to un-mangle dotted resource names, which is ambiguous for `site.min.css`, and thousands of loose
+  resources inflate the assembly. A zip keeps real paths and stays compressed.
 - Unknown file extensions are **not served** by default. Add `ContentTypeOverrides[".x"]` rather than
   turning on `ServeUnknownFileTypes`.
 - `MapFileBrowser("/", …)` mounts the browser on the whole site — the shape a "serve this directory"

@@ -140,8 +140,8 @@ public sealed class StaticFileMiddleware(StaticFileOptions options) : IHttpMiddl
     {
         contentType = string.Empty;
 
-        var found = accepted is { Count: > 0 } && this.options.Source is PhysicalFileSource physical
-            ? physical.TryGetFile(path, accepted, out file)
+        var found = accepted is { Count: > 0 } && this.options.Source is IPrecompressedFileSource precompressed
+            ? precompressed.TryGetFile(path, accepted, out file)
             : this.options.Source.TryGetFile(path, out file);
 
         if (!found)
