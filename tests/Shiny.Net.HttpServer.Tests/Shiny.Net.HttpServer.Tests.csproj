@@ -62,6 +62,9 @@
           BeforeTargets="PrepareForBuild"
           Inputs="@(TestAssetFile)"
           Outputs="$(IntermediateOutputPath)Assets.zip">
+    <!-- PrepareForBuild is what creates obj/$(Configuration)/$(TargetFramework), and this runs
+         before it - so on a clean tree the directory the archive goes in does not exist yet. -->
+    <MakeDir Directories="$(IntermediateOutputPath)" />
     <ZipDirectory SourceDirectory="$(MSBuildThisFileDirectory)TestAssets"
                   DestinationFile="$(IntermediateOutputPath)Assets.zip"
                   Overwrite="true" />
