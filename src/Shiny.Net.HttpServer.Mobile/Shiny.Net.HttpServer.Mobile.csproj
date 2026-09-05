@@ -7,7 +7,7 @@
         <TargetFrameworks>net10.0;net10.0-android;net10.0-ios;net10.0-maccatalyst</TargetFrameworks>
 
         <RootNamespace>Shiny.Net.HttpServer.Mobile</RootNamespace>
-        <Description>Mobile lifecycle for Shiny.Net.HttpServer, built on Shiny.Core — stops the server when the app is backgrounded and starts it again on resume, keeps it alive on Android through a foreground service, rebinds when the device changes network, and reports the manifest entries that otherwise fail silently. For iOS and Android, with or without MAUI.</Description>
+        <Description>Mobile lifecycle for Shiny.Net.HttpServer, built on Shiny.Core — stops the server when the app is backgrounded and starts it again on resume, keeps it alive on Android through a foreground service, rebinds when the device changes network, and reports the manifest or bundle entries that otherwise fail silently. For iOS and Android, with or without MAUI.</Description>
 
         <SupportedOSPlatformVersion Condition="$(TargetFramework.Contains('-android'))">21.0</SupportedOSPlatformVersion>
         <SupportedOSPlatformVersion Condition="$(TargetFramework.Contains('-ios'))">15.0</SupportedOSPlatformVersion>

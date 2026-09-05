@@ -48,7 +48,7 @@
              versioned and released independently of this one. 5.4.0 is the floor because it is the
              first release carrying IMdnsManager's publish path and ShinyAndroidForegroundService in
              the shapes these packages build on. -->
-        <PackageVersion Include="Shiny.Core" Version="5.4.0"/>
+        <PackageVersion Include="Shiny.Core" Version="5.6.0-beta-0074"/>
         <PackageVersion Include="Shiny.Net.Discovery" Version="5.4.0"/>
 
         <PackageVersion Include="Shiny.DocumentDb" Version="13.2.1"/>

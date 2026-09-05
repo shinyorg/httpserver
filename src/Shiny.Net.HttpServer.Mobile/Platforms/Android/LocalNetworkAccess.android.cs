@@ -5,7 +5,7 @@ namespace Shiny.Net.HttpServer.Mobile;
 
 public static partial class LocalNetworkAccess
 {
-    static partial void CheckPlatform(List<string> problems, List<string> notes)
+    private static partial void CheckPlatform(List<string> problems, List<string> notes)
     {
         var context = Application.Context;
         var declared = DeclaredPermissions(context);

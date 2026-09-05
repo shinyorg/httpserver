@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>Shiny HTTP Server</string>
+	<key>CFBundleIdentifier</key>
+	<string>net.shinylib.httpserver.sample.tvos</string>
+	<key>CFBundleVersion</key>
+	<string>1.0</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<key>UIDeviceFamily</key>
+	<array>
+		<integer>3</integer>
+	</array>
+	<key>UILaunchStoryboardName</key>
+	<string></string>
+
+	<!-- The entry this whole sample exists to demonstrate. tvOS 16+ gates the local network the same
+	     way iOS 14+ does, and it gates *serving* on it as much as connecting out. Without this key
+	     the listener binds, reports itself as running, and no other device on the network can reach
+	     it - with nothing in the log to say why. It is the failure LocalNetworkAccess.Check() was
+	     written to catch, and on a TV it is worse than on a phone, because there is no browser on
+	     the device to test with. -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Serves this app's status page to other devices on your network.</string>
+</dict>
+</plist>

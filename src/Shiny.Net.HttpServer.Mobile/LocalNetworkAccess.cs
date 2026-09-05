@@ -49,5 +49,30 @@ public static partial class LocalNetworkAccess
         return new LocalNetworkReport(problems.Count == 0, problems, notes);
     }
 
-    static partial void CheckPlatform(List<string> problems, List<string> notes);
+    /// <summary>
+    /// Implemented once per target framework, in <c>Platforms/</c> for the ones that have a bundle or
+    /// a manifest to read and immediately below for the ones that do not.
+    /// </summary>
+    /// <remarks>
+    /// The <c>private</c> is load-bearing and is the reason this comment exists. Without an
+    /// accessibility modifier this is an ordinary partial method, and an ordinary partial method with
+    /// no implementation compiles away to nothing without so much as a warning — which is precisely
+    /// how every Apple target shipped for as long as it did reporting "looks configured" whatever the
+    /// bundle actually said, while the documentation told people to trust the answer. Spelling the
+    /// modifier out makes this an extended partial method, and an extended partial method without an
+    /// implementation is a compile error (CS8795). A target framework added later cannot quietly
+    /// inherit the silent no-op; it either gets an implementation or it does not build.
+    /// </remarks>
+    private static partial void CheckPlatform(List<string> problems, List<string> notes);
+
+#if !PLATFORM
+    /// <summary>
+    /// Nothing to check. A process on a desktop or a server binds a port because it asked to,
+    /// with no bundle and no manifest standing between the two, so there is no configuration here that
+    /// can be missing and an empty report is the honest one.
+    /// </summary>
+    private static partial void CheckPlatform(List<string> problems, List<string> notes)
+    {
+    }
+#endif
 }

@@ -269,3 +269,105 @@ public class ConnectivityRebindDecisionTests
         Assert.False(ConnectivityRebindDecision.AnyEndpointCanGoStale([]));
     }
 }
+
+/// <summary>
+/// What the Apple bundle check makes of what it read.
+/// <para>
+/// These exist because of how the bug they cover presented. <c>CheckPlatform</c> is a
+/// <c>static partial void</c>, and an unimplemented one compiles away to nothing without a
+/// diagnostic — so for as long as only Android implemented it, <c>LocalNetworkAccess.Check()</c>
+/// returned "looks configured" on every Apple platform no matter what the bundle said. A checker
+/// that always passes is worse than no checker, because the docs told people to trust it.
+/// </para>
+/// <para>
+/// The reading half still needs a device. The deciding half is
+/// <see cref="AppleLocalNetworkRequirements"/>, which lives outside the <c>PLATFORM</c> guard for
+/// exactly that reason, and a silent no-op cannot hide from a test that asserts on its output.
+/// </para>
+/// </summary>
+public class AppleLocalNetworkRequirementsTests
+{
+    static (List<string> Problems, List<string> Notes) Evaluate(
+        string? usageDescription,
+        bool bonjour = true,
+        bool macCatalyst = false
+    )
+    {
+        List<string> problems = [], notes = [];
+        AppleLocalNetworkRequirements.Evaluate(usageDescription, bonjour, macCatalyst, problems, notes);
+
+        return (problems, notes);
+    }
+
+    [Fact]
+    public void MissingUsageDescriptionIsAProblem()
+    {
+        // The failure the whole class exists for: the listener binds, the other device cannot reach
+        // it, and nothing appears in the log.
+        var (problems, _) = Evaluate(null);
+
+        Assert.Contains(problems, p => p.Contains("NSLocalNetworkUsageDescription"));
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void AnEmptyUsageDescriptionIsMissing(string declared)
+    {
+        // Present but blank is the bundle this check exists to catch, not a bundle that passes: the
+        // string is the sentence shown in the permission prompt, and an empty one is a review
+        // rejection as well as being useless to the user.
+        var (problems, _) = Evaluate(declared);
+
+        Assert.Contains(problems, p => p.Contains("NSLocalNetworkUsageDescription"));
+    }
+
+    [Fact]
+    public void ADeclaredUsageDescriptionIsNotAProblem()
+    {
+        var (problems, _) = Evaluate("This app serves a page to other devices on your network.");
+
+        Assert.Empty(problems);
+    }
+
+    [Fact]
+    public void MissingBonjourServicesIsANoteNotAProblem()
+    {
+        // Serving works without it. Only mDNS browsing does not, so it cannot be allowed to report
+        // a server that will work perfectly well as unable to serve.
+        var (problems, notes) = Evaluate("Serves a page.", bonjour: false);
+
+        Assert.Empty(problems);
+        Assert.Contains(notes, n => n.Contains("NSBonjourServices"));
+    }
+
+    [Fact]
+    public void MacCatalystIsToldTheEntitlementCannotBeChecked()
+    {
+        // Said out loud rather than guessed at. The entitlement is not in Info.plist, so a silent
+        // pass here would be the same false reassurance the missing partial gave.
+        var (problems, notes) = Evaluate("Serves a page.", macCatalyst: true);
+
+        Assert.Empty(problems);
+        Assert.Contains(notes, n => n.Contains("com.apple.security.network.server"));
+    }
+
+    [Fact]
+    public void TheEntitlementNoteIsMacCatalystOnly()
+    {
+        // iOS and tvOS are not sandboxed this way, and a note about an entitlement they do not have
+        // sends people to edit a file that will not change anything.
+        var (_, notes) = Evaluate("Serves a page.");
+
+        Assert.DoesNotContain(notes, n => n.Contains("com.apple.security.network.server"));
+    }
+
+    [Fact]
+    public void AFullyConfiguredBundleReportsNothing()
+    {
+        var (problems, notes) = Evaluate("Serves a page.");
+
+        Assert.Empty(problems);
+        Assert.Empty(notes);
+    }
+}

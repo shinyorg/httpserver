@@ -1,12 +1,15 @@
 ---
 name: shiny-httpserver
-description: Generate code using Shiny.Net.HttpServer — a dependency-light, AOT/trim-clean HTTP/1.1, HTTP/2 & HTTP/3 server that runs anywhere .NET runs, including .NET MAUI, where ASP.NET Core cannot. Covers routing, middleware, source-generated typed endpoints, results and JSON, content negotiation with XML/MessagePack/protobuf formatters in both directions, static files and Blazor WASM, uploads/downloads, WebSockets, SSE, sessions, OpenAPI, authentication (Basic/API key/cookie/JWT), authorization, CORS, rate limiting, IP filtering, TLS and self-signed certificates, tunnelling (relay, SSH, quick tunnels, Azure Relay, and supervised cloudflared/ngrok/tailscale agents), serving a directory over WebDAV, serving gRPC and gRPC-Web, hosting an MCP server with RFC 9728 OAuth discovery, health checks, OpenTelemetry-shaped metrics and tracing, W3C access logs, request timeouts, output caching and conditional requests, request decompression, antiforgery and browser security headers, reverse-proxy routes, mDNS/Bonjour advertising and discovery, MAUI lifecycle (background/foreground, Android foreground service, network rebinding), and an in-memory test harness.
+description: Generate code using Shiny.Net.HttpServer — a dependency-light, AOT/trim-clean HTTP/1.1, HTTP/2 & HTTP/3 server that runs anywhere .NET runs, including .NET MAUI and native tvOS, where ASP.NET Core cannot. Covers routing, middleware, source-generated typed endpoints, results and JSON, content negotiation with XML/MessagePack/protobuf formatters in both directions, static files and Blazor WASM, uploads/downloads, WebSockets, SSE, sessions, OpenAPI, authentication (Basic/API key/cookie/JWT), authorization, CORS, rate limiting, IP filtering, TLS and self-signed certificates, tunnelling (relay, SSH, quick tunnels, Azure Relay, and supervised cloudflared/ngrok/tailscale agents), serving a directory over WebDAV, serving gRPC and gRPC-Web, hosting an MCP server with RFC 9728 OAuth discovery, health checks, OpenTelemetry-shaped metrics and tracing, W3C access logs, request timeouts, output caching and conditional requests, request decompression, antiforgery and browser security headers, reverse-proxy routes, mDNS/Bonjour advertising and discovery, MAUI lifecycle (background/foreground, Android foreground service, network rebinding), and an in-memory test harness.
 auto_invoke: true
 triggers:
 - Shiny.Net.HttpServer
 - HttpServer
 - embedded http server
 - http server in MAUI
+- http server on tvOS
+- tvos
+- Apple TV
 - web server on device
 - HttpServerOptions
 - ShinyHttpServerBuilder
@@ -301,7 +304,7 @@ dotnet add package Shiny.Net.HttpServer.DocumentDb       # Shiny.DocumentDb type
 dotnet add package Shiny.Net.HttpServer.WebDav           # a directory as a WebDAV mount (RFC 4918)
 dotnet add package Shiny.Net.HttpServer.Grpc             # gRPC + gRPC-Web services
 dotnet add package Shiny.Net.HttpServer.Discovery        # mDNS/Bonjour advertise + browse
-dotnet add package Shiny.Net.HttpServer.Mobile           # mobile lifecycle (multi-targets android/ios/maccatalyst)
+dotnet add package Shiny.Net.HttpServer.Mobile           # mobile lifecycle (multi-targets android/ios/maccatalyst; not tvOS)
 dotnet add package Shiny.Net.HttpServer.Testing          # in-memory HttpClient for tests
 dotnet add package Shiny.Net.HttpServer.Tunnels          # cloudflared / ngrok / tailscale agents (desktop + CLI only)
 
@@ -1255,6 +1258,33 @@ app.MapDocuments<Order>("/orders", o =>
 - `PATCH` is RFC 7396: an explicit `null` **removes** the member.
 - Mapping `DocumentEndpoints.Stream` on a provider without change monitoring is a startup error.
 
+## tvOS
+
+tvOS is **not** MAUI — MAUI does not target the platform. A tvOS app is a native app on
+`net10.0-tvos` with a `UIApplicationDelegate`, and it references `Shiny.Net.HttpServer` the way any
+other project does; the core is plain `net10.0` and needs nothing special.
+
+Rules that matter when generating a tvOS app:
+
+- **`NSLocalNetworkUsageDescription` in `Info.plist` is mandatory.** tvOS 16+ gates serving on the
+  local network exactly as iOS 14+ does. Without it the listener binds, reports `Running`, and
+  nothing can reach it — and a TV has no browser to test with, so nothing reveals the cause.
+- **Bind `IPAddress.Any`, not loopback.** Nothing on the device itself will ever consume the server.
+- **Do not use `Shiny.Net.HttpServer.Mobile`** — it does not target tvOS yet. Start the server from
+  `WillEnterForeground` / `OnActivated` and stop it in `DidEnterBackground`. tvOS suspends a
+  backgrounded app exactly as iOS does, so there is no keep-serving option to offer.
+- **Do not reference `Microsoft.Extensions.Logging.Console`.** It P/Invokes `GetStdHandle` and
+  `GetConsoleMode`, which fails the *native link* on tvOS — the C# compiles clean and clang then
+  stops with "Undefined symbols for architecture arm64". The server resolves `ILoggerFactory`
+  optionally, so registering no logging provider at all is supported.
+- **Do not use the cloudflared / ngrok / Tailscale agents.** tvOS forbids process creation; they
+  throw. Use the SSH or Azure Relay providers if a tunnel is needed.
+- **No durable storage.** Read-only bundle plus a purgeable Caches directory — no Documents. Serve
+  static files from the bundle or a `ZipFileSource`, and do not put a DocumentDb file anywhere you
+  need to survive a relaunch.
+- **Full AOT, no JIT.** Prefer generated typed endpoints and a `JsonSerializerContext`; nothing can
+  fall back to reflection.
+
 ## MAUI specifics
 
 ### The manifest entries, which fail silently when missing
@@ -1265,8 +1295,12 @@ app.MapDocuments<Order>("/orders", o =>
 - Android: `android.permission.INTERNET`; plus `FOREGROUND_SERVICE`,
   `FOREGROUND_SERVICE_DATA_SYNC` and (API 33+) `POST_NOTIFICATIONS` for background serving.
 
-`LocalNetworkAccess.Check()` (in `Shiny.Net.HttpServer.Mobile`) reads the bundle and reports which are
-missing, because none of these produce an error you could diagnose from.
+`LocalNetworkAccess.Check()` (in `Shiny.Net.HttpServer.Mobile`) reads the bundle or manifest and
+reports which are missing, because none of these produce an error you could diagnose from. Missing
+entries that stop the server being reachable come back in `Problems` (`CanServe` is then false);
+things that only matter for discovery come back in `Notes`. The one it cannot check is the Mac
+Catalyst entitlement — that is not in `Info.plist` and is not readable from inside the process, so on
+Catalyst it is always reported as a note to go and verify by hand.
 
 ### Lifecycle — the server has to follow the app and the network
 

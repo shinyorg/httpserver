@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <!-- samples/Directory.Build.props sets a single net10.0 TargetFramework for the console
+             samples. This one is an app bundle for a single Apple platform, so that is replaced
+             rather than added to. -->
+        <TargetFramework>net10.0-tvos</TargetFramework>
+        <SupportedOSPlatformVersion>17.0</SupportedOSPlatformVersion>
+
+        <OutputType>Exe</OutputType>
+        <RootNamespace>Sample.TvOS</RootNamespace>
+        <Nullable>enable</Nullable>
+        <ImplicitUsings>enable</ImplicitUsings>
+
+        <ApplicationId>net.shinylib.httpserver.sample.tvos</ApplicationId>
+        <ApplicationTitle>Shiny HTTP Server</ApplicationTitle>
+
+        <!-- The console samples are the AOT proof and publish with PublishAot. A tvOS app does not:
+             the platform is AOT already - Mono's full AOT, no JIT anywhere - and the switch belongs
+             to ILCompiler, which does not build Apple app bundles. The guarantee this sample makes
+             is the same one, arrived at by the platform rather than by a property. -->
+        <PublishAot>false</PublishAot>
+    </PropertyGroup>
+
+    <!-- Microsoft.Extensions.Logging.Console is deliberately absent, and the reason is worth
+         recording because it fails late and loudly: it P/Invokes GetStdHandle and GetConsoleMode,
+         and on tvOS that is not a runtime problem but a *native link* failure - "Undefined symbols
+         for architecture arm64" out of clang, long after the C# has compiled clean. A TV app has no
+         console to write to in any case. No logging provider is registered at all here: the server
+         resolves ILoggerFactory optionally, so leaving it out is supported rather than a gap. -->
+    <ItemGroup>
+        <ProjectReference Include="../../src/Shiny.Net.HttpServer/Shiny.Net.HttpServer.csproj"/>
+    </ItemGroup>
+
+</Project>

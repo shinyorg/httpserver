@@ -20,6 +20,7 @@
         <Project Path="samples/Sample.Relay/Sample.Relay.csproj" />
         <Project Path="samples/Sample.Maui/Sample.Maui.csproj" />
         <Project Path="samples/Sample.Mcp/Sample.Mcp.csproj" />
+        <Project Path="samples/Sample.TvOS/Sample.TvOS.csproj" />
     </Folder>
 
     <Project Path="src/Shiny.Net.HttpServer.AzureRelay/Shiny.Net.HttpServer.AzureRelay.csproj" />

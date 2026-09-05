@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.Versioning;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -101,10 +102,37 @@ public abstract class ProcessTunnelAgent(TunnelAgentOptions options, ILogger? lo
 
     public bool IsRunning => this.process is { HasExited: false };
 
+    /// <summary>
+    /// Whether this machine will let one process start another at all.
+    /// </summary>
+    /// <remarks>
+    /// Every agent here works by spawning a binary, and Apple's mobile-shaped platforms forbid
+    /// process creation outright - there is no entitlement for it and no workaround worth having.
+    /// Checked rather than left to fail, because the failure it replaces is
+    /// <c>PlatformNotSupportedException</c> thrown from inside the BCL, which names neither the
+    /// agent nor anything to do instead.
+    /// </remarks>
+    [UnsupportedOSPlatformGuard("ios")]
+    [UnsupportedOSPlatformGuard("tvos")]
+    [UnsupportedOSPlatformGuard("watchos")]
+    static bool CanSpawnProcesses => !OperatingSystem.IsIOS() && !OperatingSystem.IsTvOS() && !OperatingSystem.IsWatchOS();
+
     public async Task<string> StartAsync(CancellationToken cancellationToken = default)
     {
         if (this.PublicUrl is { } already)
             return already;
+
+        if (!CanSpawnProcesses)
+        {
+            throw new TunnelAgentException(
+                this.Name,
+                $"The {this.Name} agent cannot run on this platform: it works by starting a separate " +
+                "binary, and iOS and tvOS do not allow a process to start another one. Tunnelling " +
+                "itself still works here - use the SSH provider (Shiny.Net.HttpServer.Ssh) or Azure " +
+                "Relay (Shiny.Net.HttpServer.AzureRelay), both of which are pure managed code and " +
+                "need no agent."
+            );
+        }
 
         if (this.Options.Port <= 0)
             throw new InvalidOperationException(
@@ -190,7 +218,11 @@ public abstract class ProcessTunnelAgent(TunnelAgentOptions options, ILogger? lo
 
     public Task StopAsync(CancellationToken cancellationToken = default)
     {
-        if (this.process is not { } running)
+        // CanSpawnProcesses is repeated rather than assumed: nothing can have started on a platform
+        // that forbids it, so the field is always null there - but that is a fact about StartAsync,
+        // not something the platform analyzer can see from here, and a suppression would be a claim
+        // rather than a check.
+        if (!CanSpawnProcesses || this.process is not { } running)
             return Task.CompletedTask;
 
         this.process = null;
