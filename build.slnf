@@ -6,6 +6,7 @@
             "src\\Shiny.Net.HttpServer.Mobile\\Shiny.Net.HttpServer.Mobile.csproj",
             "src\\Shiny.Net.HttpServer.SourceGenerators\\Shiny.Net.HttpServer.SourceGenerators.csproj",
             "src\\Shiny.Net.HttpServer.Jwt\\Shiny.Net.HttpServer.Jwt.csproj",
+            "src\\Shiny.Net.HttpServer.Proxy\\Shiny.Net.HttpServer.Proxy.csproj",
             "src\\Shiny.Net.HttpServer.Grpc\\Shiny.Net.HttpServer.Grpc.csproj",
             "src\\Shiny.Net.HttpServer.AzureRelay\\Shiny.Net.HttpServer.AzureRelay.csproj",
             "src\\Shiny.Net.HttpServer.Mcp\\Shiny.Net.HttpServer.Mcp.csproj",

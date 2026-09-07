@@ -29,6 +29,10 @@
     <PackageReference Include="Microsoft.Testing.Extensions.TrxReport" />
 
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
+
+    <!-- The reverse-proxy tests drive the configuration loader through a real IConfiguration,
+         including a reload, because the loader's whole job is reading one. -->
+    <PackageReference Include="Microsoft.Extensions.Configuration" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
 
     <!-- The MCP tests drive the endpoint with the SDK's own client, so the SDK is a test
@@ -83,6 +87,7 @@
     <ProjectReference Include="../../src/Shiny.Net.HttpServer/Shiny.Net.HttpServer.csproj" />
     <ProjectReference Include="../../src/Shiny.Net.HttpServer.Grpc/Shiny.Net.HttpServer.Grpc.csproj" />
     <ProjectReference Include="../../src/Shiny.Net.HttpServer.Jwt/Shiny.Net.HttpServer.Jwt.csproj" />
+    <ProjectReference Include="../../src/Shiny.Net.HttpServer.Proxy/Shiny.Net.HttpServer.Proxy.csproj" />
     <ProjectReference Include="../../src/Shiny.Net.HttpServer.AzureRelay/Shiny.Net.HttpServer.AzureRelay.csproj" />
     <ProjectReference Include="../../src/Shiny.Net.HttpServer.Mcp/Shiny.Net.HttpServer.Mcp.csproj" />
     <ProjectReference Include="../../src/Shiny.Net.HttpServer.Ssh/Shiny.Net.HttpServer.Ssh.csproj" />

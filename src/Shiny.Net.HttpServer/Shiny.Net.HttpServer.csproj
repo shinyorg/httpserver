@@ -38,6 +38,13 @@
              bind one of its own. -->
         <InternalsVisibleTo Include="Shiny.Net.HttpServer.Ssh"/>
 
+        <!-- The reverse proxy completes a WebSocket handshake against the upstream and then hands
+             the connection over, which means it needs the same raw transport AcceptWebSocketAsync
+             takes. There is no public way to ask for one, and there should not be: everything else
+             that upgrades a connection speaks a protocol this library implements, and a public
+             "give me the socket" hook would be an invitation to bypass the server entirely. -->
+        <InternalsVisibleTo Include="Shiny.Net.HttpServer.Proxy"/>
+
         <!-- WebDAV maps request paths onto a real directory, which is the same job the static file
              handler and the file browser do. It reuses StaticFilePath rather than growing a second
              traversal check: one implementation that everything goes through is the security model,

@@ -1,6 +1,6 @@
 ---
 name: shiny-httpserver
-description: Generate code using Shiny.Net.HttpServer — a dependency-light, AOT/trim-clean HTTP/1.1, HTTP/2 & HTTP/3 server that runs anywhere .NET runs, including .NET MAUI and native tvOS, where ASP.NET Core cannot. Covers routing, middleware, source-generated typed endpoints, results and JSON, content negotiation with XML/MessagePack/protobuf formatters in both directions, static files and Blazor WASM, uploads/downloads, WebSockets, SSE, sessions, OpenAPI, authentication (Basic/API key/cookie/JWT), authorization, CORS, rate limiting, IP filtering, TLS and self-signed certificates, tunnelling (relay, SSH, quick tunnels, Azure Relay, and supervised cloudflared/ngrok/tailscale agents), serving a directory over WebDAV, serving gRPC and gRPC-Web, hosting an MCP server with RFC 9728 OAuth discovery, health checks, OpenTelemetry-shaped metrics and tracing, W3C access logs, request timeouts, output caching and conditional requests, request decompression, antiforgery and browser security headers, reverse-proxy routes, mDNS/Bonjour advertising and discovery, MAUI lifecycle (background/foreground, Android foreground service, network rebinding), and an in-memory test harness.
+description: Generate code using Shiny.Net.HttpServer — a dependency-light, AOT/trim-clean HTTP/1.1, HTTP/2 & HTTP/3 server that runs anywhere .NET runs, including .NET MAUI and native tvOS, where ASP.NET Core cannot. Covers routing, middleware, source-generated typed endpoints, results and JSON, content negotiation with XML/MessagePack/protobuf formatters in both directions, static files and Blazor WASM, uploads/downloads, WebSockets, SSE, sessions, OpenAPI, authentication (Basic/API key/cookie/JWT), authorization, CORS, rate limiting, IP filtering, TLS and self-signed certificates, tunnelling (relay, SSH, quick tunnels, Azure Relay, and supervised cloudflared/ngrok/tailscale agents), serving a directory over WebDAV, serving gRPC and gRPC-Web, hosting an MCP server with RFC 9728 OAuth discovery, health checks, OpenTelemetry-shaped metrics and tracing, W3C access logs, request timeouts, output caching and conditional requests, request decompression, antiforgery and browser security headers, a reverse proxy with destination clusters, load balancing, health checks, session affinity, transforms, WebSocket forwarding and IConfiguration-driven routes, mDNS/Bonjour advertising and discovery, MAUI lifecycle (background/foreground, Android foreground service, network rebinding), and an in-memory test harness.
 auto_invoke: true
 triggers:
 - Shiny.Net.HttpServer
@@ -106,6 +106,23 @@ triggers:
 - ValidateAntiforgery
 - MapProxy
 - ProxyOptions
+- MapReverseProxy
+- AddReverseProxy
+- reverse proxy
+- YARP
+- ProxyCluster
+- ProxyDestination
+- LoadBalancingPolicy
+- ILoadBalancingPolicy
+- SessionAffinityMode
+- TransformBuilder
+- HttpForwarder
+- ReverseProxyRuntime
+- ReverseProxyConfiguration
+- ForwardUpgrades
+- load balancing
+- health checks for destinations
+- Shiny.Net.HttpServer.Proxy
 - AddHttpServerAdvertisement
 - IHttpServerAdvertiser
 - AddHttpServerLocator
@@ -296,6 +313,7 @@ must hold that line, or it fails on a trimmed device build.
 ```bash
 dotnet add package Shiny.Net.HttpServer                  # the server + the typed-endpoint generator
 dotnet add package Shiny.Net.HttpServer.Jwt              # JWT auth
+dotnet add package Shiny.Net.HttpServer.Proxy            # reverse proxy: clusters, LB, health, transforms
 dotnet add package Shiny.Net.HttpServer.Ssh              # SSH + quick tunnels
 dotnet add package Shiny.Net.HttpServer.AzureRelay       # Azure Relay tunnel (NOT AOT-clean)
 dotnet add package Shiny.Net.HttpServer.Mcp              # Model Context Protocol transport
@@ -1020,14 +1038,74 @@ var tokens = ctx.GetRequiredService<IAntiforgery>().GetTokens(ctx);
 
 ## Proxying to another server
 
+Needs `Shiny.Net.HttpServer.Proxy` and `using Shiny.Net.HttpServer.Proxy;` — it is **not** in the core
+package. This is tier 2 (routes): a proxy route is an ordinary route with a generated handler, so
+middleware, authentication and rate limiting apply to it exactly as they do to anything else.
+
+**One destination** — reach for this first, and only escalate when the ask names more than one:
+
 ```csharp
 app.MapProxy("/api/{*path}", "https://api.example.com");
 app.MapProxy("/printer/{*path}", "http://192.168.1.50", o => o.RewriteHost = false);
 ```
 
 Bodies stream both ways, `X-Forwarded-*` describe the original caller, an unreachable upstream is a
-**502** and one that will not answer is a **504**. A protocol upgrade is not forwarded — a WebSocket
-through this route will not work.
+**502**, one that will not answer is a **504**, and a WebSocket (or any HTTP/1.1 upgrade) is forwarded
+end to end — `o.ForwardUpgrades = false` turns that off.
+
+**A cluster** when there is more than one instance behind the route:
+
+```csharp
+app.MapProxy("/api/{*path}", cluster =>
+{
+    cluster.AddDestination("a", "https://a.internal");
+    cluster.AddDestination("b", "https://b.internal");
+
+    cluster.LoadBalancing = LoadBalancingPolicy.PowerOfTwoChoices;  // default; also RoundRobin,
+                                                                   // LeastRequests, Random, First
+    cluster.HealthCheck.Active.Enabled = true;                      // off by default — probes cost battery
+    cluster.HealthCheck.Active.Path = "/health";
+    cluster.SessionAffinity.Mode = SessionAffinityMode.Cookie;      // or Header
+});
+```
+
+Passive health (on for a cluster, off for the single-destination call) takes a destination out after
+`FailureThreshold` consecutive transport failures for `ReactivationPeriod`. When every destination is
+out, the route answers **503**.
+
+**Transforms** instead of `BeforeSend`/`AfterReceive` whenever the change is a path, query or header:
+
+```csharp
+cluster.Transforms
+    .RemovePathPrefix("/api")
+    .SetQueryValue("tenant", "acme")
+    .SetRequestHeader("X-Api-Key", key)
+    .RemoveResponseHeader("Server");
+```
+
+**From configuration** when the ask is routes that change without a rebuild. The shape matches YARP's,
+including `{**rest}` catch-alls, and it is parsed by hand rather than reflection-bound, so it stays
+AOT-clean:
+
+```csharp
+builder.AddReverseProxy(configuration.GetSection("ReverseProxy"));
+// no container: var proxy = app.MapReverseProxy(configuration.GetSection("ReverseProxy"));
+```
+
+```json
+{ "ReverseProxy": {
+    "Routes":   { "api": { "ClusterId": "backend", "Match": { "Path": "/api/{**rest}" },
+                           "Transforms": [ { "PathRemovePrefix": "/api" } ] } },
+    "Clusters": { "backend": { "LoadBalancingPolicy": "LeastRequests",
+                               "Destinations": { "d1": { "Address": "https://a.internal" } } } } } }
+```
+
+Reload is applied to the running server: routes swap atomically, clusters keep their health state, and
+routes mapped in code are untouched.
+
+- **Do not put a proxy on a tunnel without authentication and rate limiting in front of it**, and keep
+  the destination fixed rather than reading it from the request.
+- `HttpForwarder.ForwardAsync(ctx, "http://…")` forwards from inside a hand-written handler.
 
 ## Tunnelling
 
