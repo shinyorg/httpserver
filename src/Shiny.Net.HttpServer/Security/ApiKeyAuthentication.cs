@@ -97,7 +97,7 @@ public sealed class ApiKeyOptions
 /// is why a key maps to a named principal rather than an anonymous "authenticated" flag.
 /// </para>
 /// <code>
-/// builder.Services.AddAuthentication().AddApiKey(o =>
+/// builder.AddAuthentication().AddApiKey(o =>
 /// {
 ///     o.AddKey(configuration["Keys:Ingest"]!, "ingest-service", "writer");
 ///     o.ValidateAsync = async (key, ct) => await store.FindPrincipalAsync(key, ct);
@@ -190,7 +190,7 @@ public static class ApiKeyAuthenticationBuilderExtensions
     /// <summary>
     /// Adds the <c>ApiKey</c> scheme.
     /// <code>
-    /// builder.Services.AddAuthentication().AddApiKey(o => o.AddKey(secret, "ingest-service", "writer"));
+    /// builder.AddAuthentication().AddApiKey(o => o.AddKey(secret, "ingest-service", "writer"));
     /// </code>
     /// </summary>
     public static AuthenticationBuilder AddApiKey(this AuthenticationBuilder builder, Action<ApiKeyOptions> configure)

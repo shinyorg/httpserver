@@ -3,7 +3,8 @@ namespace Shiny.Net.HttpServer.Security;
 /// <summary>
 /// What an endpoint requires, attached to it as metadata. The generator emits this from
 /// <c>[Authorize]</c> and <c>[AllowAnonymous]</c>; raw routes get it from
-/// <see cref="HttpServerAuthorizationExtensions.RequireAuthorization"/>.
+/// <see cref="HttpServerAuthorizationExtensions.RequireAuthorization"/>, or from passing either attribute
+/// as metadata — <c>Map(…, new AuthorizeAttribute("admin"))</c> — which is folded in here when it is attached.
 /// </summary>
 public sealed class AuthorizationMetadata
 {

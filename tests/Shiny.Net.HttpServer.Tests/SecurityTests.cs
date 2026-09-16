@@ -101,6 +101,91 @@ public class AuthorizationTests
         return request;
     }
 
+    // ---- Attribute instances as route metadata ----------------------------------------------------
+    // Map(..., params object[] metadata) accepts anything, and [Authorize] / [AllowAnonymous] are the
+    // library's own public types for exactly this. The middleware used to read only
+    // AuthorizationMetadata, so passing the attribute did nothing at all — which for [Authorize] meant
+    // an endpoint that looked protected and was not.
+
+    [Fact]
+    public async Task Honours_an_AuthorizeAttribute_passed_as_metadata()
+    {
+        await using var server = await StartAsync(app =>
+            app.Map("GET", "/attr/any", ctx => ctx.Response.WriteAsync("any"), new AuthorizeAttribute()));
+
+        using var anonymous = await server.Client.SendAsync(Request("/attr/any"), Token);
+        Assert.Equal(HttpStatusCode.Unauthorized, anonymous.StatusCode);
+
+        using var signedIn = await server.Client.SendAsync(Request("/attr/any", TokenFor()), Token);
+        Assert.Equal(HttpStatusCode.OK, signedIn.StatusCode);
+    }
+
+    [Fact]
+    public async Task Honours_a_policy_and_roles_on_an_AuthorizeAttribute_passed_as_metadata()
+    {
+        await using var server = await StartAsync(app =>
+        {
+            app.Map("GET", "/attr/admin", ctx => ctx.Response.WriteAsync("admin"), new AuthorizeAttribute("admin"));
+            app.Map("GET", "/attr/audit", ctx => ctx.Response.WriteAsync("audit"), new AuthorizeAttribute { Roles = "auditor, admin" });
+        });
+
+        using var notAdmin = await server.Client.SendAsync(Request("/attr/admin", TokenFor("user")), Token);
+        Assert.Equal(HttpStatusCode.Forbidden, notAdmin.StatusCode);
+
+        using var admin = await server.Client.SendAsync(Request("/attr/admin", TokenFor("admin")), Token);
+        Assert.Equal(HttpStatusCode.OK, admin.StatusCode);
+
+        using var noRole = await server.Client.SendAsync(Request("/attr/audit", TokenFor("user")), Token);
+        Assert.Equal(HttpStatusCode.Forbidden, noRole.StatusCode);
+
+        // Roles are comma-separated, any one of them.
+        using var auditor = await server.Client.SendAsync(Request("/attr/audit", TokenFor("auditor")), Token);
+        Assert.Equal(HttpStatusCode.OK, auditor.StatusCode);
+    }
+
+    [Fact]
+    public async Task Honours_an_AllowAnonymousAttribute_passed_as_metadata_over_the_fallback_policy()
+    {
+        await using var server = await StartAsync(
+            app => app.Map("GET", "/attr/anon", ctx => ctx.Response.WriteAsync("anon"), new AllowAnonymousAttribute()),
+            authorization: o => o.SetFallbackPolicy(p => p.RequireAuthenticatedUser())
+        );
+
+        using var response = await server.Client.SendAsync(Request("/attr/anon"), Token);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task AllowAnonymousAttribute_beats_an_AuthorizeAttribute_on_the_same_route()
+    {
+        await using var server = await StartAsync(app =>
+            app.Map("GET", "/attr/both", ctx => ctx.Response.WriteAsync("both"), new AuthorizeAttribute("admin"), new AllowAnonymousAttribute()));
+
+        using var response = await server.Client.SendAsync(Request("/attr/both"), Token);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    // ---- Generated endpoints in a route group ------------------------------------------------------
+
+    [Fact]
+    public async Task Mounts_a_generated_endpoint_class_under_a_group_prefix()
+    {
+        await using var server = await StartAsync(app => app.MapGroup("/v2", group => group.MapSecureEndpoints()));
+
+        using var ping = await server.Client.SendAsync(Request("/v2/api/secure/ping"), Token);
+        Assert.Equal(HttpStatusCode.OK, ping.StatusCode);
+
+        // The class-level [Authorize] and the method's own policy both travel into the group.
+        using var anonymous = await server.Client.SendAsync(Request("/v2/api/secure/me"), Token);
+        Assert.Equal(HttpStatusCode.Unauthorized, anonymous.StatusCode);
+
+        using var notAdmin = await server.Client.SendAsync(Request("/v2/api/secure/admin", TokenFor("user")), Token);
+        Assert.Equal(HttpStatusCode.Forbidden, notAdmin.StatusCode);
+
+        using var admin = await server.Client.SendAsync(Request("/v2/api/secure/admin", TokenFor("admin")), Token);
+        Assert.Equal(HttpStatusCode.OK, admin.StatusCode);
+    }
+
     [Fact]
     public async Task Leaves_unprotected_endpoints_open()
     {

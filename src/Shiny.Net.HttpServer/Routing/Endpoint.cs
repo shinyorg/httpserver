@@ -1,3 +1,5 @@
+using Shiny.Net.HttpServer.Security;
+
 namespace Shiny.Net.HttpServer.Routing;
 
 /// <summary>
@@ -14,7 +16,13 @@ public class Endpoint
 
         this.RequestDelegate = requestDelegate;
         this.DisplayName = displayName;
-        this.metadata = metadata is { Length: > 0 } ? [.. metadata] : [];
+        this.metadata = [];
+
+        if (metadata is not null)
+        {
+            foreach (var item in metadata)
+                this.Add(item);
+        }
     }
 
     public RequestDelegate RequestDelegate { get; }
@@ -32,8 +40,60 @@ public class Endpoint
     {
         ArgumentNullException.ThrowIfNull(item);
 
-        this.metadata.Add(item);
+        this.Add(item);
         return this;
+    }
+
+    /// <summary>
+    /// Adds an item, folding <see cref="AuthorizeAttribute"/> and <see cref="AllowAnonymousAttribute"/> into
+    /// <see cref="AuthorizationMetadata"/> as it goes.
+    /// <para>
+    /// Those attributes are the obvious thing to hand a raw route — <c>Map(…, new AuthorizeAttribute("admin"))</c>
+    /// — but everything that enforces or documents authorization reads <see cref="AuthorizationMetadata"/>. Left
+    /// as they were, the attribute was accepted and did nothing: an endpoint that looked protected answered
+    /// anyone. Folding them in here, once, means the middleware, the OpenAPI document and anything else see the
+    /// same requirements, the same way the generator merges a class's attributes with a method's — policies all
+    /// required, roles any one of them, <c>[AllowAnonymous]</c> above everything.
+    /// </para>
+    /// </summary>
+    void Add(object item)
+    {
+        this.metadata.Add(item);
+
+        switch (item)
+        {
+            case AuthorizeAttribute authorize:
+            {
+                var authorization = this.Authorization();
+                authorization.Required = true;
+
+                if (!String.IsNullOrWhiteSpace(authorize.Policy))
+                    authorization.Policies.Add(authorize.Policy);
+
+                if (authorize.Roles is { } roles)
+                {
+                    foreach (var role in roles.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                        authorization.Roles.Add(role);
+                }
+
+                break;
+            }
+
+            case AllowAnonymousAttribute:
+                this.Authorization().AllowAnonymous = true;
+                break;
+        }
+    }
+
+    AuthorizationMetadata Authorization()
+    {
+        if (this.GetMetadata<AuthorizationMetadata>() is { } existing)
+            return existing;
+
+        var created = new AuthorizationMetadata();
+        this.metadata.Add(created);
+
+        return created;
     }
 
     /// <summary>

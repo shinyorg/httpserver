@@ -11,7 +11,7 @@ public static class MobileServiceCollectionExtensions
     /// changes.
     /// <code>
     /// builder.Services.AddHttpServer(o => o.Address = IPAddress.Any, autoStart: false);
-    /// builder.Services.AddHttpServerLifecycle(o => o.BackgroundMode = BackgroundServerMode.KeepAlive);
+    /// builder.AddHttpServerLifecycle(o => o.BackgroundMode = BackgroundServerMode.KeepAlive);
     /// </code>
     /// <para>
     /// Needs a Shiny host — <c>UseShiny()</c>, from <c>MauiProgram</c> or from a plain iOS or
@@ -39,13 +39,7 @@ public static class MobileServiceCollectionExtensions
     {
         ArgumentNullException.ThrowIfNull(builder);
 
-        builder.Services.TryAddSingleton(_ =>
-        {
-            var options = new HttpServerLifecycleOptions();
-            configure?.Invoke(options);
-
-            return options;
-        });
+        OptionsRegistration.Configure<HttpServerLifecycleOptions>(builder.Services, configure);
 
 #if PLATFORM
         // Registered against its interfaces, which is how Shiny's lifecycle executor finds it —

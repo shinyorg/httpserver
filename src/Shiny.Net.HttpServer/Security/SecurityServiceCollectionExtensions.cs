@@ -12,7 +12,7 @@ namespace Shiny.Net.HttpServer.Security;
 ///     .AddAuthentication()
 ///     .AddJwtBearer(o => { o.Issuer = "shiny"; o.SigningKey = JwtSigningKey.FromSecret(secret); });
 ///
-/// builder.Services.AddAuthorization(o =>
+/// builder.AddAuthorization(o =>
 /// {
 ///     o.AddPolicy("admin", p => p.RequireRole("admin"));
 ///     o.SetFallbackPolicy(p => p.RequireAuthenticatedUser());   // deny by default
@@ -36,7 +36,10 @@ public static class SecurityServiceCollectionExtensions
         return new AuthenticationBuilder(builder.Services);
     }
 
-    /// <summary>Registers the authorization policies and the middleware that enforces them.</summary>
+    /// <summary>
+    /// Registers the authorization policies and the middleware that enforces them. Call it as often as you
+    /// like — every call's policies apply, in call order, so a feature can add its own beside the app's.
+    /// </summary>
     public static ShinyHttpServerBuilder AddAuthorization(
         this ShinyHttpServerBuilder builder,
         Action<AuthorizationOptions>? configure = null
@@ -44,12 +47,7 @@ public static class SecurityServiceCollectionExtensions
     {
         ArgumentNullException.ThrowIfNull(builder);
 
-        builder.Services.TryAddSingleton(_ =>
-        {
-            var options = new AuthorizationOptions();
-            configure?.Invoke(options);
-            return options;
-        });
+        OptionsRegistration.Configure<AuthorizationOptions>(builder.Services, configure);
 
         builder.Services.TryAddSingleton<AuthorizationMiddleware>();
         return builder;

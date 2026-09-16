@@ -67,7 +67,7 @@ public sealed class BasicCredential
 ///     }
 /// }
 ///
-/// builder.Services.AddAuthentication().AddBasic&lt;UserStore&gt;(o => o.Realm = "Device");
+/// builder.AddAuthentication().AddBasic&lt;UserStore&gt;(o => o.Realm = "Device");
 /// </code>
 /// </summary>
 public interface IBasicCredentialValidator
@@ -142,7 +142,7 @@ public sealed class BasicAuthenticationOptions
 /// tunnel and nowhere else; the transport check enforces that rather than trusting it.
 /// </para>
 /// <code>
-/// builder.Services.AddAuthentication().AddBasic(o =>
+/// builder.AddAuthentication().AddBasic(o =>
 /// {
 ///     o.Realm = "Device";
 ///     o.AddUser("ada", configuration["Admin:Password"]!, "admin");
@@ -322,7 +322,7 @@ public static class BasicAuthenticationBuilderExtensions
     /// <summary>
     /// Adds the <c>Basic</c> scheme.
     /// <code>
-    /// builder.Services.AddAuthentication().AddBasic(o => o.AddUser("ada", secret, "admin"));
+    /// builder.AddAuthentication().AddBasic(o => o.AddUser("ada", secret, "admin"));
     /// </code>
     /// </summary>
     public static AuthenticationBuilder AddBasic(
@@ -344,7 +344,7 @@ public static class BasicAuthenticationBuilderExtensions
     /// use when accounts live somewhere other than configuration.
     /// <code>
     /// builder.Services.AddSingleton&lt;UserStore&gt;();
-    /// builder.Services.AddAuthentication().AddBasic&lt;UserStore&gt;(o => o.Realm = "Device");
+    /// builder.AddAuthentication().AddBasic&lt;UserStore&gt;(o => o.Realm = "Device");
     /// </code>
     /// <para>
     /// No static accounts are required here: the validator is the account list.

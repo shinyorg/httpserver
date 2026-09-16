@@ -140,13 +140,7 @@ public static class ProblemDetailsExtensions
     {
         ArgumentNullException.ThrowIfNull(builder);
 
-        builder.Services.TryAddSingleton(_ =>
-        {
-            var options = new ProblemDetailsOptions();
-            configure?.Invoke(options);
-
-            return options;
-        });
+        OptionsRegistration.Configure<ProblemDetailsOptions>(builder.Services, configure);
 
         return builder.AddExceptionHandler(sp => new ProblemDetailsExceptionHandler(
             sp.GetRequiredService<ProblemDetailsOptions>(),

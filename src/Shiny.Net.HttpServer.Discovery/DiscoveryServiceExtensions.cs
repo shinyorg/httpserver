@@ -42,13 +42,7 @@ public static class DiscoveryServiceCollectionExtensions
 
         builder.Services.AddMdns();
 
-        builder.Services.TryAddSingleton(_ =>
-        {
-            var options = new HttpServerAdvertisementOptions();
-            configure?.Invoke(options);
-
-            return options;
-        });
+        OptionsRegistration.Configure<HttpServerAdvertisementOptions>(builder.Services, configure);
 
         builder.Services.TryAddSingleton<IHttpServerAdvertiser>(sp => new HttpServerAdvertiser(
             sp.GetRequiredService<IMdnsManager>(),

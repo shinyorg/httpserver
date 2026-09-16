@@ -308,7 +308,7 @@ public static class SessionExtensionsForRegistration
     /// <summary>
     /// Registers sessions with an in-memory store.
     /// <code>
-    /// builder.Services.AddSessions(o =>
+    /// builder.AddSessions(o =>
     /// {
     ///     o.Protector = new TicketProtector(keyBytes);
     ///     o.IdleTimeout = TimeSpan.FromMinutes(30);
@@ -326,13 +326,7 @@ public static class SessionExtensionsForRegistration
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(configure);
 
-        builder.Services.TryAddSingleton(_ =>
-        {
-            var options = new SessionOptions();
-            configure(options);
-
-            return options;
-        });
+        OptionsRegistration.Configure<SessionOptions>(builder.Services, configure);
 
         builder.Services.TryAddSingleton<ISessionStore>(_ => new InMemorySessionStore());
         builder.Services.TryAddSingleton(sp => new SessionMiddleware(

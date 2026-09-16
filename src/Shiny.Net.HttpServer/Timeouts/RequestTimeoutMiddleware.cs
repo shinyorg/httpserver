@@ -118,7 +118,7 @@ public static class RequestTimeoutServiceCollectionExtensions
     /// <summary>
     /// Registers the timeout options and any named policies.
     /// <code>
-    /// builder.Services.AddRequestTimeouts(o =>
+    /// builder.AddRequestTimeouts(o =>
     /// {
     ///     o.DefaultPolicy = new RequestTimeoutPolicy(TimeSpan.FromSeconds(30));
     ///     o.AddPolicy("reports", TimeSpan.FromMinutes(2));
@@ -132,13 +132,7 @@ public static class RequestTimeoutServiceCollectionExtensions
     {
         ArgumentNullException.ThrowIfNull(builder);
 
-        builder.Services.TryAddSingleton(_ =>
-        {
-            var options = new RequestTimeoutOptions();
-            configure?.Invoke(options);
-
-            return options;
-        });
+        OptionsRegistration.Configure<RequestTimeoutOptions>(builder.Services, configure);
 
         return builder;
     }

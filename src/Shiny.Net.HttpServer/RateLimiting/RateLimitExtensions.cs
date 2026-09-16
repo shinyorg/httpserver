@@ -15,12 +15,7 @@ public static class RateLimitServiceCollectionExtensions
     {
         ArgumentNullException.ThrowIfNull(builder);
 
-        builder.Services.TryAddSingleton(_ =>
-        {
-            var options = new RateLimitOptions();
-            configure?.Invoke(options);
-            return options;
-        });
+        OptionsRegistration.Configure<RateLimitOptions>(builder.Services, configure);
 
         return builder;
     }

@@ -169,6 +169,7 @@ triggers:
 - MapOpenApi
 - AddAuthentication
 - AddAuthorization
+- OptionsRegistration
 - AddBasic
 - AddApiKey
 - AddCookie
@@ -379,7 +380,7 @@ await server.RunAsync();
 // (b) The builder — a console app or service that wants DI
 var builder = HttpServer.CreateBuilder();
 builder.Options.Port = 8080;
-builder.AddAuthentication().AddJwtBearer(o => o.SigningKey = key);   // server features: on the builder
+builder.AddAuthentication().AddJwtBearer(o => { o.Issuer = "app"; o.Audience = "app"; o.SigningKey = key; });   // server features: on the builder
 builder.Services.AddSingleton<IWidgetStore, WidgetStore>();          // your own: on Services
 var app = builder.Build();
 app.MapMyAppEndpoints();
@@ -549,6 +550,13 @@ public sealed class AdminModule : IEndpointModule
 
 app.MapModule(new AdminModule());
 app.UnmapModule<AdminModule>();
+```
+
+Generated `[Route]` classes mount into a group too — the generator emits an `IEndpointRouteBuilder`
+overload beside the `HttpServer` one, and `[Authorize]`/`[AllowAnonymous]` travel with the routes:
+
+```csharp
+app.MapGroup("/v2", api => api.MapWidgetEndpoints());   // or api.MapMyAppEndpoints()
 ```
 
 ## JSON — the AOT rule
@@ -744,9 +752,18 @@ builder.AddAuthorization(o =>
 ```
 
 - `[Authorize]` / `[AllowAnonymous]` on endpoint classes and methods; `RequireAuthorization(...)` /
-  `AllowAnonymous()` on raw routes (they apply to the **most recently mapped** route).
+  `AllowAnonymous()` on raw routes (they apply to the **most recently mapped** route). A raw route may
+  instead take the attribute instances as metadata — `app.Map("GET", "/x", h, new AuthorizeAttribute("admin"))`
+  — with the same effect.
+- **Every `Add…` registration composes.** `AddAuthorization`, `AddCors`, `AddRateLimiter` and the rest can
+  be called more than once; each call's configuration applies, in order. When writing an `Add…` for a
+  package built on this library, register options with `OptionsRegistration.Configure(builder.Services,
+  configure)` — **never** `TryAddSingleton(_ => { var o = new T(); configure(o); return o; })`, which keeps
+  the first call and silently drops the rest.
 - A method's `[Authorize]` **adds to** the class's; `[AllowAnonymous]` always wins.
 - 401 = anonymous, 403 = authenticated but not permitted. Never put the denial reason in the body.
+- JWT needs a signing key, `Issuer` **and** `Audience` (or validation of either turned off deliberately) —
+  otherwise the options throw the first time they are built. Generate all three.
 - JWT: `JwtSigningKey.FromSecret/FromRsa/FromEcdsa`; `AddJwtBearer` also registers a
   `JwtTokenGenerator` — inject it in a login endpoint so issuing and validating cannot drift.
   Never generate a key at startup in production code (it invalidates every issued token on restart).

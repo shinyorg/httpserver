@@ -19,12 +19,7 @@ public static class IpFilterServiceCollectionExtensions
     {
         ArgumentNullException.ThrowIfNull(builder);
 
-        builder.Services.TryAddSingleton(_ =>
-        {
-            var options = new IpFilterOptions();
-            configure?.Invoke(options);
-            return options;
-        });
+        OptionsRegistration.Configure<IpFilterOptions>(builder.Services, configure);
 
         return builder;
     }

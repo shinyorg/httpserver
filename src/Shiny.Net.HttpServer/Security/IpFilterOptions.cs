@@ -5,7 +5,7 @@ namespace Shiny.Net.HttpServer.Security;
 /// <summary>
 /// The address rules for the whole app.
 /// <code>
-/// builder.Services.AddIpFilter(o =>
+/// builder.AddIpFilter(o =>
 /// {
 ///     o.DefaultPolicy = IpFilterPolicy.Create(p => p.AllowLoopback().AllowPrivateNetworks());
 ///     o.AddPolicy("admin", p => p.Allow("10.1.0.0/24"));

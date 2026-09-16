@@ -72,7 +72,7 @@ public static class McpProtectedResourceExtensions
     /// <summary>
     /// Registers the protected-resource metadata and the challenge that points clients at it.
     /// <code>
-    /// builder.Services.AddMcpProtectedResource(o =>
+    /// builder.AddMcpProtectedResource(o =>
     /// {
     ///     o.AuthorizationServers.Add("https://login.example.com");
     ///     o.ScopesSupported.Add("mcp:tools");
@@ -87,13 +87,7 @@ public static class McpProtectedResourceExtensions
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(configure);
 
-        builder.Services.TryAddSingleton(_ =>
-        {
-            var options = new McpProtectedResourceOptions();
-            configure(options);
-
-            return options;
-        });
+        OptionsRegistration.Configure<McpProtectedResourceOptions>(builder.Services, configure);
 
         // Registered as a challenge rather than as middleware: this has to replace the generic 401
         // the authorization middleware would otherwise write, and that is exactly what the

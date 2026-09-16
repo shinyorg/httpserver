@@ -211,13 +211,7 @@ public static class W3CLoggingServiceCollectionExtensions
     {
         ArgumentNullException.ThrowIfNull(builder);
 
-        builder.Services.TryAddSingleton(_ =>
-        {
-            var options = new W3CLoggerOptions();
-            configure?.Invoke(options);
-
-            return options;
-        });
+        OptionsRegistration.Configure<W3CLoggerOptions>(builder.Services, configure);
 
         builder.Services.TryAddSingleton<IW3CLogWriter>(sp => new W3CLogFileWriter(
             sp.GetRequiredService<W3CLoggerOptions>(),

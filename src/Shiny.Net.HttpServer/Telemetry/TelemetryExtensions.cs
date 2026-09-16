@@ -19,13 +19,7 @@ public static class TelemetryServiceCollectionExtensions
     {
         ArgumentNullException.ThrowIfNull(builder);
 
-        builder.Services.TryAddSingleton(_ =>
-        {
-            var options = new TelemetryOptions();
-            configure?.Invoke(options);
-
-            return options;
-        });
+        OptionsRegistration.Configure<TelemetryOptions>(builder.Services, configure);
 
         return builder;
     }

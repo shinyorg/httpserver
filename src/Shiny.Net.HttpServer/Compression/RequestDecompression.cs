@@ -223,13 +223,7 @@ public static class RequestDecompressionExtensions
     {
         ArgumentNullException.ThrowIfNull(builder);
 
-        builder.Services.TryAddSingleton(_ =>
-        {
-            var options = new RequestDecompressionOptions();
-            configure?.Invoke(options);
-
-            return options;
-        });
+        OptionsRegistration.Configure<RequestDecompressionOptions>(builder.Services, configure);
 
         return builder;
     }

@@ -105,7 +105,7 @@ public static class JwtAuthenticationBuilderExtensions
     /// configuration that validates tokens is the one that creates them — a login endpoint issuing
     /// tokens the server cannot then accept is an easy and miserable bug.
     /// <code>
-    /// builder.Services.AddAuthentication().AddJwtBearer(o =>
+    /// builder.AddAuthentication().AddJwtBearer(o =>
     /// {
     ///     o.Issuer = "shiny";
     ///     o.Audience = "shiny-app";
@@ -121,14 +121,8 @@ public static class JwtAuthenticationBuilderExtensions
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(configure);
 
-        builder.Services.TryAddSingleton(_ =>
-        {
-            var options = new JwtBearerOptions();
-            configure(options);
-            options.BuildValidation();
-
-            return options;
-        });
+        // Validation is built from the finished options — after every AddJwtBearer call, not after the first.
+        OptionsRegistration.Configure<JwtBearerOptions>(builder.Services, configure, complete: static o => o.BuildValidation());
 
         builder.Services.TryAddSingleton(sp => new JwtTokenValidator(
             sp.GetRequiredService<JwtBearerOptions>().Validation,

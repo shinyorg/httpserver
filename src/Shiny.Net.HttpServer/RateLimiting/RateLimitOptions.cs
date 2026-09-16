@@ -3,7 +3,7 @@ namespace Shiny.Net.HttpServer.RateLimiting;
 /// <summary>
 /// The rate limits for the whole app.
 /// <code>
-/// builder.Services.AddRateLimiter(o =>
+/// builder.AddRateLimiter(o =>
 /// {
 ///     o.GlobalPolicy = new FixedWindowRateLimitPolicy(300, TimeSpan.FromMinutes(1));
 ///     o.AddTokenBucket("uploads", capacity: 5, tokensPerPeriod: 1, period: TimeSpan.FromSeconds(10));

@@ -238,6 +238,32 @@ public static class EndpointModuleExtensions
 /// <summary>Verb shorthands for <see cref="IEndpointRouteBuilder"/>.</summary>
 public static class EndpointRouteBuilderExtensions
 {
+    /// <summary>
+    /// Maps a route under the builder's prefix and attaches metadata to it — the group counterpart of
+    /// <see cref="HttpServer.Map(string, string, RequestDelegate, object[])"/>. It is what generated endpoint
+    /// classes call to land in a group.
+    /// </summary>
+    public static RouteEndpointBuilder Map(
+        this IEndpointRouteBuilder endpoints,
+        string method,
+        string pattern,
+        RequestDelegate handler,
+        params object[]? metadata
+    )
+    {
+        ArgumentNullException.ThrowIfNull(endpoints);
+
+        var route = endpoints.Map(method, pattern, handler);
+
+        if (metadata is not null)
+        {
+            foreach (var item in metadata)
+                route.WithMetadata(item);
+        }
+
+        return route;
+    }
+
     public static RouteEndpointBuilder MapGet(this IEndpointRouteBuilder endpoints, string pattern, RequestDelegate handler)
         => endpoints.Map(HttpMethods.Get, pattern, handler);
 

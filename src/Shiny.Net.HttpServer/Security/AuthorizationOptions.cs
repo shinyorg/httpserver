@@ -3,7 +3,7 @@ namespace Shiny.Net.HttpServer.Security;
 /// <summary>
 /// The authorization rules for the whole app, configured once at registration.
 /// <code>
-/// builder.Services.AddAuthorization(o =>
+/// builder.AddAuthorization(o =>
 /// {
 ///     o.AddPolicy("admin", p => p.RequireRole("admin"));
 ///     o.AddPolicy("owner", p => p.RequireAssertion(ctx =>

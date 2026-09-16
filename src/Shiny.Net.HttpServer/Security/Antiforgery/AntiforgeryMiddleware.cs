@@ -82,20 +82,14 @@ public static class AntiforgeryServiceCollectionExtensions
     /// <summary>
     /// Registers <see cref="IAntiforgery"/>.
     /// <code>
-    /// builder.Services.AddAntiforgery(o => o.SecureCookie = true);
+    /// builder.AddAntiforgery(o => o.SecureCookie = true);
     /// </code>
     /// </summary>
     public static ShinyHttpServerBuilder AddAntiforgery(this ShinyHttpServerBuilder builder, Action<AntiforgeryOptions>? configure = null)
     {
         ArgumentNullException.ThrowIfNull(builder);
 
-        builder.Services.TryAddSingleton(_ =>
-        {
-            var options = new AntiforgeryOptions();
-            configure?.Invoke(options);
-
-            return options;
-        });
+        OptionsRegistration.Configure<AntiforgeryOptions>(builder.Services, configure);
 
         builder.Services.TryAddSingleton<IAntiforgery>(sp => new Antiforgery(sp.GetRequiredService<AntiforgeryOptions>()));
 

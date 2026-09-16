@@ -105,7 +105,7 @@ public sealed class CookieAuthenticationOptions
 /// <see cref="CookieAuthenticationOptions.ValidateTicketAsync"/> exists to solve.
 /// </para>
 /// <code>
-/// builder.Services.AddAuthentication().AddCookie(o =>
+/// builder.AddAuthentication().AddCookie(o =>
 /// {
 ///     o.Protector = new TicketProtector(keyBytes);
 ///     o.LoginPath = "/login";
@@ -350,7 +350,7 @@ public static class CookieAuthenticationExtensions
     /// <summary>
     /// Adds the <c>Cookies</c> scheme.
     /// <code>
-    /// builder.Services.AddAuthentication().AddCookie(o =>
+    /// builder.AddAuthentication().AddCookie(o =>
     /// {
     ///     o.Protector = new TicketProtector(keyBytes);
     ///     o.LoginPath = "/login";

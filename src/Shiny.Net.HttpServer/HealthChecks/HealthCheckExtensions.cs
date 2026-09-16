@@ -23,7 +23,7 @@ public sealed class HealthCheckBuilder(IServiceCollection services, HealthCheckO
     /// <summary>
     /// Registers a check as a lambda — the common case.
     /// <code>
-    /// builder.Services.AddHealthChecks()
+    /// builder.AddHealthChecks()
     ///     .AddCheck("disk", _ => new(Space() > 50_000_000 ? HealthCheckResult.Healthy() : HealthCheckResult.Degraded("low")), "ready");
     /// </code>
     /// </summary>

@@ -44,7 +44,7 @@ Every registration this library owns hangs off one builder, in both hosting shap
 ```csharp
 var builder = HttpServer.CreateBuilder();
 builder.Options.Port = 8080;
-builder.AddAuthentication().AddJwtBearer(o => o.SigningKey = key);
+builder.AddAuthentication().AddJwtBearer(o => { o.Issuer = "app"; o.Audience = "app"; o.SigningKey = key; });
 builder.AddRateLimiter(o => o.GlobalPolicy = new FixedWindowRateLimitPolicy(100, TimeSpan.FromMinutes(1)));
 builder.AddHealthChecks().AddServerCheck();
 
@@ -71,6 +71,7 @@ public class UserEndpoints(IUserService users, ILogger<UserEndpoints> logger)
 }
 
 app.MapMyAppEndpoints();   // emitted for every [Route] class in the assembly
+app.MapGroup("/v2", api => api.MapMyAppEndpoints());   // or mounted under a prefix
 ```
 
 An MCP server, on the same host, reachable from a MAUI app:

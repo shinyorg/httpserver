@@ -11,12 +11,7 @@ public static class CorsServiceCollectionExtensions
     {
         ArgumentNullException.ThrowIfNull(builder);
 
-        builder.Services.TryAddSingleton(_ =>
-        {
-            var options = new CorsOptions();
-            configure?.Invoke(options);
-            return options;
-        });
+        OptionsRegistration.Configure<CorsOptions>(builder.Services, configure);
 
         return builder;
     }

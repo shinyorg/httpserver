@@ -38,6 +38,7 @@ static class EndpointEmitter
     const string AntiforgeryMetadata = "global::Shiny.Net.HttpServer.Security.AntiforgeryMetadata";
     const string Context = "global::Shiny.Net.HttpServer.HttpContext";
     const string Server = "global::Shiny.Net.HttpServer.HttpServer";
+    const string RouteBuilder = "global::Shiny.Net.HttpServer.IEndpointRouteBuilder";
     const string Results = "global::Shiny.Net.HttpServer.Results";
 
     public static string EmitClass(EndpointClassModel model, string assembly)
@@ -58,9 +59,25 @@ static class EndpointEmitter
         writer.Blank();
 
         foreach (var method in model.Methods)
-            WriteRegistration(writer, model, method);
+            WriteRegistration(writer, model, method, "server");
 
         writer.Line("return server;");
+        writer.CloseBrace();
+        writer.Blank();
+
+        // The same registrations onto a route group, so a generated class can be mounted under a prefix —
+        // group.MapWidgetEndpoints() — with its metadata intact. Written out in full rather than routed
+        // through the server overload, which maps at the template exactly as written and cannot be moved.
+        writer.Line($"/// <summary>Registers the {model.Methods.Count} endpoint(s) declared on <see cref=\"{XmlRef(model.FullyQualifiedName)}\"/> under a route group's prefix.</summary>");
+        writer.Line($"public static {RouteBuilder} Map{model.DisplayName}(this {RouteBuilder} endpoints)");
+        writer.OpenBrace();
+        writer.Line("global::System.ArgumentNullException.ThrowIfNull(endpoints);");
+        writer.Blank();
+
+        foreach (var method in model.Methods)
+            WriteRegistration(writer, model, method, "endpoints");
+
+        writer.Line("return endpoints;");
         writer.CloseBrace();
         writer.Blank();
 
@@ -72,9 +89,9 @@ static class EndpointEmitter
         return writer.ToString();
     }
 
-    static void WriteRegistration(CodeWriter writer, EndpointClassModel model, EndpointMethodModel method)
+    static void WriteRegistration(CodeWriter writer, EndpointClassModel model, EndpointMethodModel method, string receiver)
     {
-        writer.Line($"server.Map(");
+        writer.Line($"{receiver}.Map(");
         writer.Indent();
         writer.Line($"\"{method.HttpMethod}\",");
         writer.Line($"\"{method.RouteTemplate}\",");
@@ -594,6 +611,18 @@ static class EndpointEmitter
             writer.Line($"server.Map{model.DisplayName}();");
         writer.Blank();
         writer.Line("return server;");
+        writer.CloseBrace();
+        writer.Blank();
+
+        writer.Line($"/// <summary>Registers every endpoint class declared in this assembly ({models.Length} of them) under a route group's prefix.</summary>");
+        writer.Line($"public static {RouteBuilder} Map{assembly}Endpoints(this {RouteBuilder} endpoints)");
+        writer.OpenBrace();
+        writer.Line("global::System.ArgumentNullException.ThrowIfNull(endpoints);");
+        writer.Blank();
+        foreach (var model in models)
+            writer.Line($"endpoints.Map{model.DisplayName}();");
+        writer.Blank();
+        writer.Line("return endpoints;");
         writer.CloseBrace();
         writer.Blank();
 

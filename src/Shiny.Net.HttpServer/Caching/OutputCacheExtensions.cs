@@ -22,13 +22,7 @@ public static class OutputCacheServiceCollectionExtensions
     {
         ArgumentNullException.ThrowIfNull(builder);
 
-        builder.Services.TryAddSingleton(_ =>
-        {
-            var options = new OutputCacheOptions();
-            configure?.Invoke(options);
-
-            return options;
-        });
+        OptionsRegistration.Configure<OutputCacheOptions>(builder.Services, configure);
 
         builder.Services.TryAddSingleton<IOutputCacheStore>(_ => new MemoryOutputCacheStore());
 

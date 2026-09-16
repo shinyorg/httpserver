@@ -3,7 +3,7 @@ namespace Shiny.Net.HttpServer.Cors;
 /// <summary>
 /// The CORS policies for the whole app.
 /// <code>
-/// builder.Services.AddCors(o =>
+/// builder.AddCors(o =>
 /// {
 ///     o.AddDefaultPolicy(p => p.WithOrigins("https://app.example.com").AllowAnyHeader().AllowAnyMethod());
 ///     o.AddPolicy("public", p => p.AllowAnyOrigin().WithMethods("GET"));
