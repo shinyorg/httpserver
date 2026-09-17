@@ -1419,7 +1419,8 @@ services.AddShinyHttpServer(
 );
 ```
 
-Needs a Shiny host (`UseShiny()` in `MauiProgram`) — that is what delivers the platform callbacks.
+Needs a Shiny host (`UseShiny()` in `MauiProgram`) — that is what delivers the platform callbacks. It registers
+Shiny's `IConnectivity` itself — do not generate a separate `services.AddConnectivity()` for it.
 
 - **iOS suspends the app within seconds of backgrounding**, and no background mode legitimately keeps
   a listener answering. `Stop` makes that visible: `IsRunning` goes false, the UI can say so, and

@@ -20,6 +20,10 @@ public static class MobileServiceCollectionExtensions
     /// nothing, so shared code can call it unconditionally.
     /// </para>
     /// <para>
+    /// Shiny's <c>IConnectivity</c> is registered here too, so there is no separate
+    /// <c>AddConnectivity()</c> to remember. An app that already calls it keeps its registration.
+    /// </para>
+    /// <para>
     /// The manifest side is not optional and is not something this can do for you:
     /// <list type="bullet">
     /// <item>iOS/Mac Catalyst — <c>NSLocalNetworkUsageDescription</c> in Info.plist, or the bind is
@@ -42,6 +46,11 @@ public static class MobileServiceCollectionExtensions
         OptionsRegistration.Configure<HttpServerLifecycleOptions>(builder.Services, configure);
 
 #if PLATFORM
+        // The task takes IConnectivity, and UseShiny() does not register it. Registering it here means
+        // the dependency is this package's to satisfy rather than a startup failure for the app to
+        // diagnose. AddConnectivity is a TryAdd, so an app that already called it is unaffected.
+        builder.Services.AddConnectivity();
+
         // Registered against its interfaces, which is how Shiny's lifecycle executor finds it —
         // IShinyStartupTask to be constructed at startup, IApplicationLifecycle to be told about
         // foreground and background.
