@@ -692,6 +692,11 @@ public sealed class HttpServer : IAsyncDisposable
 
         this.acceptLoops = null;
         this.listeners = [];
+
+        // A fresh token for connections served while stopped: a tunnel keeps handing the server
+        // connections after the local listener goes, and linking them to the cancelled token would
+        // close every one of them the moment it arrived.
+        this.stopping = new CancellationTokenSource();
         this.SetState(HttpServerState.Stopped, reason, cause);
     }
 

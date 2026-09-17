@@ -183,6 +183,54 @@ public class DuplexPipeConnectionTests
             await serving.WaitAsync(TimeSpan.FromSeconds(10), Token);
         }
     }
+
+    [Fact]
+    public async Task Serves_a_connection_after_the_listener_was_stopped()
+    {
+        // A tunnel outlives the local listener: "share on Wi-Fi" off, public link still on.
+        var server = new HttpServer(new HttpServerOptions { Address = IPAddress.Loopback, Port = 0 });
+        server.MapGet("/ping", ctx => ctx.Response.WriteAsync("pong"));
+
+        await using (server)
+        {
+            await server.StartAsync(Token);
+            await server.StopAsync(Token);
+
+            Assert.Contains("pong", await ServeOneAsync(server));
+
+            // And again after another round trip, on the token the next start creates.
+            await server.StartAsync(Token);
+            Assert.Contains("pong", await ServeOneAsync(server));
+            await server.StopAsync(Token);
+            Assert.Contains("pong", await ServeOneAsync(server));
+        }
+    }
+
+    static async Task<string> ServeOneAsync(HttpServer server)
+    {
+        var connection = new DuplexPipeConnection("in-memory");
+        var serving = server.ServeAsync(connection, Token);
+
+        await connection.TransportWriter.WriteAsync(
+            "GET /ping HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"u8.ToArray(),
+            Token
+        );
+
+        var response = new StringBuilder();
+        while (true)
+        {
+            var result = await connection.TransportReader.ReadAsync(Token);
+            response.Append(Encoding.ASCII.GetString(result.Buffer.ToArray()));
+            connection.TransportReader.AdvanceTo(result.Buffer.End);
+
+            if (result.IsCompleted || response.ToString().Contains("pong"))
+                break;
+        }
+
+        await connection.TransportWriter.CompleteAsync();
+        await serving.WaitAsync(TimeSpan.FromSeconds(10), Token);
+        return response.ToString();
+    }
 }
 
 public class TunnelEndToEndTests
