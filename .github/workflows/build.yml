@@ -23,8 +23,13 @@ jobs:
     # Nerdbank.GitVersioning appends Git*Version lines to $GITHUB_ENV once per project. With parallel
     # MSBuild (-m) the worker processes race on that file and tear lines, which the runner then rejects
     # with "Invalid format '1.0.0'" at the end of the step. Nothing here consumes those variables.
+    #
+    # PublicRelease applies to every step, not just Build: the Test and AOT publish steps rebuild the
+    # src projects, and GeneratePackageOnBuild would otherwise emit a second, non-public
+    # (1.x.y-g<commit>) .nupkg next to the real one, which the push glob then publishes too.
     env:
       NBGV_SetCloudBuildVersionVars: false
+      PublicRelease: true
 
     permissions:
       id-token: write   # required for NuGet trusted publishing (OIDC)
@@ -45,7 +50,7 @@ jobs:
           workloads: maui-ios, maui-android, maui-maccatalyst, macos, wasm-tools
 
     - name: Build
-      run: dotnet build build.slnf /restore -m -property:Configuration=Release -property:PublicRelease=true
+      run: dotnet build build.slnf /restore -m -property:Configuration=Release
 
     # No --no-build: build.slnf deliberately excludes the test project, so the previous step never
     # produced its output. xunit v3 runs on Microsoft.Testing.Platform, so trx comes from
