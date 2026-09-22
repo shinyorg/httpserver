@@ -51,13 +51,18 @@ public class BodyInterceptionTests
             }
             finally
             {
+                // Before the flush, not after it. FinishAsync is what puts the last of the response
+                // on the wire, and a client that has the whole response is free to assert on the
+                // log straight away - recording the status afterwards was a race the test usually
+                // won locally and lost on CI, reading 0. The status is settled once the handler has
+                // returned, so nothing is lost by taking it first.
+                log.StatusCode = context.Response.StatusCode;
+
                 // The connection completes its own producer rather than whatever the response ended
                 // up bound to, so anything still sitting in this wrapper's writer would never reach
                 // the wire. Same reason response compression flushes here.
                 await tee.FinishAsync();
             }
-
-            log.StatusCode = context.Response.StatusCode;
         }
     }
 
