@@ -24,9 +24,8 @@ partial class WebDavHandler
     /// The live properties this server volunteers under <c>allprop</c>.
     /// <para>
     /// Quota is deliberately not among them. RFC 4331 says so, and it is also the only one whose
-    /// value costs a syscall against the file system rather than a field off a
-    /// <see cref="FileSystemInfo"/> — a listing of a thousand files should not make a thousand of
-    /// them.
+    /// value costs a call into the file system rather than a field off a <see cref="WebDavEntry"/>
+    /// — a listing of a thousand files should not make a thousand of them.
     /// </para>
     /// </summary>
     static readonly string[] VolunteeredNames =
@@ -52,9 +51,7 @@ partial class WebDavHandler
             return;
         }
 
-        var isCollection = Directory.Exists(path.Full);
-
-        if (!isCollection && !File.Exists(path.Full))
+        if (this.Stat(path) is not { } entry)
         {
             await StatusAsync(context, StatusCodes.Status404NotFound).ConfigureAwait(false);
             return;
@@ -103,7 +100,7 @@ partial class WebDavHandler
 
         var resources = new List<DavResource>();
 
-        if (!this.Collect(path, isCollection, depth, resources))
+        if (!this.Collect(path, entry, depth, resources))
         {
             await StatusAsync(context, StatusCodes.Status507InsufficientStorage).ConfigureAwait(false);
             return;
@@ -144,14 +141,11 @@ partial class WebDavHandler
     /// <see cref="WebDavOptions.MaxPropFindResults"/>, which is the answer to a request that would
     /// otherwise walk a whole device into memory.
     /// </summary>
-    bool Collect(DavPath path, bool isCollection, Depth depth, List<DavResource> resources)
+    bool Collect(DavPath path, WebDavEntry entry, Depth depth, List<DavResource> resources)
     {
-        resources.Add(this.Describe(
-            path.Relative,
-            isCollection ? new DirectoryInfo(path.Full) : (FileSystemInfo)new FileInfo(path.Full)
-        ));
+        resources.Add(this.Describe(path.Relative, entry));
 
-        if (depth == Depth.Zero || !isCollection)
+        if (depth == Depth.Zero || !entry.IsCollection)
             return true;
 
         return this.CollectMembers(path, depth == Depth.Infinity, resources);
@@ -167,36 +161,35 @@ partial class WebDavHandler
             var relative = Join(path.Relative, child.Name);
             resources.Add(this.Describe(relative, child));
 
-            if (!recurse || child is not DirectoryInfo)
+            if (!recurse || !child.IsCollection)
                 continue;
 
             // A link inside the root that points at one of its own ancestors is a cycle, and an
             // infinite-depth walk would follow it until the cap stopped it. Not descending into
-            // reparse points ends that without a visited-set.
-            if (child.Attributes.HasFlag(FileAttributes.ReparsePoint))
+            // links ends that without a visited-set.
+            if (child.IsLink)
                 continue;
 
-            if (!this.CollectMembers(new DavPath(relative, child.FullName), recurse: true, resources))
+            if (!this.CollectMembers(new DavPath(relative), recurse: true, resources))
                 return false;
         }
 
         return true;
     }
 
-    DavResource Describe(string relative, FileSystemInfo info)
+    DavResource Describe(string relative, WebDavEntry entry)
     {
-        var isCollection = info is DirectoryInfo;
-        var file = info as FileInfo;
+        var isCollection = entry.IsCollection;
 
         return new DavResource(
             relative,
-            relative.Length == 0 ? this.RootDisplayName : info.Name,
+            relative.Length == 0 ? this.RootDisplayName : entry.DisplayName ?? entry.Name,
             isCollection,
-            file?.Length ?? 0,
-            info.CreationTimeUtc,
-            info.LastWriteTimeUtc,
-            isCollection ? null : this.ContentTypeFor(info.Name),
-            file is null ? null : ETagFor(file)
+            isCollection ? 0 : entry.Length,
+            entry.CreatedUtc,
+            entry.LastModifiedUtc,
+            isCollection ? null : this.ContentTypeFor(entry),
+            isCollection ? null : ETagFor(entry)
         );
     }
 
@@ -420,7 +413,7 @@ partial class WebDavHandler
 
             case "quota-available-bytes":
             case "quota-used-bytes":
-                this.WriteQuota(writer, name.Name);
+                this.WriteQuota(writer, resource.Relative, name.Name);
                 break;
         }
     }
@@ -448,35 +441,24 @@ partial class WebDavHandler
     }
 
     /// <summary>
-    /// RFC 4331 quota, reported from the volume the mount lives on.
-    /// <para>
-    /// Not the size of the subtree, which is what the RFC's wording suggests and what walking it
-    /// would cost. Clients ask for this to draw a "space free" figure, and the volume's is both the
-    /// number they mean and the one that is true.
-    /// </para>
+    /// RFC 4331 quota, as the file system reports it for where the collection lives - see
+    /// <see cref="PhysicalWebDavFileSystem.GetQuota"/> for why that is a volume's figure and not a
+    /// walk of the subtree. A file system with no answer leaves the property out, and a client that
+    /// wanted a number falls back to not showing one.
     /// </summary>
-    void WriteQuota(XmlWriter writer, string localName)
+    void WriteQuota(XmlWriter writer, string relative, string localName)
     {
-        try
-        {
-            var drive = new DriveInfo(Path.GetPathRoot(this.root) ?? this.root);
+        if (this.fileSystem.GetQuota(relative) is not { } quota)
+            return;
 
-            var value = localName == "quota-available-bytes"
-                ? drive.AvailableFreeSpace
-                : drive.TotalSize - drive.AvailableFreeSpace;
+        var value = localName == "quota-available-bytes" ? quota.AvailableBytes : quota.UsedBytes;
 
-            writer.WriteElementString(
-                WebDavXml.Prefix,
-                localName,
-                Dav,
-                value.ToString(CultureInfo.InvariantCulture)
-            );
-        }
-        catch (Exception ex) when (ex is IOException or ArgumentException or UnauthorizedAccessException)
-        {
-            // A volume that will not answer is not a failed request. The property is simply absent,
-            // and a client that wanted a number falls back to not showing one.
-        }
+        writer.WriteElementString(
+            WebDavXml.Prefix,
+            localName,
+            Dav,
+            value.ToString(CultureInfo.InvariantCulture)
+        );
     }
 
     static void WriteDead(XmlWriter writer, WebDavProperty property)
@@ -505,13 +487,13 @@ partial class WebDavHandler
             return;
         }
 
-        var isCollection = Directory.Exists(path.Full);
-
-        if (!isCollection && !File.Exists(path.Full))
+        if (this.Stat(path) is not { } entry)
         {
             await StatusAsync(context, StatusCodes.Status404NotFound).ConfigureAwait(false);
             return;
         }
+
+        var isCollection = entry.IsCollection;
 
         if (await this.AuthorizeAsync(context, path, subtree: false).ConfigureAwait(false) is null)
             return;

@@ -4,12 +4,21 @@ using Shiny.Net.HttpServer.StaticFiles;
 
 namespace Shiny.Net.HttpServer.WebDav.Internal;
 
-/// <summary>A request path that has been checked and resolved onto the file system.</summary>
+/// <summary>A request path that has been checked, and may be handed to the file system.</summary>
 /// <param name="Relative">Relative to the mount root, forward slashes, empty for the root itself.</param>
-/// <param name="Full">The absolute path on disk.</param>
-readonly record struct DavPath(string Relative, string Full)
+readonly record struct DavPath(string Relative)
 {
     public bool IsRoot => this.Relative.Length == 0;
+
+    /// <summary>The collection holding this one - the root for a member of the root.</summary>
+    public DavPath Parent
+    {
+        get
+        {
+            var cut = this.Relative.LastIndexOf('/');
+            return new DavPath(cut < 0 ? string.Empty : this.Relative[..cut]);
+        }
+    }
 }
 
 /// <summary>
@@ -17,25 +26,62 @@ readonly record struct DavPath(string Relative, string Full)
 /// <para>
 /// Every path from a request goes through <see cref="TryResolve"/> before anything touches the file
 /// system, and nothing else in here builds a path by hand. That is the security model: one door,
-/// checked once, rather than a check at each call site that someone will eventually forget.
+/// checked once, rather than a check at each call site that someone will eventually forget. What
+/// only the file system can know - where a link leads - is the file system's to refuse.
 /// </para>
 /// </summary>
 sealed partial class WebDavHandler
 {
     readonly WebDavOptions options;
-    readonly string root;
+    readonly IWebDavFileSystem fileSystem;
     readonly string basePath;
     readonly WebDavLockManager locks;
     readonly IWebDavPropertyStore properties;
 
-    public WebDavHandler(WebDavOptions options, string root, string basePath)
+    public WebDavHandler(WebDavOptions options, IWebDavFileSystem fileSystem, string basePath)
     {
         this.options = options;
-        this.root = root;
+        this.fileSystem = fileSystem;
         this.basePath = basePath;
         this.locks = new WebDavLockManager(options);
         this.properties = options.PropertyStore ?? new InMemoryWebDavPropertyStore();
     }
+
+    /// <summary>
+    /// Wraps a verb so that a file system's refusal becomes the status it names.
+    /// <para>
+    /// One place rather than a try at every call into the file system, for the same reason paths
+    /// are resolved in one place: a verb added later cannot forget it. Only before the response has
+    /// started - once a status line has gone out there is nothing to replace, and the exception is
+    /// left for the server, which ends the connection.
+    /// </para>
+    /// </summary>
+    public RequestDelegate Guard(RequestDelegate verb) => async context =>
+    {
+        int status;
+
+        try
+        {
+            await verb(context).ConfigureAwait(false);
+            return;
+        }
+        catch (WebDavException ex) when (!context.Response.HasStarted)
+        {
+            status = ex.StatusCode;
+        }
+        catch (UnauthorizedAccessException) when (!context.Response.HasStarted)
+        {
+            status = StatusCodes.Status403Forbidden;
+        }
+        catch (IOException ex) when (!context.Response.HasStarted)
+        {
+            status = ex is FileNotFoundException or DirectoryNotFoundException
+                ? StatusCodes.Status404NotFound
+                : StatusCodes.Status409Conflict;
+        }
+
+        await StatusAsync(context, status).ConfigureAwait(false);
+    };
 
     // ---- OPTIONS ----
 
@@ -93,7 +139,13 @@ sealed partial class WebDavHandler
             return;
         }
 
-        if (Directory.Exists(path.Full))
+        if (this.Stat(path) is not { } entry)
+        {
+            await StatusAsync(context, StatusCodes.Status404NotFound).ConfigureAwait(false);
+            return;
+        }
+
+        if (entry.IsCollection)
         {
             if (!this.options.DirectoryBrowsing)
             {
@@ -105,29 +157,30 @@ sealed partial class WebDavHandler
             return;
         }
 
-        if (!File.Exists(path.Full))
+        // Opened before the result is built rather than lazily by it, because the stream is what
+        // knows the length: a file system that produces the bytes on demand can only say how many
+        // there are once it has, and a Content-Length that disagrees with the body is a truncated
+        // file or a hung client.
+        var stream = await this.fileSystem.OpenReadAsync(path.Relative, context.RequestAborted).ConfigureAwait(false);
+
+        await using (stream.ConfigureAwait(false))
         {
-            await StatusAsync(context, StatusCodes.Status404NotFound).ConfigureAwait(false);
-            return;
+            // Through the download result so ranges, ETags and conditional requests all work — a
+            // client resuming a large file over a phone's connection is exactly the case that needs
+            // them. No download name, though: this is a mount, and a Content-Disposition would turn
+            // every open into a save.
+            await FileDownloadResult
+                .FromOpener(
+                    _ => new ValueTask<Stream>(stream),
+                    stream.CanSeek ? stream.Length : entry.Length,
+                    this.ContentTypeFor(entry),
+                    downloadName: null,
+                    ETagFor(entry),
+                    entry.LastModifiedUtc
+                )
+                .ExecuteAsync(context)
+                .ConfigureAwait(false);
         }
-
-        var info = new FileInfo(path.Full);
-
-        // Through the download result so ranges, ETags and conditional requests all work — a client
-        // resuming a large file over a phone's connection is exactly the case that needs them. No
-        // download name, though: this is a mount, and a Content-Disposition would turn every open
-        // into a save.
-        await FileDownloadResult
-            .FromOpener(
-                _ => new ValueTask<Stream>(OpenRead(path.Full)),
-                info.Length,
-                this.ContentTypeFor(info.Name),
-                downloadName: null,
-                ETagFor(info),
-                info.LastWriteTimeUtc
-            )
-            .ExecuteAsync(context)
-            .ConfigureAwait(false);
     }
 
     /// <summary>
@@ -140,14 +193,12 @@ sealed partial class WebDavHandler
 
         foreach (var child in this.Children(path))
         {
-            var isCollection = child is DirectoryInfo;
-
             entries.Add(new WebDavDirectoryPage.Entry(
-                child.Name,
-                this.HrefFor(Join(path.Relative, child.Name), isCollection),
-                isCollection,
-                child is FileInfo file ? file.Length : 0,
-                child.LastWriteTimeUtc
+                child.DisplayName ?? child.Name,
+                this.HrefFor(Join(path.Relative, child.Name), child.IsCollection),
+                child.IsCollection,
+                child.IsCollection ? 0 : child.Length,
+                child.LastModifiedUtc.UtcDateTime
             ));
         }
 
@@ -189,9 +240,7 @@ sealed partial class WebDavHandler
         if (path.IsRoot)
             return null;
 
-        var cut = path.Relative.LastIndexOf('/');
-
-        return this.HrefFor(cut < 0 ? string.Empty : path.Relative[..cut], isCollection: true);
+        return this.HrefFor(path.Parent, isCollection: true);
     }
 
 
@@ -242,7 +291,9 @@ sealed partial class WebDavHandler
             return;
         }
 
-        if (Directory.Exists(path.Full))
+        var existing = this.Stat(path);
+
+        if (existing is { IsCollection: true })
         {
             await this.NotAllowedAsync(context).ConfigureAwait(false);
             return;
@@ -250,8 +301,7 @@ sealed partial class WebDavHandler
 
         // A PUT does not create intermediate collections; RFC 4918 §9.7.1 makes a missing parent a
         // conflict, and a client that meant to make one will MKCOL it.
-        var parent = Path.GetDirectoryName(path.Full);
-        if (parent is null || !Directory.Exists(parent))
+        if (!this.IsCollection(path.Parent))
         {
             await StatusAsync(context, StatusCodes.Status409Conflict).ConfigureAwait(false);
             return;
@@ -266,34 +316,22 @@ sealed partial class WebDavHandler
             return;
         }
 
-        var existed = File.Exists(path.Full);
+        // Counted as it is read rather than trusting Content-Length, which a client is free to
+        // understate or omit entirely. Passing the limit throws a 413 out of the file system's copy,
+        // which is what stops a write it had staged from being moved into place.
+        var body = new UploadLimitStream(context.Request.Body, this.options.MaxUploadBytes);
 
-        // Written to a temporary file and moved into place, so a failed or abandoned upload cannot
-        // leave a half-written file where a whole one used to be.
-        var staging = path.Full + ".webdav-" + Guid.NewGuid().ToString("n")[..8];
+        await this.fileSystem.WriteAsync(path.Relative, body, context.RequestAborted).ConfigureAwait(false);
 
-        try
-        {
-            if (!await this.CopyBodyAsync(context, staging).ConfigureAwait(false))
-            {
-                await StatusAsync(context, StatusCodes.Status413PayloadTooLarge).ConfigureAwait(false);
-                return;
-            }
-
-            File.Move(staging, path.Full, overwrite: true);
-        }
-        finally
-        {
-            if (File.Exists(staging))
-                File.Delete(staging);
-        }
-
-        // The new tag, so a client can make its next write conditional without a round trip.
-        context.Response.Headers.Set(HeaderNames.ETag, ETagFor(new FileInfo(path.Full)));
+        // The new tag, so a client can make its next write conditional without a round trip. A file
+        // system is free to file what it was given under another name - a photo library does - and
+        // then there is simply no tag to give.
+        if (this.Stat(path) is { IsCollection: false } written)
+            context.Response.Headers.Set(HeaderNames.ETag, ETagFor(written));
 
         await StatusAsync(
             context,
-            existed ? StatusCodes.Status204NoContent : StatusCodes.Status201Created
+            existing is not null ? StatusCodes.Status204NoContent : StatusCodes.Status201Created
         ).ConfigureAwait(false);
     }
 
@@ -314,13 +352,13 @@ sealed partial class WebDavHandler
             return;
         }
 
-        var isCollection = Directory.Exists(path.Full);
-
-        if (!isCollection && !File.Exists(path.Full))
+        if (this.Stat(path) is not { } entry)
         {
             await StatusAsync(context, StatusCodes.Status404NotFound).ConfigureAwait(false);
             return;
         }
+
+        var isCollection = entry.IsCollection;
 
         // RFC 4918 §9.6: DELETE on a collection is always Depth: infinity, and anything else is
         // malformed rather than a narrower request.
@@ -335,10 +373,7 @@ sealed partial class WebDavHandler
         if (await this.AuthorizeAsync(context, path, subtree: isCollection).ConfigureAwait(false) is null)
             return;
 
-        if (isCollection)
-            Directory.Delete(path.Full, recursive: true);
-        else
-            File.Delete(path.Full);
+        await this.fileSystem.DeleteAsync(path.Relative, context.RequestAborted).ConfigureAwait(false);
 
         this.locks.ReleaseTree(path.Relative);
 
@@ -373,14 +408,13 @@ sealed partial class WebDavHandler
             return;
         }
 
-        if (Directory.Exists(path.Full) || File.Exists(path.Full))
+        if (this.Stat(path) is not null)
         {
             await this.NotAllowedAsync(context).ConfigureAwait(false);
             return;
         }
 
-        var parent = Path.GetDirectoryName(path.Full);
-        if (parent is null || !Directory.Exists(parent))
+        if (!this.IsCollection(path.Parent))
         {
             await StatusAsync(context, StatusCodes.Status409Conflict).ConfigureAwait(false);
             return;
@@ -389,16 +423,18 @@ sealed partial class WebDavHandler
         if (await this.AuthorizeAsync(context, path, subtree: false).ConfigureAwait(false) is null)
             return;
 
-        Directory.CreateDirectory(path.Full);
+        await this.fileSystem.CreateDirectoryAsync(path.Relative, context.RequestAborted).ConfigureAwait(false);
 
         await StatusAsync(context, StatusCodes.Status201Created).ConfigureAwait(false);
     }
 
     // ---- shared plumbing ----
 
-    string RootDisplayName => this.options.DisplayName
-        ?? Path.GetFileName(this.root)
-        ?? "/";
+    string RootDisplayName
+        => this.options.DisplayName
+            ?? (this.fileSystem.GetEntry(string.Empty) is { } root && (root.DisplayName ?? root.Name) is { Length: > 0 } name
+                ? name
+                : "/");
 
     /// <summary>
     /// The catch-all the route captured, which is empty for a request to the mount root — that
@@ -410,7 +446,7 @@ sealed partial class WebDavHandler
             : string.Empty;
 
     /// <summary>
-    /// Turns a request path into a real one inside the root.
+    /// Turns a request path into one the file system may be asked about.
     /// <para>
     /// The path arrives already percent-decoded, so <c>%2e%2e%2f</c> is a plain <c>../</c> by the
     /// time it gets here — which is why the segment check happens on this value and not on the raw
@@ -420,7 +456,7 @@ sealed partial class WebDavHandler
     /// </summary>
     bool TryResolve(string raw, out DavPath path)
     {
-        path = new DavPath(string.Empty, this.root);
+        path = new DavPath(string.Empty);
 
         if (raw.Length == 0)
             return true;
@@ -428,26 +464,12 @@ sealed partial class WebDavHandler
         if (!StaticFilePath.TryNormalize(raw, this.options.ServeHiddenFiles, out var segments))
             return false;
 
-        var candidate = Path.GetFullPath(Path.Combine(this.root, segments));
-
-        // Belt and braces after the segment check, and again after following links — a symlink is
-        // the one way a path that looks contained can leave.
-        if (!this.IsInsideRoot(candidate))
-            return false;
-
         var relative = segments.Replace(Path.DirectorySeparatorChar, '/');
 
         if (!this.PassesFilter(relative))
             return false;
 
-        var link = File.Exists(candidate) || Directory.Exists(candidate)
-            ? new FileInfo(candidate).ResolveLinkTarget(returnFinalTarget: true)
-            : null;
-
-        if (link is not null && !this.IsInsideRoot(link.FullName))
-            return false;
-
-        path = new DavPath(relative, candidate);
+        path = new DavPath(relative);
         return true;
     }
 
@@ -532,39 +554,40 @@ sealed partial class WebDavHandler
 
     string HrefFor(string relative, bool isCollection) => WebDavXml.Href(this.basePath, relative, isCollection);
 
-    /// <summary>The members of a collection that this mount is willing to show.</summary>
-    IEnumerable<FileSystemInfo> Children(DavPath path)
+    /// <summary>What is at a path, or null - the one question nearly every verb starts with.</summary>
+    WebDavEntry? Stat(DavPath path) => this.fileSystem.GetEntry(path.Relative);
+
+    bool IsCollection(DavPath path) => this.Stat(path) is { IsCollection: true };
+
+    /// <summary>
+    /// The members of a collection that this mount is willing to show: collections first, then
+    /// files, each by name - sorted here so that no file system has to, and every one lists alike.
+    /// </summary>
+    IEnumerable<WebDavEntry> Children(DavPath path)
+        => this.fileSystem
+            .GetChildren(path.Relative)
+            .Where(child => this.IsVisible(child, path.Relative))
+            .OrderBy(child => child.IsCollection ? 0 : 1)
+            .ThenBy(child => child.Name, StringComparer.OrdinalIgnoreCase);
+
+    bool IsVisible(WebDavEntry child, string parentRelative)
     {
-        var directory = new DirectoryInfo(path.Full);
-
-        foreach (var child in directory.EnumerateDirectories().OrderBy(d => d.Name, StringComparer.OrdinalIgnoreCase))
-        {
-            if (this.IsVisible(child.Name, child.Attributes, path.Relative))
-                yield return child;
-        }
-
-        foreach (var child in directory.EnumerateFiles().OrderBy(f => f.Name, StringComparer.OrdinalIgnoreCase))
-        {
-            if (this.IsVisible(child.Name, child.Attributes, path.Relative))
-                yield return child;
-        }
-    }
-
-    bool IsVisible(string name, FileAttributes attributes, string parentRelative)
-    {
-        if (!this.options.ServeHiddenFiles && (name.StartsWith('.') || attributes.HasFlag(FileAttributes.Hidden)))
+        // The same test the request path gets, so a member the listing shows is one a request can
+        // name - a segment that TryNormalize would refuse is not listed either.
+        if (child.Name.Length == 0 || child.Name is "." or ".." || child.Name.Contains('/') || child.Name.Contains('\\'))
             return false;
 
-        return this.PassesFilter(Join(parentRelative, name));
+        if (!this.options.ServeHiddenFiles && (child.Name.StartsWith('.') || child.IsHidden))
+            return false;
+
+        return this.PassesFilter(Join(parentRelative, child.Name));
     }
 
     bool PassesFilter(string relative) => this.options.Filter is null || this.options.Filter(relative);
 
     static string Join(string parent, string name) => parent.Length == 0 ? name : parent + "/" + name;
 
-    bool IsInsideRoot(string fullPath)
-        => fullPath.StartsWith(this.root + Path.DirectorySeparatorChar, StaticFilePath.PathComparison)
-            || string.Equals(fullPath, this.root, StaticFilePath.PathComparison);
+    string ContentTypeFor(WebDavEntry entry) => entry.ContentType ?? this.ContentTypeFor(entry.Name);
 
     string ContentTypeFor(string name)
     {
@@ -576,57 +599,12 @@ sealed partial class WebDavHandler
     }
 
     /// <summary>
-    /// Length plus modification time, quoted. The same shape the static file handler uses, so a
-    /// client that fetched a file over one and writes it back over the other sees one entity.
+    /// The file system's own tag, or length plus modification time, quoted - the same shape the
+    /// static file handler uses, so a client that fetched a file over one and writes it back over
+    /// the other sees one entity.
     /// </summary>
-    static string ETagFor(FileInfo info) => $"\"{info.LastWriteTimeUtc.Ticks:x}-{info.Length:x}\"";
-
-    static FileStream OpenRead(string path) => new(
-        path,
-        new FileStreamOptions
-        {
-            Mode = FileMode.Open,
-            Access = FileAccess.Read,
-            Share = FileShare.Read,
-            Options = FileOptions.Asynchronous | FileOptions.SequentialScan
-        }
-    );
-
-    /// <summary>Copies the body to a file, or returns false once it passes the upload limit.</summary>
-    async Task<bool> CopyBodyAsync(HttpContext context, string destination)
-    {
-        var buffer = new byte[64 * 1024];
-        long total = 0;
-
-        var file = new FileStream(
-            destination,
-            new FileStreamOptions
-            {
-                Mode = FileMode.Create,
-                Access = FileAccess.Write,
-                Share = FileShare.None,
-                Options = FileOptions.Asynchronous | FileOptions.SequentialScan
-            }
-        );
-
-        await using (file.ConfigureAwait(false))
-        {
-            int read;
-            while ((read = await context.Request.Body.ReadAsync(buffer, context.RequestAborted).ConfigureAwait(false)) > 0)
-            {
-                total += read;
-
-                // Counted as it copies rather than trusting Content-Length, which a client is free
-                // to understate or omit entirely.
-                if (total > this.options.MaxUploadBytes)
-                    return false;
-
-                await file.WriteAsync(buffer.AsMemory(0, read), context.RequestAborted).ConfigureAwait(false);
-            }
-        }
-
-        return true;
-    }
+    static string ETagFor(WebDavEntry entry)
+        => entry.ETag ?? $"\"{entry.LastModifiedUtc.UtcTicks:x}-{entry.Length:x}\"";
 
     /// <summary>
     /// 405, with the <c>Allow</c> header this mount publishes.

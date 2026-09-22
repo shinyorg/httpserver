@@ -6,8 +6,22 @@ public sealed class WebDavOptions
     /// <summary>
     /// The directory being served. Everything is resolved inside it and nothing outside it is
     /// reachable — on a phone this is normally <c>FileSystem.AppDataDirectory</c>.
+    /// <para>
+    /// Required unless <see cref="FileSystem"/> is set, and ignored when it is.
+    /// </para>
     /// </summary>
     public string RootPath { get; set; } = null!;
+
+    /// <summary>
+    /// What the mount serves, when that is not one directory - see <see cref="IWebDavFileSystem"/>.
+    /// Null serves <see cref="RootPath"/> through a <see cref="PhysicalWebDavFileSystem"/>.
+    /// <para>
+    /// Every option below still applies on top of it: the hidden-file rule, the
+    /// <see cref="Filter"/>, the write and delete switches, the limits and locking are the mount's,
+    /// so a file system only has to answer what is there.
+    /// </para>
+    /// </summary>
+    public IWebDavFileSystem? FileSystem { get; set; }
 
     /// <summary>
     /// Allows <c>PUT</c>, <c>MKCOL</c>, <c>COPY</c>, <c>PROPPATCH</c> and <c>LOCK</c>. Off by
@@ -107,7 +121,7 @@ public sealed class WebDavOptions
 
     /// <summary>
     /// The root collection's <c>displayname</c>. Some clients use it to label the mount; null uses
-    /// the directory's own name.
+    /// the root entry's own name - for a directory, the directory's.
     /// </summary>
     public string? DisplayName { get; set; }
 
@@ -122,9 +136,10 @@ public sealed class WebDavOptions
     /// </summary>
     public IWebDavPropertyStore? PropertyStore { get; set; }
 
-    internal string ResolvedRoot => System.IO.Path.TrimEndingDirectorySeparator(
-        System.IO.Path.GetFullPath(this.RootPath ?? throw new InvalidOperationException(
-            $"{nameof(WebDavOptions)}.{nameof(this.RootPath)} is required."
-        ))
-    );
+    internal IWebDavFileSystem ResolveFileSystem()
+        => this.FileSystem ?? new PhysicalWebDavFileSystem(
+            this.RootPath ?? throw new InvalidOperationException(
+                $"{nameof(WebDavOptions)}.{nameof(this.RootPath)} or {nameof(this.FileSystem)} is required."
+            )
+        );
 }

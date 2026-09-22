@@ -222,6 +222,10 @@ triggers:
 - WebDavMethods
 - WebDavHeaderNames
 - IWebDavPropertyStore
+- IWebDavFileSystem
+- PhysicalWebDavFileSystem
+- WebDavEntry
+- WebDavException
 - InMemoryWebDavPropertyStore
 - WebDavLock
 - WebDavLockScope
@@ -852,6 +856,14 @@ app.MapWebDav("/dav", o =>
   is the same page `shinyhttpserver` serves — say "open the mount URL in a browser" when a user asks
   for a UI over a directory; there is no other file-manager UI in this library.
 - The mount is excluded from the OpenAPI document — do not try to describe it.
+- **Not one directory?** Implement `IWebDavFileSystem` and set `o.FileSystem` instead of `RootPath`
+  — several roots side by side, platform-API folders, a photo library. Paths arrive relative,
+  `/`-separated, root `""`, already stripped of `..`/dotfiles/`Filter` misses. `WebDavEntry.Name` is
+  the URL segment and `DisplayName` what the client shows. Refuse with
+  `throw new WebDavException(403)`; `UnauthorizedAccessException`→403,
+  `FileNotFound`/`DirectoryNotFound`→404, other `IOException`→409. Let the 413 the write stream throws
+  propagate. `OpenReadAsync` returning a seekable stream wins over the entry's length — buffer
+  anything transcoded on the fly. Do not copy the data into a temp directory to use `RootPath`.
 
 ## Realtime
 

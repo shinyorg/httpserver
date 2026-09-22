@@ -196,16 +196,15 @@ public static class WebDavExtensions
     {
         ArgumentNullException.ThrowIfNull(options);
 
-        var root = options.ResolvedRoot;
-
-        if (!Directory.Exists(root))
-            throw new DirectoryNotFoundException($"The WebDAV root '{root}' does not exist.");
+        // Resolved here rather than on the first request, so a root that does not exist is a startup
+        // failure naming it rather than a mount that answers 404 to everything.
+        var fileSystem = options.ResolveFileSystem();
 
         // Taken from the group rather than from the caller's argument, so a mount nested inside
         // another group reports hrefs that include the outer prefix — a client resolves every
         // member URL against them, so one that is short by a segment breaks the whole mount.
         var basePath = group.Prefix.Trim('/') is { Length: > 0 } trimmed ? "/" + trimmed : string.Empty;
-        var handler = new WebDavHandler(options, root, basePath);
+        var handler = new WebDavHandler(options, fileSystem, basePath);
 
         var read = new List<RouteEndpointBuilder>();
         var write = new List<RouteEndpointBuilder>();
@@ -216,8 +215,10 @@ public static class WebDavExtensions
         // alone would not match the prefix on its own.
         void MapVerb(List<RouteEndpointBuilder> routes, string method, RequestDelegate handle)
         {
-            routes.Add(group.Map(method, "/", handle));
-            routes.Add(group.Map(method, "/{*path}", handle));
+            var guarded = handler.Guard(handle);
+
+            routes.Add(group.Map(method, "/", guarded));
+            routes.Add(group.Map(method, "/{*path}", guarded));
         }
 
         MapVerb(read, HttpMethods.Options, handler.OptionsAsync);

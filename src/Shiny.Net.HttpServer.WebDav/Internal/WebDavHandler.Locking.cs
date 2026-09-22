@@ -55,7 +55,7 @@ partial class WebDavHandler
             context,
             StatusCodes.Status423Locked,
             "lock-token-submitted",
-            this.HrefFor(blocking.Path, Directory.Exists(this.FullOf(blocking.Path))),
+            this.HrefFor(blocking.Path, this.IsCollection(new DavPath(blocking.Path))),
             context.RequestAborted
         ).ConfigureAwait(false);
 
@@ -99,15 +99,10 @@ partial class WebDavHandler
         for (var i = 0; i < held.Count; i++)
             tokens[i] = held[i].Token;
 
-        var full = this.FullOf(relative);
-        var info = new FileInfo(full);
-
-        return (tokens, info.Exists ? ETagFor(info) : null);
+        // A collection has no entity tag, here as in PROPFIND - which is also what it had when this
+        // asked the disk for a file at a directory's path and found none.
+        return (tokens, this.fileSystem.GetEntry(relative) is { IsCollection: false } entry ? ETagFor(entry) : null);
     }
-
-    string FullOf(string relative) => relative.Length == 0
-        ? this.root
-        : Path.Combine(this.root, relative.Replace('/', Path.DirectorySeparatorChar));
 
     // ---- LOCK ----
 
@@ -178,7 +173,7 @@ partial class WebDavHandler
 
         var created = false;
 
-        if (!File.Exists(path.Full) && !Directory.Exists(path.Full))
+        if (this.Stat(path) is null)
         {
             // RFC 4918 §7.3: locking an unmapped URL creates an empty resource to hold the lock.
             // Not an edge case — it is exactly what a Mac does when you save a new file, and a
@@ -189,9 +184,7 @@ partial class WebDavHandler
                 return;
             }
 
-            var parent = Path.GetDirectoryName(path.Full);
-
-            if (parent is null || !Directory.Exists(parent))
+            if (!this.IsCollection(path.Parent))
             {
                 await StatusAsync(context, StatusCodes.Status409Conflict).ConfigureAwait(false);
                 return;
@@ -200,9 +193,7 @@ partial class WebDavHandler
             if (!await this.CheckLockAsync(context, path, tokens, subtree: false).ConfigureAwait(false))
                 return;
 
-            await using (File.Create(path.Full).ConfigureAwait(false))
-            {
-            }
+            await this.fileSystem.WriteAsync(path.Relative, Stream.Null, context.RequestAborted).ConfigureAwait(false);
 
             created = true;
         }
@@ -213,7 +204,7 @@ partial class WebDavHandler
                 context,
                 StatusCodes.Status423Locked,
                 "no-conflicting-lock",
-                this.HrefFor(held.Path, Directory.Exists(this.FullOf(held.Path))),
+                this.HrefFor(held.Path, this.IsCollection(new DavPath(held.Path))),
                 context.RequestAborted
             ).ConfigureAwait(false);
 
@@ -359,7 +350,7 @@ partial class WebDavHandler
             WebDavXml.Prefix,
             "href",
             WebDavXml.Ns,
-            this.HrefFor(held.Path, Directory.Exists(this.FullOf(held.Path)))
+            this.HrefFor(held.Path, this.IsCollection(new DavPath(held.Path)))
         );
         writer.WriteEndElement();
 

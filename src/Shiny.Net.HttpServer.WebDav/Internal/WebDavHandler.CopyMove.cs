@@ -37,13 +37,13 @@ partial class WebDavHandler
             return;
         }
 
-        var isCollection = Directory.Exists(source.Full);
-
-        if (!isCollection && !File.Exists(source.Full))
+        if (this.Stat(source) is not { } sourceEntry)
         {
             await StatusAsync(context, StatusCodes.Status404NotFound).ConfigureAwait(false);
             return;
         }
+
+        var isCollection = sourceEntry.IsCollection;
 
         // Moving the root would take the directory the mount is defined by with it.
         if (move && source.IsRoot)
@@ -122,9 +122,7 @@ partial class WebDavHandler
             return;
         }
 
-        var destinationParent = Path.GetDirectoryName(destination.Full);
-
-        if (destinationParent is null || !Directory.Exists(destinationParent))
+        if (!this.IsCollection(destination.Parent))
         {
             await StatusAsync(context, StatusCodes.Status409Conflict).ConfigureAwait(false);
             return;
@@ -139,7 +137,7 @@ partial class WebDavHandler
         if (move && !await this.CheckLockAsync(context, source, tokens, subtree: isCollection).ConfigureAwait(false))
             return;
 
-        var destinationExisted = File.Exists(destination.Full) || Directory.Exists(destination.Full);
+        var destinationExisted = this.Stat(destination) is not null;
 
         if (!await this.CheckLockAsync(context, destination, tokens, subtree: destinationExisted).ConfigureAwait(false))
             return;
@@ -154,10 +152,7 @@ partial class WebDavHandler
 
             // RFC 4918 §9.8.4: an overwriting COPY behaves as if the destination had been DELETEd
             // first. Doing it literally is also the only way a collection's stale members go.
-            if (Directory.Exists(destination.Full))
-                Directory.Delete(destination.Full, recursive: true);
-            else
-                File.Delete(destination.Full);
+            await this.fileSystem.DeleteAsync(destination.Relative, context.RequestAborted).ConfigureAwait(false);
 
             this.locks.ReleaseTree(destination.Relative);
 
@@ -168,21 +163,16 @@ partial class WebDavHandler
 
         if (move)
         {
-            if (isCollection)
-                Directory.Move(source.Full, destination.Full);
-            else
-                File.Move(source.Full, destination.Full);
+            await this.fileSystem.MoveAsync(source.Relative, destination.Relative, context.RequestAborted).ConfigureAwait(false);
 
             // A lock does not travel with the resource — RFC 4918 §9.9.1.
             this.locks.ReleaseTree(source.Relative);
         }
-        else if (isCollection)
-        {
-            CopyTree(source.Full, destination.Full, shallow);
-        }
         else
         {
-            File.Copy(source.Full, destination.Full, overwrite: false);
+            await this.fileSystem
+                .CopyAsync(source.Relative, destination.Relative, recursive: !(isCollection && shallow), context.RequestAborted)
+                .ConfigureAwait(false);
         }
 
         await this.properties
@@ -195,27 +185,6 @@ partial class WebDavHandler
             context,
             destinationExisted ? StatusCodes.Status204NoContent : StatusCodes.Status201Created
         ).ConfigureAwait(false);
-    }
-
-    static void CopyTree(string source, string destination, bool shallow)
-    {
-        Directory.CreateDirectory(destination);
-
-        if (shallow)
-            return;
-
-        foreach (var file in Directory.EnumerateFiles(source))
-            File.Copy(file, Path.Combine(destination, Path.GetFileName(file)), overwrite: true);
-
-        foreach (var directory in Directory.EnumerateDirectories(source))
-        {
-            // Not descending into a link keeps a cycle inside the root from turning a copy into an
-            // unbounded one.
-            if (new DirectoryInfo(directory).Attributes.HasFlag(FileAttributes.ReparsePoint))
-                continue;
-
-            CopyTree(directory, Path.Combine(destination, Path.GetFileName(directory)), shallow: false);
-        }
     }
 
     /// <summary>Maps a <c>Destination</c> header onto a path in this mount.</summary>
