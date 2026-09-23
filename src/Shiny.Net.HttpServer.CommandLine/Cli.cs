@@ -11,8 +11,6 @@ namespace Shiny.Net.HttpServer.CommandLine;
 /// </summary>
 public static class Cli
 {
-    const long DefaultMaxUpload = 64 * 1024 * 1024;
-
     public static RootCommand Build(Func<ServeSettings, CancellationToken, Task<int>> run)
     {
         var pathArg = new Argument<string>("path")
@@ -103,7 +101,7 @@ public static class Cli
         {
             Description = "Largest accepted upload, e.g. 500k, 64mb, 2gb.",
             HelpName = "size",
-            DefaultValueFactory = _ => DefaultMaxUpload,
+            DefaultValueFactory = _ => SettingParsers.DefaultMaxUpload,
             CustomParser = ParseSize
         };
 
@@ -115,6 +113,11 @@ public static class Cli
         var verboseOpt = new Option<bool>("--verbose", "-v")
         {
             Description = "Logs every request."
+        };
+
+        var noTuiOpt = new Option<bool>("--no-tui")
+        {
+            Description = "Prints the banner and a plain log instead of opening the dashboard. The dashboard is also skipped whenever input or output is redirected."
         };
 
         var root = new RootCommand("Serves a directory over HTTP: a file manager in a browser, and a WebDAV drive in Finder or Explorer.")
@@ -134,7 +137,8 @@ public static class Cli
             hiddenOpt,
             maxUploadOpt,
             noQrOpt,
-            verboseOpt
+            verboseOpt,
+            noTuiOpt
         };
 
         root.SetAction((parseResult, ct) =>
@@ -144,7 +148,7 @@ public static class Cli
                 RootPath = Path.GetFullPath(parseResult.GetRequiredValue(pathArg)),
                 Address = parseResult.GetRequiredValue(addressOpt),
                 Port = parseResult.GetRequiredValue(portOpt),
-                UrlPrefix = NormalizePrefix(parseResult.GetRequiredValue(prefixOpt)),
+                UrlPrefix = SettingParsers.NormalizePrefix(parseResult.GetRequiredValue(prefixOpt)),
                 Permissions = parseResult.GetRequiredValue(allowOpt) | Permissions.Read,
                 Users = parseResult.GetRequiredValue(userOpt),
                 Realm = parseResult.GetRequiredValue(realmOpt),
@@ -156,7 +160,8 @@ public static class Cli
                 ServeHidden = parseResult.GetValue(hiddenOpt),
                 MaxUploadBytes = parseResult.GetRequiredValue(maxUploadOpt),
                 ShowQr = !parseResult.GetValue(noQrOpt),
-                Verbose = parseResult.GetValue(verboseOpt)
+                Verbose = parseResult.GetValue(verboseOpt),
+                UseTui = !parseResult.GetValue(noTuiOpt)
             };
             return run(settings, ct);
         });
@@ -164,39 +169,12 @@ public static class Cli
     }
 
 
-    /// <summary>A prefix is a route, so it needs a leading slash and no trailing one.</summary>
-    static string NormalizePrefix(string prefix)
-    {
-        var value = prefix.Trim();
-        if (value.Length == 0 || value == "/")
-            return "/";
-
-        if (!value.StartsWith('/'))
-            value = "/" + value;
-
-        return value.TrimEnd('/');
-    }
-
-
     static IPAddress ParseAddress(ArgumentResult result)
     {
-        var value = result.Tokens[0].Value;
-        switch (value.ToLowerInvariant())
-        {
-            case "any":
-            case "all":
-                return IPAddress.Any;
+        if (!SettingParsers.TryParseAddress(result.Tokens[0].Value, out var address, out var error))
+            result.AddError(error!);
 
-            case "localhost":
-            case "loopback":
-                return IPAddress.Loopback;
-        }
-
-        if (IPAddress.TryParse(value, out var address))
-            return address;
-
-        result.AddError($"'{value}' is not an IP address. Use an IP, 'any' or 'localhost'.");
-        return IPAddress.Loopback;
+        return address;
     }
 
 
@@ -208,31 +186,8 @@ public static class Cli
         {
             foreach (var raw in token.Value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             {
-                switch (raw.ToLowerInvariant())
-                {
-                    case "read":
-                        break;
-
-                    case "create":
-                        permissions |= Permissions.Create;
-                        break;
-
-                    case "update":
-                        permissions |= Permissions.Update;
-                        break;
-
-                    case "delete":
-                        permissions |= Permissions.Delete;
-                        break;
-
-                    case "all":
-                        permissions |= Permissions.Create | Permissions.Update | Permissions.Delete;
-                        break;
-
-                    default:
-                        result.AddError($"'{raw}' is not an operation. Use read, create, update, delete or all.");
-                        break;
-                }
+                if (!SettingParsers.TryAddPermission(raw, ref permissions, out var error))
+                    result.AddError(error!);
             }
         }
         return permissions;
@@ -245,13 +200,10 @@ public static class Cli
 
         foreach (var token in result.Tokens)
         {
-            var index = token.Value.IndexOf(':');
-            if (index < 1 || index == token.Value.Length - 1)
-            {
-                result.AddError($"'{token.Value}' is not a credential. Use user:password.");
-                continue;
-            }
-            users.Add(new BasicUser(token.Value[..index], token.Value[(index + 1)..]));
+            if (SettingParsers.TryParseUser(token.Value, out var user, out var error))
+                users.Add(user!);
+            else
+                result.AddError(error!);
         }
         return users.ToArray();
     }
@@ -259,23 +211,9 @@ public static class Cli
 
     static long ParseSize(ArgumentResult result)
     {
-        var value = result.Tokens[0].Value.Trim().ToLowerInvariant();
-        var multiplier = 1L;
+        if (!SettingParsers.TryParseSize(result.Tokens[0].Value, out var bytes, out var error))
+            result.AddError(error!);
 
-        foreach (var (suffix, scale) in new[] { ("gb", 1024L * 1024 * 1024), ("mb", 1024L * 1024), ("kb", 1024L), ("g", 1024L * 1024 * 1024), ("m", 1024L * 1024), ("k", 1024L), ("b", 1L) })
-        {
-            if (value.EndsWith(suffix))
-            {
-                multiplier = scale;
-                value = value[..^suffix.Length].Trim();
-                break;
-            }
-        }
-
-        if (Int64.TryParse(value, out var number) && number > 0)
-            return number * multiplier;
-
-        result.AddError($"'{result.Tokens[0].Value}' is not a size. Use bytes or a suffix like 500k, 64mb, 2gb.");
-        return DefaultMaxUpload;
+        return bytes;
     }
 }

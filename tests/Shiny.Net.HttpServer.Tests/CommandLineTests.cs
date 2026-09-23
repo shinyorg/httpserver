@@ -142,7 +142,7 @@ public class CommandLineParsingTests
     [InlineData("https://x.free.pinggy.net", "/files", "https://x.free.pinggy.net/files")]
     [InlineData("https://x.free.pinggy.net/", "/files", "https://x.free.pinggy.net/files")]
     public void Puts_the_prefix_back_on_the_tunnel_address(string url, string prefix, string expected)
-        => Assert.Equal(expected, Runner.TunnelUrl(url, prefix));
+        => Assert.Equal(expected, ServerUrls.Tunnel(url, prefix));
 
     [Theory]
     [InlineData(new[] { "--allow", "frobnicate" }, "is not an operation")]

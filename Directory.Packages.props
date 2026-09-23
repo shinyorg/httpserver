@@ -22,6 +22,9 @@
 
         <!-- The CLI's argument parsing. Nothing that ships as a library takes it. -->
         <PackageVersion Include="System.CommandLine" Version="2.0.11"/>
+
+        <!-- The CLI's dashboard. Same as System.CommandLine: nothing that ships as a library takes it. -->
+        <PackageVersion Include="XenoAtom.Terminal.UI" Version="3.10.0"/>
     </ItemGroup>
     <ItemGroup>
         <PackageVersion Include="Microsoft.CodeAnalysis.CSharp" Version="4.11.0"/>

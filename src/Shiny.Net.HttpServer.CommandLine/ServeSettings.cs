@@ -39,10 +39,64 @@ public sealed record ServeSettings
     public required long MaxUploadBytes { get; init; }
     public required bool Verbose { get; init; }
 
+    /// <summary>Opens the dashboard rather than printing a banner. Ignored when there is no terminal to draw on.</summary>
+    public bool UseTui { get; init; }
+
     public bool AuthEnabled => this.Users.Count > 0;
     public string Scheme => this.UseHttps ? "https" : "http";
 
     public bool IsLoopbackOnly => IPAddress.IsLoopback(this.Address);
+
+
+    /// <summary>
+    /// Everything that should stop the server before it opens a socket, as the sentence to show -
+    /// or null when there is nothing wrong. The command line prints it and exits; the dashboard puts
+    /// it under the form and keeps the server it already has.
+    /// </summary>
+    public string? Validate()
+    {
+        if (!Directory.Exists(this.RootPath))
+            return $"'{this.RootPath}' is not a directory.";
+
+        if (this.Port is < 1 or > 65535)
+            return $"{this.Port} is not a port. Use 1-65535.";
+
+        // basic auth is the password itself on every request, so plain HTTP off-box is refused
+        if (this.AuthEnabled && !this.UseHttps && !this.IsLoopbackOnly && !this.AllowInsecureAuth)
+        {
+            return
+                $"""
+                 Basic auth over plain HTTP on {this.Address} would send the password across the network in the clear on every request.
+
+                 Pick one:
+                   --https                  serve over TLS with a self-signed certificate
+                   --tunnel -a localhost    reach it only through the tunnel, which is encrypted
+                   --address localhost      keep the server on this machine
+                   --allow-insecure-auth    send it anyway
+                 """;
+        }
+        return null;
+    }
+
+
+    /// <summary>
+    /// Whether moving from <paramref name="previous"/> to this means rebuilding the server, rather
+    /// than only opening or closing the tunnel in front of it. Everything but the tunnel, the banner
+    /// and the log level is baked into the pipeline when it is built.
+    /// </summary>
+    public bool NeedsRebuildFrom(ServeSettings previous)
+        => this.RootPath != previous.RootPath
+           || !this.Address.Equals(previous.Address)
+           || this.Port != previous.Port
+           || this.UrlPrefix != previous.UrlPrefix
+           || this.Permissions != previous.Permissions
+           || !this.Users.SequenceEqual(previous.Users)
+           || this.Realm != previous.Realm
+           || this.AuthChangesOnly != previous.AuthChangesOnly
+           || this.AllowInsecureAuth != previous.AllowInsecureAuth
+           || this.UseHttps != previous.UseHttps
+           || this.ServeHidden != previous.ServeHidden
+           || this.MaxUploadBytes != previous.MaxUploadBytes;
 }
 
 

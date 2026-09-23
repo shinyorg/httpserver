@@ -215,6 +215,10 @@ triggers:
 - share a folder over the internet
 - --tunnel
 - --tunnel-token
+- --no-tui
+- shinyhttpserver dashboard
+- watch requests in the terminal
+- see uploads and downloads in progress
 - Shiny.Net.HttpServer.WebDav
 - MapWebDav
 - WebDavOptions
@@ -356,6 +360,20 @@ the LAN and is reachable only through the tunnel — and a tunnelled connection 
 transport, so `-u` works over it without `--https` or `--allow-insecure-auth`. Anonymous tunnels stop
 after 60 minutes; `--tunnel-token <token>` lifts that and implies `--tunnel`. Always say that the
 address is public when you suggest it.
+
+In a terminal, `shinyhttpserver` opens a full-screen **dashboard** rather than printing the banner:
+Overview (addresses, tunnel, warnings, QR code), Requests (every request, newest first, including
+`401`s and tunneled clients; `Enter` for headers, `Ctrl+L` clears), Transfers (uploads and downloads
+in flight with progress, speed and time left), Settings (every flag as a form, applied live with
+`Ctrl+S`), and Log. So "watch who is hitting this folder" or "see how far the upload got" is the tool
+answer too. Settings changes to the tunnel, its token, the QR code or the log level apply in place;
+anything else rebuilds the server, and the dashboard asks first when that would cut off a transfer
+and rolls back if the new settings will not start. `--no-tui` keeps the plain banner, and a
+redirected run (a script, a pipe, a service) gets the banner whatever the flags say, so suggest
+`--no-tui` only when a user wants plain output in an interactive terminal. The dashboard is part of
+the tool, not a library API, so it sits outside the four tiers below. An app that wants the same
+request log writes a middleware (tier 3) that wraps `Request.Body` and `Response.BodyControl`, the
+way the tool does.
 
 ## The four tiers — the spine of this library
 
