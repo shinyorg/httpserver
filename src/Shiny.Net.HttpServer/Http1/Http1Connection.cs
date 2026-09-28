@@ -96,6 +96,7 @@ sealed class Http1Connection
         info.IsEncrypted = this.connection.IsEncrypted;
         info.ClientCertificate = this.connection.ClientCertificate;
         info.IsTunneled = this.connection.IsTunneled;
+        info.ProxyProtocol = (this.connection as IProxyProtocolConnection)?.ProxyProtocol;
 
         if (this.connection.RemoteEndPoint is IPEndPoint remote)
         {

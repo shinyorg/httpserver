@@ -36,6 +36,13 @@ static class EndpointEmitter
     const string RequestTimeoutMetadata = "global::Shiny.Net.HttpServer.Timeouts.RequestTimeoutMetadata";
     const string OutputCacheMetadata = "global::Shiny.Net.HttpServer.Caching.OutputCacheMetadata";
     const string AntiforgeryMetadata = "global::Shiny.Net.HttpServer.Security.AntiforgeryMetadata";
+    const string WebhookMetadata = "global::Shiny.Net.HttpServer.Webhooks.WebhookMetadata";
+    const string WebhookAccess = "global::Shiny.Net.HttpServer.Webhooks.WebhookHttpContextExtensions";
+    const string IdempotencyMetadata = "global::Shiny.Net.HttpServer.Idempotency.IdempotencyMetadata";
+    const string ContentDigestMetadata = "global::Shiny.Net.HttpServer.Integrity.ContentDigestMetadata";
+    const string DigestEmission = "global::Shiny.Net.HttpServer.Integrity.DigestEmission";
+    const string ApiVersionMetadata = "global::Shiny.Net.HttpServer.Versioning.ApiVersionMetadata";
+    const string ApiVersion = "global::Shiny.Net.HttpServer.Versioning.ApiVersion";
     const string Context = "global::Shiny.Net.HttpServer.HttpContext";
     const string Server = "global::Shiny.Net.HttpServer.HttpServer";
     const string RouteBuilder = "global::Shiny.Net.HttpServer.IEndpointRouteBuilder";
@@ -110,6 +117,9 @@ static class EndpointEmitter
         // the argument list needs — the alternative is every writer below knowing what follows it.
         var policies = PolicyMetadata(method.Policies);
 
+        if (method.Versions.HasValue)
+            policies.Add(VersionMetadata(method.Versions));
+
         WriteApiOperation(
             writer,
             model,
@@ -166,7 +176,44 @@ static class EndpointEmitter
                 : $"new {AntiforgeryMetadata} {{ Required = true }}");
         }
 
+        if (policies.HasWebhook)
+            metadata.Add($"new {WebhookMetadata} {{ VerifierName = {Literal(policies.WebhookVerifier!)} }}");
+
+        if (policies.HasIdempotency)
+            metadata.Add($"new {IdempotencyMetadata} {{ {IdempotencyAssignments(policies)} }}");
+
+        if (policies.HasContentDigest)
+            metadata.Add($"new {ContentDigestMetadata} {{ {DigestAssignments(policies)} }}");
+
         return metadata;
+
+        static string IdempotencyAssignments(EndpointPolicyModel policies)
+        {
+            if (policies.IdempotencyDisabled)
+                return "Disabled = true";
+
+            var required = policies.IdempotencyKeyRequired ? "true" : "false";
+
+            return policies.IdempotencyExpirationSeconds is { } seconds
+                ? $"Required = {required}, Expiration = global::System.TimeSpan.FromSeconds({seconds})"
+                : $"Required = {required}";
+        }
+
+        static string DigestAssignments(EndpointPolicyModel policies)
+        {
+            if (policies.ContentDigestDisabled)
+                return "Disabled = true";
+
+            var parts = new List<string>(2);
+
+            if (policies.ContentDigestRequireRequest)
+                parts.Add("RequireRequestDigest = true");
+
+            if (policies.ContentDigestAlwaysEmit)
+                parts.Add($"ResponseDigest = {DigestEmission}.Always");
+
+            return string.Join(", ", parts);
+        }
 
         static string TimeoutAssignments(EndpointPolicyModel policies)
         {
@@ -198,6 +245,33 @@ static class EndpointEmitter
 
         static string Assignments(string? policy, bool disabled)
             => disabled ? "Disabled = true" : $"PolicyName = {Literal(policy!)}";
+    }
+
+    /// <summary>
+    /// Emits the endpoint's API versions. Parsed from their text at registration rather than
+    /// constructed field by field: the generator has already rejected any version that would not
+    /// parse, and the emitted line reads the way the attribute did.
+    /// </summary>
+    static string VersionMetadata(ApiVersionModel versions)
+    {
+        if (versions.Neutral)
+            return $"new {ApiVersionMetadata} {{ IsApiVersionNeutral = true }}";
+
+        var parts = new System.Collections.Generic.List<string>();
+
+        if (versions.Supported.Count > 0)
+            parts.Add($"SupportedVersions = {{ {List(versions.Supported)} }}");
+
+        if (versions.Deprecated.Count > 0)
+            parts.Add($"DeprecatedVersions = {{ {List(versions.Deprecated)} }}");
+
+        if (versions.Mapped.Count > 0)
+            parts.Add($"MappedVersions = {{ {List(versions.Mapped)} }}");
+
+        return $"new {ApiVersionMetadata} {{ {string.Join(", ", parts)} }}";
+
+        static string List(EquatableArray<string> values)
+            => string.Join(", ", values.Select(v => $"{ApiVersion}.Parse({Literal(v)})"));
     }
 
     static void WriteAuthorization(CodeWriter writer, AuthorizationModel authorization, string suffix)
@@ -362,11 +436,31 @@ static class EndpointEmitter
                 writer.Line($"var {name} = __ctx.RequestAborted;");
                 return;
 
+            case BindingSource.WebhookContext:
+                writer.Line($"var {name} = {WebhookAccess}.GetWebhook(__ctx);");
+                return;
+
             case BindingSource.Services:
                 writer.Line(
                     $"var {name} = {Services}.GetRequired<{type}>(__ctx.RequestServices, " +
                     $"\"{model.DisplayName}.{method.MethodName}\", \"{name}\");"
                 );
+                return;
+
+            case BindingSource.Body when type == TypeAnalysis.JsonPatchDocumentFullyQualified:
+                // A JSON Patch has one media type and its own failure modes: the binder answers 415
+                // with Accept-Patch for anything else, and a malformed patch is a 400 problem naming
+                // the operation at fault. It writes that response itself and hands back null.
+                writer.Line($"var {name} = await global::Shiny.Net.HttpServer.JsonPatch.JsonPatchRequestExtensions");
+                writer.Indent();
+                writer.Line(".TryBindJsonPatchAsync(__ctx)");
+                writer.Line(".ConfigureAwait(false);");
+                writer.Outdent();
+                writer.Line($"if ({name} is null)");
+                writer.Indent();
+                writer.Line("return;");
+                writer.Outdent();
+                writer.Blank();
                 return;
 
             case BindingSource.Body:

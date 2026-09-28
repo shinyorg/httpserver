@@ -21,7 +21,7 @@ namespace Shiny.Net.HttpServer.Http1;
 /// reached for, since <c>GetSpan</c> cannot await the header write itself.
 /// </para>
 /// </summary>
-sealed class Http1OutputProducer : IResponseBodyControl
+sealed class Http1OutputProducer : IResponseBodyControl, IInformationalResponseWriter
 {
     readonly PipeWriter pipe;
     readonly HttpServerOptions options;
@@ -168,6 +168,36 @@ sealed class Http1OutputProducer : IResponseBodyControl
 
         WriteStatusLine(this.pipe, status, res.ReasonPhrase);
         WriteHeaders(this.pipe, res.Headers);
+    }
+
+    /// <summary>
+    /// Writes an interim 1xx status line and header block straight onto the connection and flushes
+    /// it, ahead of the final response.
+    /// <para>
+    /// Straight onto the pipe, not through the body writer: an interim response is a complete message
+    /// of its own, not part of this response's body, and anything the handler has staged but not yet
+    /// flushed still belongs after the final head. No Server, Date or Connection headers are added —
+    /// those describe the final response, and the client is about to get one anyway.
+    /// </para>
+    /// <para>
+    /// HTTP/1.0 has no interim responses: a 1.0 client reads the first status line as <em>the</em>
+    /// response. So over 1.0 this sends nothing and says so.
+    /// </para>
+    /// </summary>
+    public async ValueTask<bool> WriteInformationalAsync(
+        int statusCode,
+        HeaderDictionary headers,
+        CancellationToken cancellationToken
+    )
+    {
+        if (this.response.HttpContext.Request.Protocol != HttpProtocols.Http11)
+            return false;
+
+        WriteStatusLine(this.pipe, statusCode, null);
+        WriteHeaders(this.pipe, headers);
+        await this.pipe.FlushAsync(cancellationToken).ConfigureAwait(false);
+
+        return true;
     }
 
     static bool IsBodyForbidden(int status)

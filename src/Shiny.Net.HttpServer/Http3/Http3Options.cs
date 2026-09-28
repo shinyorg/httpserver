@@ -37,6 +37,14 @@ public sealed class Http3Options
     /// <summary>Chooses a certificate per connection from SNI.</summary>
     public Func<string?, X509Certificate2?>? CertificateSelector { get; set; }
 
+    /// <summary>
+    /// Chooses a certificate context — certificate plus intermediates — per connection from SNI.
+    /// Consulted first; null falls through to <see cref="CertificateSelector"/> and
+    /// <see cref="Certificate"/>. Read on every connection, so what it returns can be swapped on a
+    /// running listener. See <see cref="HttpsOptions.CertificateContextSelector"/>.
+    /// </summary>
+    public Func<string?, System.Net.Security.SslStreamCertificateContext?>? CertificateContextSelector { get; set; }
+
     /// <summary>Concurrent request streams a client may open. Each is one in-flight request.</summary>
     public int MaxBidirectionalStreams { get; set; } = 100;
 

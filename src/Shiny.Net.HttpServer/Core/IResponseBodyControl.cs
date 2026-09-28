@@ -42,3 +42,24 @@ sealed class NullResponseBodyControl : IResponseBodyControl
         "This response is not attached to a connection, so it cannot be written to."
     );
 }
+
+/// <summary>
+/// Implemented by the per-protocol response controls that can put an interim (1xx) response on the
+/// wire ahead of the final one.
+/// <para>
+/// Deliberately separate from <see cref="IResponseBodyControl"/>, and captured by
+/// <see cref="HttpResponse.Bind"/> only when the bound control implements it. A middleware that wraps
+/// the body — compression, a recorder — rebinds the response to its wrapper, and an informational
+/// response has nothing to do with the body: it must still reach the connection underneath, not get
+/// lost because the wrapper never heard of it. Internal, so the public seam does not grow a member
+/// every existing wrapper would have to forward.
+/// </para>
+/// </summary>
+interface IInformationalResponseWriter
+{
+    /// <summary>
+    /// Frames and flushes one informational response. Returns false when the protocol in use has no
+    /// way to carry it (HTTP/1.0), which the caller treats as a silent no-op.
+    /// </summary>
+    ValueTask<bool> WriteInformationalAsync(int statusCode, HeaderDictionary headers, CancellationToken cancellationToken);
+}

@@ -1,4 +1,5 @@
 using Shiny.Net.HttpServer.Routing;
+using Shiny.Net.HttpServer.Versioning;
 
 namespace Shiny.Net.HttpServer.Internal;
 
@@ -26,11 +27,27 @@ static class EndpointResolver
         var routeValues = request.RouteValues;
 
         var match = router.Match(method ?? request.Method, request.Path, routeValues);
+        Endpoint? endpoint = match.Endpoint;
+
+        // A versioned route resolves to the endpoint for the requested version, so a policy on the
+        // 2.0 endpoint is the one a 2.0 request meets. Read before the reset below: the version may
+        // be in a route segment. A request whose version is missing or wrong gets the first
+        // endpoint's policies here and a 400 from routing, so it never reaches either handler.
+        if (endpoint is not null && ApiVersionSelection.RequiresSelection(match.Candidates))
+        {
+            var selection = ApiVersionSelection.Select(
+                router.Versioning ?? ApiVersioningOptions.Default,
+                context,
+                match.Candidates
+            );
+
+            endpoint = selection.Endpoint ?? endpoint;
+        }
 
         // The routing middleware matches again for real and captures again. Leaving these behind
         // would give the handler a second copy of every route parameter.
         routeValues.Reset();
 
-        return match.Endpoint;
+        return endpoint;
     }
 }

@@ -29,6 +29,14 @@ public sealed class ConnectionInfo
     /// </summary>
     public bool IsTunneled { get; internal set; }
 
+    /// <summary>
+    /// The PROXY protocol header this connection opened with, when its endpoint accepts one and a
+    /// trusted balancer sent it. The client address it named is already in
+    /// <see cref="RemoteIpAddress"/>/<see cref="RemotePort"/>; this carries the rest — the balancer's
+    /// own address, the address the client dialled, and any v2 TLVs.
+    /// </summary>
+    public ProxyProtocolInfo? ProxyProtocol { get; internal set; }
+
     internal void Reset()
     {
         this.ConnectionId = string.Empty;
@@ -39,5 +47,6 @@ public sealed class ConnectionInfo
         this.IsEncrypted = false;
         this.ClientCertificate = null;
         this.IsTunneled = false;
+        this.ProxyProtocol = null;
     }
 }

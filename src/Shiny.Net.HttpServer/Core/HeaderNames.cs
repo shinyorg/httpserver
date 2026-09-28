@@ -28,6 +28,7 @@ public static class HeaderNames
     public const string WwwAuthenticate = "WWW-Authenticate";
     public const string CacheControl = "Cache-Control";
     public const string Connection = "Connection";
+    public const string Link = "Link";
     public const string ContentDisposition = "Content-Disposition";
     public const string ContentEncoding = "Content-Encoding";
     public const string ContentLength = "Content-Length";

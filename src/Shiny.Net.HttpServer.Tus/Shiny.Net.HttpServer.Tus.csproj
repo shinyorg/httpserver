@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Shiny.Net.HttpServer.Tus</RootNamespace>
+    <Description>Resumable uploads for Shiny.Net.HttpServer over the tus 1.0.0 protocol — a phone upload that drops half way resumes from the last byte the server kept instead of starting again. Speaks to tus-js-client, Uppy, TusDotNetClient and every other tus client, without ASP.NET Core. Bodies are streamed to the store, never buffered, and the whole path is trim- and AOT-clean.</Description>
+    <PackageTags>$(PackageTags) tus resumable upload</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Shiny.Net.HttpServer/Shiny.Net.HttpServer.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Shiny.Net.HttpServer.Tests" />
+  </ItemGroup>
+
+</Project>

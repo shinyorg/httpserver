@@ -5,6 +5,14 @@ public static class StatusCodes
 {
     public const int Status100Continue = 100;
     public const int Status101SwitchingProtocols = 101;
+    public const int Status102Processing = 102;
+
+    /// <summary>
+    /// An interim response carrying <c>Link</c> headers the client can start fetching while the
+    /// server is still working on the real answer. RFC 8297 — sent with
+    /// <see cref="HttpResponse.SendEarlyHintsAsync(System.Collections.Generic.IEnumerable{string}, System.Threading.CancellationToken)"/>.
+    /// </summary>
+    public const int Status103EarlyHints = 103;
     public const int Status200OK = 200;
     public const int Status201Created = 201;
     public const int Status202Accepted = 202;
@@ -85,6 +93,8 @@ public static class StatusCodes
     {
         100 => "Continue",
         101 => "Switching Protocols",
+        102 => "Processing",
+        103 => "Early Hints",
         200 => "OK",
         201 => "Created",
         202 => "Accepted",

@@ -18,7 +18,7 @@ namespace Shiny.Net.HttpServer.Http3;
 /// </para>
 /// </summary>
 sealed class Http3ResponseBodyControl(QuicStream stream, HttpResponse response, QpackEncoder encoder)
-    : IResponseBodyControl
+    : IResponseBodyControl, IInformationalResponseWriter
 {
     readonly ArrayBufferWriter<byte> staged = new(4096);
 
@@ -63,6 +63,50 @@ sealed class Http3ResponseBodyControl(QuicStream stream, HttpResponse response, 
         }
 
         await this.WriteHeaderFrameAsync(fields, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// An interim response is a HEADERS frame with a 1xx <c>:status</c> ahead of the final one on the
+    /// same request stream (RFC 9114 §4.1). QUIC has no END_STREAM flag to get wrong here — the
+    /// stream only ends when writes complete, which is the final response's job.
+    /// </summary>
+    public async ValueTask<bool> WriteInformationalAsync(int statusCode, HeaderDictionary headers, CancellationToken cancellationToken)
+    {
+        var frame = new ArrayBufferWriter<byte>(128);
+        WriteInformationalFrame(frame, encoder, statusCode, headers);
+
+        await stream.WriteAsync(frame.WrittenMemory, cancellationToken).ConfigureAwait(false);
+        await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+
+        return true;
+    }
+
+    /// <summary>
+    /// Builds the interim HEADERS frame. Split out from the QUIC write so the exact bytes can be
+    /// checked on platforms that cannot run QUIC at all.
+    /// </summary>
+    internal static void WriteInformationalFrame(IBufferWriter<byte> frame, QpackEncoder encoder, int statusCode, HeaderDictionary headers)
+    {
+        var fields = new List<HeaderField>(headers.Count + 1)
+        {
+            new(":status", statusCode.ToString(CultureInfo.InvariantCulture))
+        };
+
+        foreach (var (name, values) in headers)
+        {
+            if (IsConnectionSpecific(name))
+                continue;
+
+            foreach (var value in values)
+            {
+                if (value is not null)
+                    fields.Add(new HeaderField(name.ToLowerInvariant(), value));
+            }
+        }
+
+        var payload = new ArrayBufferWriter<byte>(128);
+        encoder.Encode(payload, fields);
+        Http3Frame.Write(frame, Http3FrameType.Headers, payload.WrittenSpan);
     }
 
     async ValueTask WriteHeaderFrameAsync(List<HeaderField> fields, CancellationToken cancellationToken)

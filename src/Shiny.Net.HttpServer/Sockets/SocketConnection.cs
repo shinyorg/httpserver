@@ -15,22 +15,24 @@ namespace Shiny.Net.HttpServer.Transports;
 /// still gets a real <see cref="PipeReader"/>, so request parsing remains zero-copy.
 /// </para>
 /// </summary>
-sealed class SocketConnection : IConnection, IConnectionInitializer
+sealed class SocketConnection : IConnection, IConnectionInitializer, IProxyProtocolConnection
 {
     readonly Socket socket;
     readonly HttpServerOptions options;
     readonly HttpsOptions? https;
+    readonly ProxyProtocolOptions? proxyProtocol;
     Stream? stream;
     PipeReader? input;
     PipeWriter? output;
     int aborted;
 
-    SocketConnection(string connectionId, Socket socket, HttpServerOptions options, HttpsOptions? https)
+    SocketConnection(string connectionId, Socket socket, HttpServerOptions options, HttpsOptions? https, ProxyProtocolOptions? proxyProtocol)
     {
         this.ConnectionId = connectionId;
         this.socket = socket;
         this.options = options;
         this.https = https;
+        this.proxyProtocol = proxyProtocol is { Mode: not ProxyProtocolMode.Off } ? proxyProtocol : null;
 
         // Cache the endpoints now: reading them off a disposed socket throws, and we still want
         // them for logging after a connection drops.
@@ -54,8 +56,14 @@ sealed class SocketConnection : IConnection, IConnectionInitializer
         $"{nameof(InitializeAsync)} must complete before the connection can be written."
     );
 
-    public EndPoint? RemoteEndPoint { get; }
+    /// <summary>
+    /// The peer — or, once a trusted PROXY header has been read, the client it named. Replaced
+    /// here rather than patched later so every consumer (both HTTP versions, logging, the IP filter)
+    /// sees one answer without any of them knowing a balancer exists.
+    /// </summary>
+    public EndPoint? RemoteEndPoint { get; private set; }
     public EndPoint? LocalEndPoint { get; }
+    public ProxyProtocolInfo? ProxyProtocol { get; private set; }
     public bool IsEncrypted { get; private set; }
     public X509Certificate2? ClientCertificate { get; private set; }
     public bool IsTunneled => false;
@@ -70,11 +78,12 @@ sealed class SocketConnection : IConnection, IConnectionInitializer
         string connectionId,
         Socket socket,
         HttpServerOptions options,
-        HttpsOptions? https
+        HttpsOptions? https,
+        ProxyProtocolOptions? proxyProtocol = null
     )
     {
         socket.NoDelay = options.NoDelay;
-        return new SocketConnection(connectionId, socket, options, https);
+        return new SocketConnection(connectionId, socket, options, https, proxyProtocol);
     }
 
     /// <summary>
@@ -90,22 +99,51 @@ sealed class SocketConnection : IConnection, IConnectionInitializer
     {
         Stream transport = new NetworkStream(this.socket, ownsSocket: false);
 
+        // First, before TLS: a balancer passing TLS through writes the header in cleartext ahead of
+        // the client's ClientHello, and before protocol detection, which must see the HTTP/2
+        // preface rather than the header.
+        if (this.proxyProtocol is { } proxy)
+            transport = await this.ReadProxyHeaderAsync(transport, proxy, cancellationToken).ConfigureAwait(false);
+
         if (this.https is { } tls)
         {
-            var ssl = new SslStream(transport, leaveInnerStreamOpen: false);
-
-            // A handshake that never finishes otherwise holds a connection slot indefinitely.
+            // A handshake that never finishes otherwise holds a connection slot indefinitely. It
+            // also bounds the ClientHello read below, which is part of the same handshake.
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(tls.HandshakeTimeout);
 
+            if (tls.ChallengeResponder is { } responder)
+            {
+                var (hello, consumed) = await TlsClientHelloReader.ReadAsync(transport, timeout.Token).ConfigureAwait(false);
+                transport = new PrefixedStream(transport, consumed);
+
+                if (hello is not null && responder(hello) is { } challenge)
+                {
+                    await AnswerChallengeAsync(transport, tls, challenge, timeout.Token).ConfigureAwait(false);
+                    throw new TlsChallengeAnsweredException();
+                }
+            }
+
+            var ssl = new SslStream(transport, leaveInnerStreamOpen: false);
+            var http2 = this.options.Http2.Enabled;
+
             try
             {
-                await ssl
-                    .AuthenticateAsServerAsync(
-                        tls.ToSslServerAuthenticationOptions(this.options.Http2.Enabled),
-                        timeout.Token
-                    )
-                    .ConfigureAwait(false);
+                if (tls.CertificateContextSelector is null)
+                {
+                    await ssl
+                        .AuthenticateAsServerAsync(tls.ToSslServerAuthenticationOptions(http2), timeout.Token)
+                        .ConfigureAwait(false);
+                }
+                else
+                {
+                    // The options are built from the ClientHello, so the context selector sees the
+                    // SNI name — and is asked afresh on every connection, which is what lets a
+                    // renewed certificate replace the old one without a restart.
+                    await ssl
+                        .AuthenticateAsServerAsync(SelectServerOptions, (tls, http2), timeout.Token)
+                        .ConfigureAwait(false);
+                }
             }
             catch
             {
@@ -130,6 +168,72 @@ sealed class SocketConnection : IConnection, IConnectionInitializer
             transport,
             new StreamPipeWriterOptions(leaveOpen: true)
         );
+    }
+
+    async ValueTask<Stream> ReadProxyHeaderAsync(Stream transport, ProxyProtocolOptions proxy, CancellationToken cancellationToken)
+    {
+        var peer = this.RemoteEndPoint as IPEndPoint;
+        if (!proxy.IsTrusted(peer?.Address))
+        {
+            // Never parsed. Optional hands the bytes to HTTP untouched, where a PROXY line is a 400;
+            // Required closes the connection, since the only legitimate caller is the balancer.
+            if (proxy.Mode == ProxyProtocolMode.Required)
+                throw new ProxyProtocolException($"{peer?.Address} is not a trusted proxy.");
+
+            return transport;
+        }
+
+        var (info, rest) = await ProxyProtocolReader.ReadAsync(transport, proxy, cancellationToken).ConfigureAwait(false);
+        if (info is null)
+            return rest;
+
+        info.ProxyEndPoint = peer;
+        this.ProxyProtocol = info;
+
+        // LOCAL (a health check), UNKNOWN / AF_UNSPEC, and unix-socket clients carry no IP to report,
+        // so the connection keeps its real endpoint — the spec's instruction, and the honest answer.
+        if (info.Command == ProxyProtocolCommand.Proxy && info.SourceEndPoint is { } source)
+            this.RemoteEndPoint = source;
+
+        return rest;
+    }
+
+    static ValueTask<SslServerAuthenticationOptions> SelectServerOptions(
+        SslStream stream,
+        SslClientHelloInfo hello,
+        object? state,
+        CancellationToken cancellationToken
+    )
+    {
+        var (tls, offerHttp2) = ((HttpsOptions, bool))state!;
+        return ValueTask.FromResult(tls.ToSslServerAuthenticationOptions(offerHttp2, hello.ServerName));
+    }
+
+    /// <summary>
+    /// Completes a challenge handshake — one certificate, one ALPN protocol — and closes. Nothing is
+    /// read or written over it: for TLS-ALPN-01 the handshake itself is the whole answer.
+    /// </summary>
+    static async Task AnswerChallengeAsync(
+        Stream transport,
+        HttpsOptions tls,
+        TlsChallengeResponse challenge,
+        CancellationToken cancellationToken
+    )
+    {
+        await using var ssl = new SslStream(transport, leaveInnerStreamOpen: true);
+
+        await ssl
+            .AuthenticateAsServerAsync(
+                new SslServerAuthenticationOptions
+                {
+                    ServerCertificate = challenge.Certificate,
+                    ApplicationProtocols = [challenge.ApplicationProtocol],
+                    EnabledSslProtocols = tls.SslProtocols,
+                    CertificateRevocationCheckMode = X509RevocationMode.NoCheck
+                },
+                cancellationToken
+            )
+            .ConfigureAwait(false);
     }
 
     public void Abort()
@@ -200,4 +304,14 @@ sealed class SocketConnection : IConnection, IConnectionInitializer
 interface IConnectionInitializer
 {
     ValueTask InitializeAsync(CancellationToken cancellationToken);
+}
+
+/// <summary>
+/// A connection that may have opened with a PROXY protocol header. Kept off <see cref="IConnection"/>
+/// for the same reason as <see cref="IConnectionInitializer"/>: it is a socket-listener concern, and
+/// a public interface every tunnel transport implements is not the place for it.
+/// </summary>
+interface IProxyProtocolConnection
+{
+    ProxyProtocolInfo? ProxyProtocol { get; }
 }

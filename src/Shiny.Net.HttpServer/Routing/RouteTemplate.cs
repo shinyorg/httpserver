@@ -99,6 +99,17 @@ public sealed class RouteTemplate
             // A '{' anywhere but the start means something like "v{version}" — real ASP.NET
             // supports mixed segments, but the generated binder gets much simpler if we don't,
             // and rejecting loudly beats matching in a way nobody predicted.
+            // The one mixed segment everybody writes is Asp.Versioning's "v{version:apiVersion}".
+            // It is not needed here — the apiVersion constraint accepts a leading 'v' — so say
+            // exactly what to write instead of the generic complaint.
+            if (part.Contains(":apiVersion}", StringComparison.OrdinalIgnoreCase))
+                throw new RouteTemplateException(
+                    template,
+                    $"Segment '{part}' mixes literal text and a parameter. Write the version segment as " +
+                    "'{version:apiVersion}' on its own — the apiVersion constraint already accepts a leading 'v', " +
+                    "so it matches /v2/ as well as /2.0/."
+                );
+
             if (part.Contains('{') || part.Contains('}'))
                 throw new RouteTemplateException(
                     template,

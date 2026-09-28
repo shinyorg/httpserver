@@ -47,6 +47,11 @@ public sealed class EndpointGenerator : IIncrementalGenerator
     const string NoOutputCacheAttributeName = "Shiny.Net.HttpServer.NoOutputCacheAttribute";
     const string ValidateAntiforgeryAttributeName = "Shiny.Net.HttpServer.ValidateAntiforgeryAttribute";
     const string DisableAntiforgeryAttributeName = "Shiny.Net.HttpServer.DisableAntiforgeryAttribute";
+    const string RequireWebhookSignatureAttributeName = "Shiny.Net.HttpServer.RequireWebhookSignatureAttribute";
+    const string IdempotentAttributeName = "Shiny.Net.HttpServer.IdempotentAttribute";
+    const string DisableIdempotencyAttributeName = "Shiny.Net.HttpServer.DisableIdempotencyAttribute";
+    const string ContentDigestAttributeName = "Shiny.Net.HttpServer.ContentDigestAttribute";
+    const string DisableContentDigestAttributeName = "Shiny.Net.HttpServer.DisableContentDigestAttribute";
 
     const string ProducesAttributeName = "Shiny.Net.HttpServer.ProducesAttribute";
     const string ApiTagsAttributeName = "Shiny.Net.HttpServer.ApiTagsAttribute";
@@ -348,7 +353,7 @@ public sealed class EndpointGenerator : IIncrementalGenerator
 
         foreach (var tokenName in template.ParameterNames)
         {
-            if (!bound.Contains(tokenName))
+            if (!bound.Contains(tokenName) && !template.ApiVersionParameterNames.Contains(tokenName, StringComparer.OrdinalIgnoreCase))
                 diagnostics.Add(DiagnosticInfo.Create(
                     Diagnostics.UnusedRouteToken,
                     method,
@@ -404,7 +409,8 @@ public sealed class EndpointGenerator : IIncrementalGenerator
                 || method.FindAttribute(ApiExcludeAttributeName) is not null,
             ResponsesFor(method, payload, payloadType),
             AuthorizationFor(type, method),
-            PoliciesFor(type, method)
+            PoliciesFor(type, method),
+            ApiVersionInfo.For(type, method, diagnostics)
         );
     }
 
@@ -425,8 +431,13 @@ public sealed class EndpointGenerator : IIncrementalGenerator
         var cacheDisabled = HasAttribute(NoOutputCacheAttributeName);
         var antiforgeryDisabled = HasAttribute(DisableAntiforgeryAttributeName);
 
+        var idempotencyDisabled = HasAttribute(DisableIdempotencyAttributeName);
+        var digestDisabled = HasAttribute(DisableContentDigestAttributeName);
+
         var timeout = timeoutDisabled ? null : Nearest(RequestTimeoutAttributeName);
         var cache = cacheDisabled ? null : Nearest(OutputCacheAttributeName);
+        var idempotent = idempotencyDisabled ? null : Nearest(IdempotentAttributeName);
+        var digest = digestDisabled ? null : Nearest(ContentDigestAttributeName);
 
         var model = new EndpointPolicyModel(
             corsDisabled ? null : PolicyName(EnableCorsAttributeName),
@@ -445,7 +456,19 @@ public sealed class EndpointGenerator : IIncrementalGenerator
             cache?.GetNamedInt("Seconds"),
             cacheDisabled,
             !antiforgeryDisabled && HasAttribute(ValidateAntiforgeryAttributeName),
-            antiforgeryDisabled
+            antiforgeryDisabled,
+
+            // The attribute's own defaults — a key is required, a digest always emitted — apply when
+            // the argument is not written, so a bare [Idempotent] or [ContentDigest] means what it says.
+            idempotent is not null,
+            idempotent?.GetNamedBool("Required") ?? true,
+            idempotent?.GetNamedInt("ExpirationSeconds") is > 0 and var expiration ? expiration : null,
+            idempotencyDisabled,
+            digest is not null,
+            digest?.GetNamedBool("RequireRequestDigest") ?? false,
+            digest?.GetNamedBool("AlwaysEmitResponseDigest") ?? true,
+            digestDisabled,
+            WebhookVerifierName()
         );
 
         return model.HasAny ? model : EndpointPolicyModel.None;
@@ -465,6 +488,13 @@ public sealed class EndpointGenerator : IIncrementalGenerator
         }
 
         AttributeData? Nearest(string name) => method.FindAttribute(name) ?? type.FindAttribute(name);
+
+        // The method's sender replaces the class's: a delivery comes from exactly one.
+        string? WebhookVerifierName()
+        {
+            var verifier = Nearest(RequireWebhookSignatureAttributeName)?.GetConstructorString(0);
+            return string.IsNullOrWhiteSpace(verifier) ? null : verifier;
+        }
     }
 
     /// <summary>
@@ -601,6 +631,9 @@ public sealed class EndpointGenerator : IIncrementalGenerator
         if (parameterType.IsType(TypeAnalysis.CancellationTokenType))
             return Ambient(BindingSource.CancellationToken);
 
+        if (parameterType.IsType(TypeAnalysis.WebhookContextType))
+            return Ambient(BindingSource.WebhookContext);
+
         if (parameter.FindAttribute(FromServices) is not null)
             return Ambient(BindingSource.Services);
 
@@ -691,14 +724,27 @@ public sealed class EndpointGenerator : IIncrementalGenerator
 
     static IEnumerable<DiagnosticInfo> FindDuplicateRoutes(ImmutableArray<EndpointClassModel> models)
     {
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // Endpoints seen so far per method + route. Two may share one only as different API versions
+        // of it — the same rule the route table enforces at startup.
+        var seen = new Dictionary<string, List<ApiVersionModel>>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var model in models)
         {
             foreach (var method in model.Methods)
             {
                 var key = method.HttpMethod + " " + method.RouteTemplate;
-                if (!seen.Add(key))
+
+                if (!seen.TryGetValue(key, out var existing))
+                {
+                    seen[key] = new List<ApiVersionModel> { method.Versions };
+                    continue;
+                }
+
+                var clash = existing.Any(other => other.ClashesWith(method.Versions));
+
+                existing.Add(method.Versions);
+
+                if (clash)
                     yield return new DiagnosticInfo(
                         Diagnostics.DuplicateRoute,
                         null,
@@ -746,7 +792,10 @@ public sealed class EndpointGenerator : IIncrementalGenerator
 
         foreach (var parameter in method.Parameters)
         {
-            if (parameter.Source == BindingSource.Body)
+            // A JsonPatchDocument is parsed by hand, so it needs no JsonSerializerContext entry and
+            // warning that it lacks one would send the app off to add metadata nothing reads.
+            if (parameter.Source == BindingSource.Body
+                && parameter.TypeFullyQualified != TypeAnalysis.JsonPatchDocumentFullyQualified)
                 yield return parameter.TypeFullyQualified;
         }
     }

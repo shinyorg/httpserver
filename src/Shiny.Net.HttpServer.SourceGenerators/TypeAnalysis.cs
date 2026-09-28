@@ -11,6 +11,13 @@ static class TypeAnalysis
     public const string HttpResponseType = "Shiny.Net.HttpServer.HttpResponse";
     public const string ResultInterface = "Shiny.Net.HttpServer.IResult";
     public const string CancellationTokenType = "System.Threading.CancellationToken";
+    public const string WebhookContextType = "Shiny.Net.HttpServer.Webhooks.WebhookContext";
+
+    /// <summary>
+    /// A body parameter of this type is bound by the JSON Patch binder rather than the formatter
+    /// pipeline: it has its own media type, it is parsed by hand, and it needs no JSON metadata.
+    /// </summary>
+    public const string JsonPatchDocumentFullyQualified = "global::Shiny.Net.HttpServer.JsonPatch.JsonPatchDocument";
 
     static readonly SymbolDisplayFormat Fq = SymbolDisplayFormat.FullyQualifiedFormat;
 
@@ -152,4 +159,8 @@ static class TypeAnalysis
     /// <summary>Reads a named argument that is a number, e.g. <c>[OutputCache(Seconds = 30)]</c>.</summary>
     public static int? GetNamedInt(this AttributeData attribute, string name)
         => attribute.NamedArguments.FirstOrDefault(a => a.Key == name).Value.Value is int value ? value : null;
+
+    /// <summary>Reads a named argument that is a flag, e.g. <c>[Idempotent(Required = false)]</c>.</summary>
+    public static bool? GetNamedBool(this AttributeData attribute, string name)
+        => attribute.NamedArguments.FirstOrDefault(a => a.Key == name).Value.Value is bool value ? value : null;
 }

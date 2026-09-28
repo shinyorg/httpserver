@@ -1,6 +1,6 @@
 ---
 name: shiny-httpserver
-description: Generate code using Shiny.Net.HttpServer — a dependency-light, AOT/trim-clean HTTP/1.1, HTTP/2 & HTTP/3 server that runs anywhere .NET runs, including .NET MAUI and native tvOS, where ASP.NET Core cannot. Covers routing, middleware, source-generated typed endpoints, results and JSON, content negotiation with XML/MessagePack/protobuf formatters in both directions, static files and Blazor WASM, uploads/downloads, WebSockets, SSE, sessions, OpenAPI, authentication (Basic/API key/cookie/JWT), authorization, CORS, rate limiting, IP filtering, TLS and self-signed certificates, tunnelling (relay, SSH, quick tunnels, Azure Relay, and supervised cloudflared/ngrok/tailscale agents), serving a directory over WebDAV, serving gRPC and gRPC-Web, hosting an MCP server with RFC 9728 OAuth discovery, health checks, OpenTelemetry-shaped metrics and tracing, W3C access logs, request timeouts, output caching and conditional requests, request decompression, antiforgery and browser security headers, a reverse proxy with destination clusters, load balancing, health checks, session affinity, transforms, WebSocket forwarding and IConfiguration-driven routes, mDNS/Bonjour advertising and discovery, MAUI lifecycle (background/foreground, Android foreground service, network rebinding), and an in-memory test harness.
+description: Generate code using Shiny.Net.HttpServer — a dependency-light, AOT/trim-clean HTTP/1.1, HTTP/2 & HTTP/3 server that runs anywhere .NET runs, including .NET MAUI and native tvOS, where ASP.NET Core cannot. Covers routing, middleware, source-generated typed endpoints, results and JSON, content negotiation with XML/MessagePack/protobuf formatters in both directions, static files and Blazor WASM, uploads/downloads, WebSockets, SSE, sessions, OpenAPI, authentication (Basic/API key/cookie/JWT), authorization, CORS, rate limiting, IP filtering, TLS and self-signed certificates, tunnelling (relay, SSH, quick tunnels, Azure Relay, and supervised cloudflared/ngrok/tailscale agents), serving a directory over WebDAV, serving gRPC and gRPC-Web, hosting an MCP server with RFC 9728 OAuth discovery, receiving the OAuth/OIDC loopback redirect so a desktop app or CLI can sign in through the system browser (RFC 8252), health checks, OpenTelemetry-shaped metrics and tracing, W3C access logs, request timeouts, output caching and conditional requests, request decompression, antiforgery and browser security headers, a reverse proxy with destination clusters, load balancing, health checks, session affinity, transforms, WebSocket forwarding and IConfiguration-driven routes, mDNS/Bonjour advertising and discovery, MAUI lifecycle (background/foreground, Android foreground service, network rebinding), host filtering against DNS rebinding, request localization, webhook signature verification (GitHub/Stripe/Slack/Standard Webhooks), idempotency keys, RFC 9530 content digests, 103 Early Hints, the PROXY protocol, RFC 6902 JSON Patch, API versioning with per-version OpenAPI, a Scalar API reference page, tus resumable uploads, CalDAV/CardDAV, automatic HTTPS via ACME (Let's Encrypt/ZeroSSL), and an in-memory test harness.
 auto_invoke: true
 triggers:
 - Shiny.Net.HttpServer
@@ -265,9 +265,161 @@ triggers:
 - DeclareTrailer
 - Response.Trailers
 - trailing headers
+- Shiny.Net.HttpServer.OAuthLoopback
+- LoopbackCallbackListener
+- LoopbackCallbackOptions
+- LoopbackCallbackResult
+- SystemBrowser
+- AuthorizeAsync
+- OAuth loopback
+- loopback redirect
+- redirect uri localhost
+- RFC 8252
+- sign in with browser
+- desktop OAuth login
+- CLI login
+- HttpListener OAuth
+- IBrowser OidcClient
 - SWS001
 - SWS006
 - SWM003
+- SendEarlyHintsAsync
+- SendInformationalResponseAsync
+- Early Hints
+- 103 Early Hints
+- Status103EarlyHints
+- rel=preload
+- 1xx informational response
+- AddHostFiltering
+- UseHostFiltering
+- HostFilteringOptions
+- AllowedHosts
+- DNS rebinding
+- Host header
+- AddRequestLocalization
+- UseRequestLocalization
+- RequestLocalizationOptions
+- RequestCulture
+- GetRequestCulture
+- Accept-Language
+- CookieRequestCultureProvider
+- localization
+- InvariantGlobalization
+- MapWebhook
+- WebhookSignature
+- WebhookContext
+- RequireWebhookSignature
+- UseWebhookVerification
+- IWebhookVerifier
+- WebhookSigner
+- webhook signature
+- Stripe webhook
+- GitHub webhook
+- Standard Webhooks
+- ProxyProtocolOptions
+- ProxyProtocolMode
+- UseProxyProtocol
+- ProxyProtocolInfo
+- PROXY protocol
+- proxy protocol v2
+- HAProxy
+- send-proxy
+- AWS NLB
+- load balancer client IP
+- JsonPatchDocument
+- JSON Patch
+- json-patch+json
+- RFC 6902
+- JsonPointer
+- JSON Pointer
+- JsonPatchException
+- Accept-Patch
+- Shiny.Net.HttpServer.Tus
+- MapTus
+- TusOptions
+- TusMountBuilder
+- ITusStore
+- DiskTusStore
+- TusMetadata
+- TusUpload
+- TusException
+- WithTusHeaders
+- tus
+- resumable upload
+- resume upload
+- tus-js-client
+- Uppy
+- TusDotNetClient
+- Idempotency-Key
+- AddIdempotency
+- UseIdempotency
+- RequireIdempotencyKey
+- IdempotentAttribute
+- IIdempotencyStore
+- Content-Digest
+- Repr-Digest
+- RFC 9530
+- AddContentDigest
+- UseContentDigest
+- ContentDigestAttribute
+- DigestFields
+- ApiVersion
+- AddApiVersioning
+- ApiVersioningOptions
+- ApiVersionReader
+- MapToApiVersion
+- ApiVersionNeutral
+- HasApiVersion
+- NewApiVersionSet
+- apiVersion constraint
+- api versioning
+- api-supported-versions
+- Sunset header
+- Deprecation header
+- SWS030
+- Shiny.Net.HttpServer.CalDav
+- MapCalDav
+- MapCalDavWellKnown
+- CalDavOptions
+- CalDavMountBuilder
+- CalDavMethods
+- ICalendarStore
+- IAddressBookStore
+- IDavCollectionStore
+- FileCalendarStore
+- FileAddressBookStore
+- CalendarCollection
+- AddressBookCollection
+- DavObject
+- ContentComponent
+- caldav
+- carddav
+- icalendar
+- vcard
+- sync calendar with iPhone
+- subscribe to calendar
+- Shiny.Net.HttpServer.Acme
+- AddAcme
+- ACME
+- Let's Encrypt
+- LetsEncrypt
+- ZeroSSL
+- AcmeCertificateManager
+- AcmeOptions
+- AcmeDirectories
+- automatic HTTPS
+- certificate renewal
+- CertificateContextSelector
+- ChallengeResponder
+- TLS-ALPN-01
+- HTTP-01
+- MapScalarApiReference
+- Scalar
+- ScalarOptions
+- ScalarTheme
+- API reference page
+- Swagger UI
+- API explorer
 ---
 
 # Shiny HTTP Server Skill
@@ -301,6 +453,8 @@ Invoke this skill when the user wants to:
 - Cache responses, honour conditional requests, bound how long a handler may take, or forward a
   route to another server
 - Test endpoints without binding a port
+- Sign a desktop app or CLI in through the system browser (the OAuth/OIDC loopback redirect,
+  what VS Code and `gh auth login` do) without `HttpListener`
 
 **Do not** use this skill for ASP.NET Core / Kestrel / minimal APIs. Those are a different library
 with similar-looking names.
@@ -334,6 +488,10 @@ dotnet add package Shiny.Net.HttpServer.Discovery        # mDNS/Bonjour advertis
 dotnet add package Shiny.Net.HttpServer.Mobile           # mobile lifecycle (multi-targets android/ios/maccatalyst; not tvOS)
 dotnet add package Shiny.Net.HttpServer.Testing          # in-memory HttpClient for tests
 dotnet add package Shiny.Net.HttpServer.Tunnels          # cloudflared / ngrok / tailscale agents (desktop + CLI only)
+dotnet add package Shiny.Net.HttpServer.OAuthLoopback    # OAuth/OIDC loopback redirect receiver (desktop + CLI only)
+dotnet add package Shiny.Net.HttpServer.Tus              # tus 1.0.0 resumable uploads
+dotnet add package Shiny.Net.HttpServer.CalDav           # calendars & contacts over CalDAV/CardDAV
+dotnet add package Shiny.Net.HttpServer.Acme             # automatic HTTPS via Let's Encrypt/ZeroSSL (public hosts, not phones)
 
 dotnet tool install -g Shiny.Net.HttpServer.CommandLine  # `shinyhttpserver`, not a library reference
 ```
@@ -441,6 +599,23 @@ the OS pick; read it back from `server.ListenUrl`.
 - `Limits.MaxRequestBodySize` is 30 MB; raise it for uploads.
 - `HideExceptionDetails` is on; turn it off in development only.
 
+### Behind a TCP load balancer: PROXY protocol
+
+Listener configuration, underneath all four tiers — handler code only reads `ctx.Connection`.
+
+```csharp
+builder.Options.Listen(IPAddress.Any, 8080)
+    .UseProxyProtocol(p => p.Trust("10.0.0.0/8"));   // the BALANCER's addresses, not clients'
+// single endpoint: builder.Options.ProxyProtocol = new ProxyProtocolOptions { Mode = ProxyProtocolMode.Required }.Trust("10.0.0.0/8");
+```
+
+- v1 and v2 are both accepted. The header is read before TLS, so TLS passthrough works. `ctx.Connection.RemoteIpAddress`/`RemotePort` become the client's, and the IP filter, rate limiter and W3C logs need nothing else.
+- `TrustedProxies` must not be empty, or the server refuses to start. Only generate `.Trust("0.0.0.0/0").Trust("::/0")` when the user says the port is firewalled so only the balancer can reach it.
+- `Required` (the default for `UseProxyProtocol`) closes connections that have no header. Use `Optional` only while migrating.
+- `ctx.Connection.ProxyProtocol` (null if none): `ProxyEndPoint`, `DestinationEndPoint`, `Alpn`, `Authority`, `UniqueId`, `Ssl`, `GetTlv(0xEA)`.
+- Prefer this over `UseForwardedHeaders`: it can't be spoofed by clients and it works with TLS passthrough. Don't enable both unless the balancer overwrites `X-Forwarded-For`, because that header overrides the PROXY address on HTTP/1.1.
+- TCP endpoints only: not HTTP/3, not tunnel providers. The reverse proxy does not send a PROXY header.
+
 ## Lifecycle — and knowing *why* the server stopped
 
 Start and stop are runtime operations, not just process startup and shutdown. An app with a toggle
@@ -536,6 +711,88 @@ optional `Name`.
 
 A default value makes a parameter optional. Bind failures are 400s naming the parameter and type,
 raised before the method is called.
+
+### JSON Patch (RFC 6902)
+
+Tier 3 (parameter binding); `ReadJsonPatchAsync` serves tier 1/2 raw handlers.
+A `JsonPatchDocument` parameter binds from an `application/json-patch+json` body. Anything else is a
+415 with `Accept-Patch`, and a malformed patch is a 400. No `[JsonSerializable]` entry is needed for it.
+Apply it with the target type's `JsonTypeInfo`, never by reflection:
+
+```csharp
+[Patch("/{id:int}")]
+public IResult Patch(int id, JsonPatchDocument patch)
+{
+    if (notes.Find(id) is not { } note) return Results.NotFound();
+    try
+    {
+        var patched = patch.ApplyTo(note, AppJson.Default.Note);   // atomic: works on a copy
+        notes.Save(patched);
+        return Results.Ok(patched, AppJson.Default.Note);
+    }
+    catch (JsonPatchException ex) { return ex.ToResult(); }     // 409 test/path, 422 bad result
+}
+```
+
+- Raw handler: `var patch = await ctx.Request.ReadJsonPatchAsync(ctx.RequestAborted);` (throws `JsonPatchException`).
+- Paths are JSON Pointers using the *serialized* names (`/title`, not `/Title`); `/-` appends to an array.
+- Build one in code: `new JsonPatchDocument().Test("/version", 3).Replace("/title", "x").Add("/tags/-", "y")`.
+- Do not send a JSON Patch as `application/json`: the server answers 415.
+
+### API versioning (tier 1 + tier 3 — routing, not middleware)
+
+```csharp
+builder.AddApiVersioning(o =>                    // optional; defaults: query "api-version" + URL segment
+{
+    o.AssumeDefaultVersionWhenUnspecified = true; // else no version = 400
+    o.ReportApiVersions = true;                   // api-supported-versions / api-deprecated-versions
+    o.ApiVersionReader = ApiVersionReader.Combine(new UrlSegmentApiVersionReader(), new HeaderApiVersionReader("api-version"));
+    o.Policies.Sunset(1.0).Effective(new DateTimeOffset(2027, 1, 1, 0, 0, 0, TimeSpan.Zero)).Link("https://example.com/retire");
+});
+
+[Route("/api/{version:apiVersion}/users")]      // NOT "v{version:apiVersion}" — the constraint accepts "v2"
+[ApiVersion("1.0")] [ApiVersion("2.0")] [ApiVersion("0.9", Deprecated = true)]
+public class UserEndpoints
+{
+    [Get] public UserV1[] List() => …;                           // implicit: 0.9, 1.0
+    [Get] [MapToApiVersion("2.0")] public UserV2[] ListV2() => …; // explicit mapping wins for 2.0
+}
+
+app.MapGet("/weather", V1).HasApiVersion(1.0);                  // raw: applies to the last-mapped route
+app.MapGet("/weather", V2).HasApiVersion(2.0);                  // same template coexists by version
+app.MapGroup("/api", api => api.HasApiVersion(2.0).MapGet("/x", X));
+app.MapOpenApi("/openapi/{documentName}.json");                 // /openapi/v1.json, /openapi/v2.json
+```
+- No `UseApiVersioning()` with DI: selection runs inside routing. Without a container, use `app.UseApiVersioning(o => …)`.
+- Endpoints without versions are untouched. `[ApiVersionNeutral]` accepts any version or none.
+- Errors are 400 problem details (`UnsupportedApiVersion`, `AmbiguousApiVersion`, `InvalidApiVersion`, `ApiVersionUnspecified`). The handler reads its version with `ctx.GetRequestedApiVersion()`.
+- Versions of one route must share one template.
+
+### API reference page (Scalar)
+
+Tier 1 — one route, mapped next to `MapOpenApi`. Generate it whenever the user asks for Swagger UI,
+an API explorer, API docs page, or Scalar.
+
+```csharp
+app.MapOpenApi();
+app.MapScalarApiReference();                                   // → /scalar
+
+// per-version documents: Scalar shows a version picker, newest selected
+app.MapOpenApi("/openapi/{documentName}.json");
+app.MapScalarApiReference(configure: o =>
+{
+    o.DocumentUrl = "/openapi/{documentName}.json";
+    o.DefaultHttpClient = ("csharp", "httpclient");
+    o.Theme = ScalarTheme.Purple;
+});
+```
+
+- Nothing is bundled: the page loads Scalar from the CDN **in the browser**. For an offline LAN (phone + laptop, no internet), serve `dist/browser/standalone.js` as a static file and set `o.ScriptUrl = "/scalar.js"`.
+- `DocumentUrl` must match the `MapOpenApi` pattern; it is written into the page as-is (root-relative by default).
+- Options use Scalar's names; unset = Scalar's default. Unnamed keys go in `o.AdditionalConfiguration["key"] = JsonNode`. Never put secrets there.
+- `.RequireAuthorization()` right after the call protects the page — protect the document route too.
+- A self-only CSP (`SelfOnlyContentSecurityPolicy`) blocks the CDN and inline script.
+- There is no Swagger UI helper; use Scalar.
 
 ### Return types
 
@@ -699,16 +956,21 @@ populated.
 ### Ordering — generate this order
 
 ```csharp
+app.UseHostFiltering();         // first: a request to the wrong name learns nothing
 app.UseTelemetry();             // outermost: everything below it is time the client waited
 app.UseW3CLogging();            // same reason — the line should describe the whole exchange
 app.UseCors();                  // preflights carry no credentials
 app.UseRateLimiter();           // before routing: a throttled request should cost nothing
 app.UseIpFilter();
 app.UseSecurityHeaders();       // applied as the response starts, so it covers static files and errors
+app.UseContentDigest();         // before (de)compression: the digest covers the bytes on the wire
 app.UseResponseCompression();
 app.UseRequestDecompression();  // before anything that reads a body
+app.UseWebhookVerification();   // after routing; only for [RequireWebhookSignature]
 app.UseAuthentication();        // before routing
+app.UseRequestLocalization();   // after auth (a provider may read a claim), before anything that renders text
 app.UseAuthorization();         // after routing (registers itself as after-routing)
+app.UseIdempotency();           // after authorization: the caller is part of the key
 app.UseAntiforgery();           // after authentication — checks a request that would have succeeded
 app.UseRequestTimeouts();       // after routing: the timeout is a property of the endpoint
 app.UseOutputCache();           // after routing, so a hit still pays for auth above it
@@ -794,6 +1056,131 @@ builder.AddAuthorization(o =>
 CORS / rate limiting / IP filtering all follow the same shape — inline policy, or named policies plus
 `RequireX("name")` / `DisableX()` on routes and `[EnableCors]`, `[EnableRateLimiting]`,
 `[RequireIpFilter]` (+ `[DisableCors]`, `[DisableRateLimiting]`, `[AllowAnyIp]`) on endpoints.
+
+### Host filtering (DNS rebinding) and localization
+
+Tier 2 (middleware).
+
+```csharp
+builder.AddHostFiltering(o => o.AllowedHosts.Add("*.local"));   // add names; loopback, IP literals, tunnels already pass
+app.UseHostFiltering();                                          // FIRST in the pipeline
+
+builder.AddRequestLocalization(o => o.SetDefaultCulture("en")
+    .AddSupportedCultures("en", "fr", "de").AddSupportedUICultures("en", "fr", "de"));
+app.UseRequestLocalization();          // or just app.UseRequestLocalization("en", "fr", "de")
+var culture = ctx.GetRequestCulture(); // CultureInfo.Current(UI)Culture are already set for the request
+```
+
+- Generate `UseHostFiltering()` for any server bound to `0.0.0.0` / `IPAddress.Any` that a browser can reach.
+- An **empty `AllowedHosts` is not allow-all** (unlike ASP.NET); `"*"` is. Do not add IP addresses or `localhost`, they already pass.
+- A browser visiting `myphone.local` needs `*.local` listed. Tunnel **agents** (cloudflared/ngrok/tailscale) need `o.AllowPublicUrl(() => agent.PublicUrl)`; `ITunnelProvider` connections pass by default.
+- Refusal is a 400 with problem details. With `UseForwardedHeaders`, both `Host` and `X-Forwarded-Host` must pass.
+- Localization: providers are query (`culture`/`ui-culture`), then cookie (`CookieRequestCultureProvider.DefaultCookieName`, write it with `MakeCookieValue`), then `Accept-Language`. `AddSupportedCultures` **replaces** the list.
+- Under `InvariantGlobalization` (AOT/mobile) every request is invariant and nothing throws; tell the user to set `<PredefinedCulturesOnly>false</PredefinedCulturesOnly>` if they localize text with `.resx`.
+
+## Webhooks — receiving (and signing) signed deliveries
+
+Tier 1 (routing) for `MapWebhook`, the default. The metadata form is tier 2 (after-routing middleware) plus tier 3 (attribute and a `WebhookContext` parameter).
+
+```csharp
+using Shiny.Net.HttpServer.Webhooks;
+
+// Default: verification is part of the route. No registration, no middleware.
+app.MapWebhook("/hooks/github", WebhookSignature.GitHub(secret), async (WebhookContext ctx) =>
+{
+    if (ctx.EventType == "push") await Handle(ctx.ReadFromJson(AppJson.Default.PushEvent)!);
+});                                                       // writes nothing → 200
+
+app.MapWebhook("/hooks/stripe", WebhookSignature.Stripe(stripeSecret),
+    async (WebhookContext ctx) => { ...; return Results.Ok(); },
+    o => o.SuppressDuplicates());                         // per-route options
+```
+
+- Verifiers: `GitHub`, `Stripe`, `StandardWebhooks` (Svix/Clerk/Resend, `whsec_` secrets), `Slack`, `Hmac(o => { o.HeaderName; o.Algorithm; o.Encoding; o.Prefix; o.Secrets; o.DeliveryIdHeader; })`. Every factory takes several secrets for rotation. The timestamp tolerance is 5 minutes (`Stripe(TimeSpan.FromMinutes(10), secret)`).
+- Read the body from `ctx.Body`, `ReadAsString()` or `ReadFromJson(JsonTypeInfo)`. Never parse and re-serialize before verification. `ctx.Request.Body` is a rewound copy, so `[FromBody]` and form readers still work.
+- A failure is a 401 problem response with a generic message; the reason is logged. Over `MaxBodySize` (5 MiB) is a 413.
+- `SuppressDuplicates()` answers a seen delivery id with 200 without running the handler, and forgets the id if the handler throws or returns 5xx. Slack has no id.
+- Named verifiers: `builder.AddWebhooks(o => o.AddVerifier("github", WebhookSignature.GitHub(secret)))`, then `app.MapWebhook("/hooks/github", "github", handler)`.
+- Existing routes and typed endpoints: `app.UseWebhookVerification()` plus `.RequireWebhookSignature("github")`, or `[RequireWebhookSignature("github")]` with a `WebhookContext` parameter. **Metadata does nothing without `UseWebhookVerification()`.** Prefer `MapWebhook` for new routes.
+- Sending: `WebhookSigner.StandardWebhooks(secret).Apply(request, messageId, bodyBytes)`. `WebhookSigner.GenerateSecret()` makes a `whsec_` secret.
+
+## Idempotency keys and content digests
+
+Tier 2 (middleware), with per-endpoint metadata and tier-3 attributes.
+
+```csharp
+builder.AddIdempotency();                 // o.Expiration, o.ShouldStoreStatusCode, o.MaxResponseBodyBytes
+builder.AddContentDigest();               // o.ResponseDigest = DigestEmission.Always
+
+app.UseContentDigest();                   // BEFORE UseRequestDecompression/UseResponseCompression
+app.UseAuthentication();
+app.UseAuthorization();
+app.UseIdempotency();                     // after routing, AFTER UseAuthorization (the caller is part of the key)
+
+app.MapPost("/payments", Charge).RequireIdempotencyKey();   // no key → 400
+app.MapPost("/notes", Save).WithIdempotency();              // honoured if sent
+app.MapPost("/firmware", Upload).RequireContentDigest();    // body must carry a verifying Content-Digest
+app.MapGet("/snapshot", Get).WithContentDigest();           // response always digested
+
+var payments = group.RequireIdempotencyKey();               // group convention: use the RETURNED builder
+```
+
+Tier 3: `[Idempotent]` (Required = true by default, `ExpirationSeconds`), `[DisableIdempotency]`,
+`[ContentDigest(RequireRequestDigest = true)]`, `[DisableContentDigest]`.
+
+- Idempotency handles POST/PATCH only. A replay carries `Idempotent-Replayed: true`. Same key with a different body → 422, still running → 409, 5xx/exceptions are not stored. Keep idempotent responses small and non-streamed or they cannot be replayed.
+- Content digests: the request body is verified as it streams, and the final read throws on a mismatch, which becomes a 400 problem. Response digests are sent when asked (`Want-Content-Digest`), as a header up to 64KB and as a trailer beyond that. HTTP/1.1 with a declared Content-Length cannot trail. Use `DigestFields.Compute(...)` to set one by hand.
+
+## OAuth loopback sign-in (desktop and CLI)
+
+`Shiny.Net.HttpServer.OAuthLoopback` receives the redirect of an OAuth 2.0 / OpenID Connect sign-in
+done in the system browser (RFC 8252 §7.3). It is a one-shot server on an ephemeral `127.0.0.1` port.
+**It is not an OAuth client.** The authorization URL, PKCE and the token exchange belong to the
+user's OAuth library or their own `HttpClient` code. Do not generate PKCE or token code inside it.
+
+**Tier:** internally it is a tier-0 `OnRequest` server that the class owns. The app maps nothing and
+configures no pipeline. It is a standalone class, not something added to the app's own server.
+
+```csharp
+using Shiny.Net.HttpServer.OAuthLoopback;
+
+// One call: start, build the URL, open the browser, wait, stop.
+var result = await LoopbackCallbackListener.AuthorizeAsync((redirectUri, state) => new Uri(
+    $"{authorizeEndpoint}?response_type=code&client_id={clientId}" +
+    $"&redirect_uri={Uri.EscapeDataString(redirectUri.AbsoluteUri)}&state={Uri.EscapeDataString(state)}" +
+    $"&code_challenge={challenge}&code_challenge_method=S256"));
+
+if (result.IsError) { /* result.Error, result.ErrorDescription */ }
+else await ExchangeAsync(result.Code!, verifier);
+
+// Or step by step, when the redirect URI is needed first:
+await using var callback = await LoopbackCallbackListener.StartAsync(new() { Timeout = TimeSpan.FromMinutes(5) });
+SystemBrowser.Open(Build(callback.RedirectUri, callback.State));
+var r = await callback.WaitAsync(ct);
+```
+
+Rules when generating it:
+- Always put `callback.State` (or the `state` passed to the builder) in the authorization request.
+  A callback with a missing or wrong `state` gets a 400 and is ignored. It does not complete the wait.
+- With **Duende.IdentityModel.OidcClient**, set `ValidateState = false` (OidcClient owns `state`),
+  set `OidcClientOptions.RedirectUri = listener.RedirectUri.AbsoluteUri`, and write an `IBrowser` that
+  calls `SystemBrowser.Open(options.StartUrl)` and returns
+  `new BrowserResult { ResultType = Success, Response = result.CallbackUri.AbsoluteUri }`. Map a
+  `TimeoutException` to `BrowserResultType.Timeout`.
+- **MSAL** has its own loopback listener. Do not add this package for `AcquireTokenInteractive`.
+- Keep the default `Address` (`127.0.0.1`) and `Port = 0`. Anything that is not loopback throws.
+  Set a fixed `Port` only if the provider demands an exact redirect URI.
+- Provider refusals (`access_denied`) come back as `result.IsError`, not as exceptions.
+  `WaitAsync` throws `TimeoutException` on `Timeout` (default 5 min) and `OperationCanceledException`
+  on cancellation.
+- `response_mode=form_post` is accepted (`AllowFormPost`, on by default).
+- Customise the browser page with `RenderPage` (HTML-encode anything taken from the result) or send
+  the browser elsewhere with `RedirectTo`.
+- **Never suggest it on iOS, tvOS or Android.** The app is suspended while the browser is in front.
+  Use MAUI `WebAuthenticator` with a custom scheme there. `SystemBrowser.Open` throws
+  `PlatformNotSupportedException` on those platforms.
+- For a machine with no browser (SSH, containers), point to the device authorization grant
+  (RFC 8628) instead.
 
 ## Content
 
@@ -882,6 +1269,68 @@ app.MapWebDav("/dav", o =>
   `FileNotFound`/`DirectoryNotFound`→404, other `IOException`→409. Let the 413 the write stream throws
   propagate. `OpenReadAsync` returning a seekable stream wins over the entry's length — buffer
   anything transcoded on the fly. Do not copy the data into a temp directory to use `RootPath`.
+
+### CalDAV & CardDAV — calendars and contacts the phone's own apps sync
+
+Reach for it when the user wants their app's events or contacts to show up in iOS or macOS Calendar or
+Contacts, Thunderbird or DAVx⁵, or says *CalDAV*, *CardDAV*, *subscribe*, *sync calendar*. Tier 1: one
+call mounts the whole protocol (package `Shiny.Net.HttpServer.CalDav`, built on the WebDAV package).
+
+```csharp
+app.MapCalDav("/dav", o =>
+{
+    o.CalendarStore = new FileCalendarStore(Path.Combine(FileSystem.AppDataDirectory, "calendars"));
+    o.AddressBookStore = new FileAddressBookStore(Path.Combine(FileSystem.AppDataDirectory, "contacts")); // either may be null
+})
+.RequireAuthorization();   // Basic auth; the user name IS the principal
+```
+
+- One mount serves both protocols and also maps `/.well-known/caldav` and `/.well-known/carddav` (HttpServer overload only; otherwise call `app.MapCalDavWellKnown("/dav")`). On iOS: Settings → Calendar → Accounts → Add CalDAV Account → device address plus the Basic credentials.
+- **Always require authorization and use TLS.** The principal is `User.Identity.Name`; other principals' URLs get 403. `DefaultPrincipal` exists only for a single-user mount with no auth.
+- Serving existing data (device calendar, SQLite): implement `ICalendarStore` / `IAddressBookStore` — collections of text objects keyed by name, each with a quoted strong ETag that changes whenever the text does. `PutObjectAsync` gets a validated `DavObjectWrite` (with `.Component` already parsed); return the new ETag, or `null` if the text was not stored byte for byte. Refuse with `throw new WebDavException(403)`. Set `IsReadOnly` on read-only calendars.
+- Do not hand-roll sync tokens, ctags, UID checks or ETag preconditions; the mount does them for any store.
+- Parse or build iCalendar/vCard with `ContentComponent.Parse(text)`, `GetComponents("VEVENT")`, `GetProperty("SUMMARY")?.GetText()` and `ToString()` (folds lines). It is not a full calendar library.
+- Recurrence: DAILY/WEEKLY/MONTHLY/YEARLY with BYDAY/BYMONTHDAY/BYMONTH/EXDATE/overrides are expanded. Anything else is treated as matching. Queries read every object, which is fine for thousands.
+
+### Resumable uploads (tus)
+
+A plain upload restarts from zero when the connection drops. `MapTus` speaks tus 1.0.0, so any tus
+client (tus-js-client, Uppy, TusDotNetClient, TUSKit) resumes from the last byte the server kept.
+Reach for it whenever the user says *resumable*, *large upload from a phone*, *resume after
+disconnect*, *tus*, or *chunked upload*. Tier 1: seven raw routes mapped in one call (package
+`Shiny.Net.HttpServer.Tus`).
+
+```csharp
+app.MapTus("/files", o =>
+{
+    o.Store = new DiskTusStore(Path.Combine(FileSystem.AppDataDirectory, "uploads")); // required
+    o.MaxSize = 4L * 1024 * 1024 * 1024;   // Tus-Max-Size
+    o.Expiration = TimeSpan.FromDays(1);    // sliding; unfinished uploads only
+    o.OnBeforeCreateAsync = ctx =>
+    {
+        if (!ctx.Metadata.ContainsKey("filename")) ctx.Reject(400, "filename required");
+        return ValueTask.CompletedTask;
+    };
+    o.OnUploadCompleteAsync = async ctx =>
+    {
+        await using var file = await ctx.OpenReadAsync();   // runs once, never for partials
+    };
+})
+.RequireAuthorization();
+
+app.UseCors(p => p.WithOrigins("https://app.example.com").WithTusHeaders()); // browser clients
+```
+
+- Do not hand-roll chunked or resumable uploads with `MapPost`. Use this.
+- Each PATCH is bounded by `Limits.MaxRequestBodySize` (30 MB). Tell the client to use a smaller
+  chunk size (tus-js-client `chunkSize`), or raise the limit.
+- Metadata values are client input: `ctx.Metadata["filename"]` is text, never a path to write to.
+- A custom `ITusStore.AppendAsync` must keep the bytes when the stream ends early and roll back
+  when the stream throws. Throw `TusException(409)` for a wrong offset and `TusException(404)` for a
+  missing upload. The endpoint already serialises requests per upload, so the store needs no lock.
+- `LockReleaseTimeout = TimeSpan.Zero` answers 423 instead of taking over a stalled request.
+- `RemoveExpiredUploadsAsync()` on the returned builder runs cleanup from a platform background job.
+- The routes are excluded from OpenAPI. Do not describe them.
 
 ## Realtime
 
@@ -1083,6 +1532,37 @@ var tokens = ctx.GetRequiredService<IAntiforgery>().GetTokens(ctx);
 - **HSTS is off by default and should stay off** for a LAN or loopback server: a browser remembers it
   for the whole host, and a device that serves plain HTTP tomorrow is locked out of itself.
 
+### Real certificates on a public host (ACME)
+
+Host configuration (builder setup plus TLS options), beside tier 2 — the only thing it adds to the
+pipeline is the HTTP-01 challenge middleware. Package `Shiny.Net.HttpServer.Acme`.
+
+```csharp
+builder.Options.Listen(IPAddress.Any, 80);                               // HTTP-01 is ALWAYS port 80
+builder.Options.Listen(IPAddress.Any, 443).Https = new HttpsOptions();   // no certificate => ACME's
+builder.AddAcme(o =>
+{
+    o.Domains = ["example.com", "www.example.com"];
+    o.Email = "ops@example.com";
+    o.AcceptTermsOfService = true;                          // required; never default it silently
+    o.DirectoryUrl = AcmeDirectories.LetsEncryptStaging;    // staging until it works (rate limits)
+    // o.Challenges = AcmeChallengeTypes.TlsAlpn01;         // when only 443 is reachable
+    // o.ExternalAccountBinding = new(kid, hmacKey);        // ZeroSSL / commercial CAs
+    // o.StorePath = "/var/lib/myapp/acme";                 // put on a volume in containers
+});
+// HTTP/3: await app.ListenHttp3Async(o => { o.Port = 443; o.UseAcme(app); });
+```
+
+- Only for hosts the CA can reach at every name (public DNS, port 80 or 443). **Never generate this
+  for a phone/MAUI app** — use `ServerCertificate` + pinning or a tunnel.
+- An HTTPS endpoint with no `Certificate`/`CertificateSelector` gets the ACME certificate; renewals
+  hot-swap per handshake, no restart. `app.GetAcmeCertificateManager()` exposes `CertificateChanged`,
+  `RenewAsync`, `EnsureCertificateAsync`.
+- Register `AddAcme` before auth/IP-filter/host-filter middleware that would reject the CA's anonymous GET.
+- No wildcards (DNS-01 not supported). Persist `StorePath` — re-ordering on every start hits rate limits.
+- The core hooks it uses are public: `HttpsOptions.CertificateContextSelector` (per-handshake certificate
+  + chain, also on `Http3Options`) and `HttpsOptions.ChallengeResponder` (sees SNI + ALPN first).
+
 ## Proxying to another server
 
 Needs `Shiny.Net.HttpServer.Proxy` and `using Shiny.Net.HttpServer.Proxy;` — it is **not** in the core
@@ -1270,6 +1750,31 @@ On HTTP/1.1 the response **must not** declare a `Content-Length` — trailers ri
 chunk, and there is no chunk on a length-delimited body. Do not set `ContentLength` on a handler
 that appends trailers.
 
+## Early Hints (103) and other 1xx responses
+
+Tier 1 (raw delegate) — a response API usable from any handler, middleware or typed endpoint.
+Send `Link` preloads *before* doing slow work, so the browser fetches CSS/JS/fonts in parallel.
+Call it **first** in the handler — after the response has started it throws `InvalidOperationException`.
+
+```csharp
+app.MapGet("/", async ctx =>
+{
+    await ctx.Response.SendEarlyHintsAsync(
+        "</app.css>; rel=preload; as=style",
+        "</app.js>; rel=preload; as=script");
+
+    var model = await LoadAsync(ctx.RequestAborted);            // slow part
+    ctx.Response.Headers.Append(HeaderNames.Link, "</app.css>; rel=preload; as=style"); // repeat on final
+    await ctx.Response.WriteTextAsync(Render(model), "text/html; charset=utf-8");
+});
+```
+
+- Returns `ValueTask<bool>`: `false` (nothing sent) on HTTP/1.0 — do not treat that as an error.
+- General form: `SendInformationalResponseAsync(StatusCodes.Status102Processing, headers)`; any 1xx except 101.
+- Never put CR/LF, `Content-Length` or `Transfer-Encoding` in the headers (throws).
+- `HttpClient` (and the in-memory test client) discard 1xx — assert on the final response, or read raw bytes.
+- Output-cache hits send no hints; the reverse proxy does not forward an upstream 103.
+
 ## MCP
 
 ```csharp
@@ -1380,7 +1885,8 @@ app.MapDocuments<Order>("/orders", o =>
   `IHttpContextAccessor` is only published when `UseSessions()` is mapped.
 - `MapDocumentCollection` is the schema-free lane (relational providers only). Scoped inserts and
   replaces are refused there by design — a raw JSON body cannot be checked against the scope.
-- `PATCH` is RFC 7396: an explicit `null` **removes** the member.
+- `PATCH` is RFC 7396 merge patch (an explicit `null` **removes** the member) — or RFC 6902 JSON Patch when
+  `Content-Type` is `application/json-patch+json`; same If-Match and scope checks either way.
 - Mapping `DocumentEndpoints.Stream` on a provider without change monitoring is a startup error.
 
 ## tvOS
@@ -1577,9 +2083,13 @@ anything about how the OS frames bytes.
 | SWS009 | **Warning** — template captures a token no parameter receives |
 | SWS010 | `IHttpEndpoint` without a single `Handle`/`HandleAsync` |
 | SWS011 | `IHttpEndpoint` without a verb attribute on the class |
+| SWS030 | Invalid API version in `[ApiVersion]` / `[MapToApiVersion]` |
+| SWS031 | **Warning** — `[MapToApiVersion]` names a version the class never declares |
 
 The generator also emits metadata for `[RequestTimeout]`, `[DisableRequestTimeout]`, `[OutputCache]`,
-`[NoOutputCache]`, `[ValidateAntiforgery]` and `[DisableAntiforgery]`, exactly as it does for
+`[NoOutputCache]`, `[ValidateAntiforgery]`, `[DisableAntiforgery]`, `[Idempotent]`, `[DisableIdempotency]`,
+`[ContentDigest]`, `[DisableContentDigest]`, `[RequireWebhookSignature]` and `[ApiVersion]`/`[MapToApiVersion]`/
+`[ApiVersionNeutral]`, exactly as it does for
 `[Authorize]`, `[EnableCors]`, `[EnableRateLimiting]` and `[RequireIpFilter]` — a method's attribute
 replaces the class's, and a `Disable` anywhere wins.
 
@@ -1589,7 +2099,7 @@ replaces the class's, and a `Disable` anywhere wins.
 2. **Always declare a `JsonSerializerContext`** and never use the reflection JSON overloads.
 3. **Route constraints are a closed set** — `byte`, `short`, `int`, `long`, `float`, `double`,
    `decimal`, `bool`, `guid`, `alpha`, `datetime`, `dateonly`, `timeonly`, `timespan`,
-   `minlength(n)`, `maxlength(n)`, `length(n)`, `min(n)`, `max(n)`, `range(a,b)`. There is **no
+   `minlength(n)`, `maxlength(n)`, `length(n)`, `min(n)`, `max(n)`, `range(a,b)`, `apiVersion`. There is **no
    `regex`** — validate anything richer in the handler so it can return a meaningful error instead of
    a 404. Length constraints count characters; `min`/`max`/`range` compare the value and may take
    negative arguments.

@@ -6,6 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Shiny.DocumentDb;
 using Shiny.DocumentDb.Hosting;
 using Shiny.DocumentDb.Internal;
+using Shiny.Net.HttpServer.JsonPatch;
 using Shiny.Net.HttpServer.OpenApi;
 
 namespace Shiny.Net.HttpServer.DocumentDb.Internal;
@@ -74,7 +75,7 @@ static class DocumentEndpointHandlers<T> where T : class
 
             routes.Add(endpoints
                 .Map(HttpMethods.Patch, "/{id}", Handler(http => Patch(http, RouteId(http), options)))
-                .Describe(o => Describe(o, $"Patch{name}", name, Problem(404), Problem(412))));
+                .Describe(o => Describe(o, $"Patch{name}", name, Problem(404), Problem(409), Problem(412), Problem(422))));
         }
 
         if (ops.HasFlag(DocumentEndpoints.Delete))
@@ -133,6 +134,12 @@ static class DocumentEndpointHandlers<T> where T : class
         catch (BadRequestException ex)
         {
             return Results.Problem(StatusCodes.Status400BadRequest, detail: ex.Message);
+        }
+        catch (JsonPatchException ex)
+        {
+            // 400 for a malformed patch, 409 for a failed test or a missing path, 422 for a result that is no
+            // longer a document — each naming the operation that failed.
+            return ex.ToResult();
         }
         catch (PreconditionRequiredException ex)
         {
@@ -364,6 +371,11 @@ static class DocumentEndpointHandlers<T> where T : class
 
         SetETag(http, store, document);
 
+        // RFC 5789 §3.1: a resource that can be patched says which formats it takes, so a client can discover
+        // JSON Patch support from the GET it already made rather than by trying a PATCH and reading a 415.
+        if (options.Operations.HasFlag(DocumentEndpoints.Write))
+            http.Response.Headers[JsonPatchDocument.AcceptPatchHeader] = PatchBody.AcceptPatch;
+
         return Results.Content(Serialize(document, typeInfo), "application/json");
     }
 
@@ -465,17 +477,14 @@ static class DocumentEndpointHandlers<T> where T : class
         if (ifMatch != null && version != null && version.GetVersion(existing) != ifMatch)
             return Precondition(version.GetVersion(existing));
 
-        var patch = await JsonSerializer
-            .DeserializeAsync(http.Request.Body, DocumentDbJson.Default.JsonObject, http.RequestAborted)
-            .ConfigureAwait(false)
-            ?? throw new BadRequestException("A PATCH body must be a JSON object.");
-
-        // RFC 7396 is applied here, against the document we already read for the scope check, and the result is
-        // written as a full replace. The store's own merge deliberately treats a null as "leave alone" — it has
-        // to, because a serialized T carries nulls for every unset member — but over HTTP an explicit null is
-        // the caller's word, and it means remove. Doing the merge here keeps that promise on every provider.
-        var merged = JsonNode.Parse(Serialize(existing, typeInfo))!.AsObject();
-        MergePatch.Apply(merged, patch);
+        // The patch — RFC 7396 merge or RFC 6902 JSON Patch, by Content-Type — is applied here, against the
+        // document we already read for the scope check, and the result is written as a full replace. The
+        // store's own merge deliberately treats a null as "leave alone" — it has to, because a serialized T
+        // carries nulls for every unset member — but over HTTP an explicit null is the caller's word, and it
+        // means remove. Doing the merge here keeps that promise on every provider, and gives JSON Patch the
+        // same If-Match before and the same scope check after.
+        var current = JsonNode.Parse(Serialize(existing, typeInfo))!.AsObject();
+        var merged = await PatchBody.ApplyAsync(http, current).ConfigureAwait(false);
 
         var collection = store.Collection(typeof(T));
         merged[collection.IdProperty] ??= id;

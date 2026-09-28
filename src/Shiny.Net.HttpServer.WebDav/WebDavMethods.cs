@@ -30,6 +30,13 @@ public static class WebDavMethods
 
     /// <summary>Releases a write lock. Class 2 only.</summary>
     public const string Unlock = "UNLOCK";
+
+    /// <summary>
+    /// Asks a resource for a report (RFC 3253 §3.6). A plain file mount does not answer it, but
+    /// CalDAV, CardDAV and <c>sync-collection</c> (RFC 6578) are all spoken through it, so it sits
+    /// beside the other verbs rather than in each package that needs it.
+    /// </summary>
+    public const string Report = "REPORT";
 }
 
 /// <summary>The headers RFC 4918 adds, spelled as they go on the wire.</summary>

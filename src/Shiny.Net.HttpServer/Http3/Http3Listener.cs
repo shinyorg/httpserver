@@ -71,7 +71,7 @@ public sealed class Http3Listener : IAsyncDisposable
         if (this.listener is not null)
             throw new InvalidOperationException("The HTTP/3 listener is already bound.");
 
-        if (this.options.Certificate is null && this.options.CertificateSelector is null)
+        if (this.options.Certificate is null && this.options.CertificateSelector is null && this.options.CertificateContextSelector is null)
             throw new InvalidOperationException(
                 "HTTP/3 requires a certificate: QUIC has no plaintext mode, so there is no such thing " +
                 "as an unencrypted HTTP/3 endpoint."
@@ -129,11 +129,19 @@ public sealed class Http3Listener : IAsyncDisposable
         this.stopping.Dispose();
     }
 
-    QuicServerConnectionOptions BuildConnectionOptions(SslClientHelloInfo hello)
+    internal QuicServerConnectionOptions BuildConnectionOptions(SslClientHelloInfo hello)
     {
-        var certificate = this.options.CertificateSelector?.Invoke(hello.ServerName)
-            ?? this.options.Certificate
-            ?? throw new InvalidOperationException($"No certificate for '{hello.ServerName}'.");
+        var authentication = new SslServerAuthenticationOptions
+        {
+            ApplicationProtocols = [SslApplicationProtocol.Http3]
+        };
+
+        if (this.options.CertificateContextSelector?.Invoke(hello.ServerName) is { } context)
+            authentication.ServerCertificateContext = context;
+        else
+            authentication.ServerCertificate = this.options.CertificateSelector?.Invoke(hello.ServerName)
+                ?? this.options.Certificate
+                ?? throw new InvalidOperationException($"No certificate for '{hello.ServerName}'.");
 
         return new QuicServerConnectionOptions
         {
@@ -142,11 +150,7 @@ public sealed class Http3Listener : IAsyncDisposable
             IdleTimeout = this.options.IdleTimeout,
             MaxInboundBidirectionalStreams = this.options.MaxBidirectionalStreams,
             MaxInboundUnidirectionalStreams = this.options.MaxUnidirectionalStreams,
-            ServerAuthenticationOptions = new SslServerAuthenticationOptions
-            {
-                ApplicationProtocols = [SslApplicationProtocol.Http3],
-                ServerCertificate = certificate
-            }
+            ServerAuthenticationOptions = authentication
         };
     }
 

@@ -1,3 +1,5 @@
+using Shiny.Net.HttpServer.Versioning;
+
 namespace Shiny.Net.HttpServer.Routing;
 
 /// <summary>
@@ -77,8 +79,8 @@ sealed class RouteTable
         var state = new MatchState(method, routeValues);
         this.Walk(this.root, path, SkipSlash(path, 0), ref state);
 
-        if (state.Endpoint is not null)
-            return new RouteMatch(state.Endpoint, null);
+        if (state.Candidates is not null)
+            return new RouteMatch(state.Candidates, null);
 
         routeValues.Reset();
         return new RouteMatch(null, state.BuildAllowHeader());
@@ -150,7 +152,7 @@ sealed class RouteTable
     {
         public readonly string Method = method;
         public readonly RouteValueDictionary RouteValues = routeValues;
-        public Endpoint? Endpoint;
+        public RouteEndpoint[]? Candidates;
         public List<string>? Allowed;
 
         public void RecordAllowed(string candidate)
@@ -174,7 +176,10 @@ sealed class RouteTable
         public RouteConstraint Constraint = RouteConstraint.None;
         public bool IsCatchAll;
 
-        Dictionary<string, RouteEndpoint>? endpoints;
+        // Normally one endpoint per method. More than one only when they are versions of the same
+        // resource — see AddEndpoint — and then the router hands all of them back and API version
+        // selection, which can see the request, picks one.
+        Dictionary<string, RouteEndpoint[]>? endpoints;
 
         public Node GetOrAddParameter(RouteSegment segment)
         {
@@ -199,16 +204,63 @@ sealed class RouteTable
             return node;
         }
 
+        /// <summary>
+        /// Registers an endpoint for its method on this node.
+        /// <para>
+        /// A second endpoint for the same method and route is a mistake — unless both are versions of
+        /// one resource: <c>GET /users</c> at 1.0 and <c>GET /users</c> at 2.0. That is allowed when
+        /// every endpoint already there is versioned and the newcomer claims no version one of them
+        /// already serves.
+        /// </para>
+        /// <para>
+        /// A newcomer with no versions yet is let in beside versioned endpoints, because the fluent form
+        /// — <c>app.MapGet("/users", v2).HasApiVersion(2.0)</c> — attaches its version only after the
+        /// route is in the table. The table is rebuilt from scratch on every change, so by the next
+        /// registration its version is there to be checked; one that never gets a version is treated
+        /// as version-neutral when the request is dispatched.
+        /// </para>
+        /// </summary>
         public void AddEndpoint(RouteEndpoint endpoint)
         {
             this.endpoints ??= new(StringComparer.OrdinalIgnoreCase);
 
-            if (this.endpoints.TryGetValue(endpoint.Method, out var existing))
-                throw new InvalidOperationException(
-                    $"Cannot register '{endpoint.DisplayName}': the route '{existing.DisplayName}' already handles it."
-                );
+            if (!this.endpoints.TryGetValue(endpoint.Method, out var existing))
+            {
+                this.endpoints[endpoint.Method] = [endpoint];
+                return;
+            }
 
-            this.endpoints[endpoint.Method] = endpoint;
+            var incoming = endpoint.GetMetadata<ApiVersionMetadata>();
+            var incomingVersioned = incoming is { IsVersioned: true };
+            var incomingPending = incoming is null || (!incoming.IsApiVersionNeutral && !incoming.IsVersioned);
+
+            foreach (var other in existing)
+            {
+                var otherVersions = other.GetMetadata<ApiVersionMetadata>();
+
+                if (otherVersions is not { IsVersioned: true } || !(incomingVersioned || incomingPending))
+                    throw new InvalidOperationException(
+                        $"Cannot register '{endpoint.DisplayName}': the route '{other.DisplayName}' already handles it."
+                    );
+
+                if (!incomingVersioned)
+                    continue;
+
+                // An explicit MapToApiVersion beside an endpoint that serves the version only because
+                // its set declares it is not a clash — the explicit one is chosen, as in
+                // Asp.Versioning. Two claims of the same standing are.
+                foreach (var version in incoming!.ImplementedVersions)
+                {
+                    if (otherVersions.IsMappedTo(version) &&
+                        incoming.IsExplicitlyMappedTo(version) == otherVersions.IsExplicitlyMappedTo(version))
+                        throw new InvalidOperationException(
+                            $"Cannot register '{endpoint.DisplayName}' for API version {version}: " +
+                            $"the route '{other.DisplayName}' already serves that version."
+                        );
+                }
+            }
+
+            this.endpoints[endpoint.Method] = [.. existing, endpoint];
         }
 
         /// <summary>
@@ -221,9 +273,9 @@ sealed class RouteTable
             if (this.endpoints is null)
                 return false;
 
-            if (this.endpoints.TryGetValue(state.Method, out var endpoint))
+            if (this.endpoints.TryGetValue(state.Method, out var candidates))
             {
-                state.Endpoint = endpoint;
+                state.Candidates = candidates;
                 return true;
             }
 
@@ -232,7 +284,7 @@ sealed class RouteTable
             if (HttpMethods.IsHead(state.Method) &&
                 this.endpoints.TryGetValue(HttpMethods.Get, out var get))
             {
-                state.Endpoint = get;
+                state.Candidates = get;
                 return true;
             }
 

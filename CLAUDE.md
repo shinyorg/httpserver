@@ -25,7 +25,9 @@ change unless there's a reason not to.
    - Add a **release note** — see the release-note rules below.
    - Pages are `.mdx`; release notes use the `<RN>` component
      (`import RN from '/src/components/ReleaseNote.astro'`), with `type="feature|enhancement|fix|breaking"`.
-   - A brand new page also needs a sidebar entry in `astro.config.mjs` in that repo.
+   - A brand new page also needs a sidebar entry in `src/sidebar-topics.mjs` in that repo (the httpserver
+     sidebar lives there, not in `astro.config.mjs`), and a new package needs a row in the package
+     table on `httpserver/index.mdx`.
 
 3. **Skill** (`skills/shiny-httpserver/SKILL.md`)
    - This is the source of the published `shiny-httpserver` Claude Code skill — the agent-facing

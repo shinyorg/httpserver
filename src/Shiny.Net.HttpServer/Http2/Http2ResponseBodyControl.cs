@@ -13,10 +13,20 @@ namespace Shiny.Net.HttpServer.Http2;
 /// </para>
 /// </summary>
 sealed class Http2ResponseBodyControl(Http2Connection connection, Http2Stream stream, HttpResponse response)
-    : IResponseBodyControl
+    : IResponseBodyControl, IInformationalResponseWriter
 {
     readonly ArrayBufferWriter<byte> staged = new(4096);
     Http2ResponseStream? bodyStream;
+
+    /// <summary>
+    /// An interim response is its own HEADERS frame on the stream, with a 1xx <c>:status</c> and
+    /// without END_STREAM (RFC 9113 §8.1) — the final HEADERS frame follows it on the same stream.
+    /// </summary>
+    public async ValueTask<bool> WriteInformationalAsync(int statusCode, HeaderDictionary headers, CancellationToken cancellationToken)
+    {
+        await connection.WriteInformationalAsync(stream, statusCode, headers, cancellationToken).ConfigureAwait(false);
+        return true;
+    }
     PipeWriter? bodyWriter;
     bool completed;
 

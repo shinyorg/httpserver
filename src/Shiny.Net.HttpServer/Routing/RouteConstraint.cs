@@ -59,7 +59,11 @@ public sealed class RouteConstraint
         // Value of the number.
         Min,
         Max,
-        Range
+        Range,
+
+        // An API version: 1.0, v2, 2026-01-15. Matches what ApiVersion.Parse accepts, so a
+        // {version:apiVersion} segment never matches text the version reader would then reject.
+        ApiVersion
     }
 
     readonly Kind kind;
@@ -77,6 +81,12 @@ public sealed class RouteConstraint
     public static readonly RouteConstraint None = new(Kind.None);
 
     public bool IsUnconstrained => this.kind == Kind.None;
+
+    /// <summary>
+    /// True for <c>{name:apiVersion}</c> — the segment <see cref="Versioning.UrlSegmentApiVersionReader"/>
+    /// reads the requested version from.
+    /// </summary>
+    public bool IsApiVersion => this.kind == Kind.ApiVersion;
 
     /// <summary>Parses a constraint name, returning null when it is not recognised.</summary>
     public static RouteConstraint? Parse(string text)
@@ -100,6 +110,7 @@ public sealed class RouteConstraint
                 "dateonly" => new RouteConstraint(Kind.DateOnly),
                 "timeonly" => new RouteConstraint(Kind.TimeOnly),
                 "timespan" => new RouteConstraint(Kind.TimeSpan),
+                "apiversion" => new RouteConstraint(Kind.ApiVersion),
                 _ => null
             };
         }
@@ -202,6 +213,9 @@ public sealed class RouteConstraint
                 }
                 return true;
 
+            case Kind.ApiVersion:
+                return Versioning.ApiVersion.IsValid(value);
+
             case Kind.MinLength:
                 return value.Length >= this.argument;
 
@@ -236,6 +250,7 @@ public sealed class RouteConstraint
         Kind.Min => $"min({this.argument})",
         Kind.Max => $"max({this.argument})",
         Kind.Range => $"range({this.argument},{this.argument2})",
+        Kind.ApiVersion => "apiVersion",
         _ => this.kind.ToString().ToLowerInvariant()
     };
 

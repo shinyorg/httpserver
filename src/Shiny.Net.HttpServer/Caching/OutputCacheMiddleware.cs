@@ -163,7 +163,7 @@ public sealed class OutputCacheMiddleware(OutputCacheOptions options, IOutputCac
     /// Replaying a stored <c>Transfer-Encoding</c> or <c>Connection</c> would frame the reply for a
     /// connection that no longer exists.
     /// </summary>
-    static List<KeyValuePair<string, string>> Storable(HeaderDictionary headers)
+    internal static List<KeyValuePair<string, string>> Storable(HeaderDictionary headers)
     {
         var stored = new List<KeyValuePair<string, string>>(headers.Count);
 

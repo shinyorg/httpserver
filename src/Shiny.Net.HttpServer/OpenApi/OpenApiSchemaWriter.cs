@@ -51,6 +51,12 @@ sealed class OpenApiSchemaWriter
             return;
         }
 
+        if (type == typeof(JsonPatch.JsonPatchDocument))
+        {
+            WriteJsonPatch(writer, nullable);
+            return;
+        }
+
         if (type.IsArray && type.GetElementType() is { } element)
         {
             this.WriteArray(writer, element, nullable);
@@ -84,6 +90,56 @@ sealed class OpenApiSchemaWriter
         // inventing a shape the server never promised.
         if (nullable)
             writer.WriteBoolean("nullable", true);
+    }
+
+    /// <summary>
+    /// The RFC 6902 shape, written out rather than derived: a patch has no JSON metadata to read — it is
+    /// parsed by hand — and a client generator is better served by the real structure (an array of
+    /// op/path/from/value objects) than by the empty "anything" schema an unknown type gets.
+    /// </summary>
+    static void WriteJsonPatch(Utf8JsonWriter writer, bool nullable)
+    {
+        writer.WriteString("type", "array");
+        if (nullable)
+            writer.WriteBoolean("nullable", true);
+
+        writer.WriteString("description", "An RFC 6902 JSON Patch document.");
+        writer.WriteStartObject("items");
+        writer.WriteString("type", "object");
+
+        writer.WriteStartObject("properties");
+
+        writer.WriteStartObject("op");
+        writer.WriteString("type", "string");
+        writer.WriteStartArray("enum");
+        foreach (var op in (ReadOnlySpan<string>)["add", "remove", "replace", "move", "copy", "test"])
+            writer.WriteStringValue(op);
+        writer.WriteEndArray();
+        writer.WriteEndObject();
+
+        writer.WriteStartObject("path");
+        writer.WriteString("type", "string");
+        writer.WriteString("description", "RFC 6901 JSON Pointer to the target location.");
+        writer.WriteEndObject();
+
+        writer.WriteStartObject("from");
+        writer.WriteString("type", "string");
+        writer.WriteString("description", "RFC 6901 JSON Pointer to the source location (move and copy).");
+        writer.WriteEndObject();
+
+        // Any JSON value, null included: an empty schema is OpenAPI's "anything".
+        writer.WriteStartObject("value");
+        writer.WriteString("description", "The value to add, replace or test against.");
+        writer.WriteEndObject();
+
+        writer.WriteEndObject();
+
+        writer.WriteStartArray("required");
+        writer.WriteStringValue("op");
+        writer.WriteStringValue("path");
+        writer.WriteEndArray();
+
+        writer.WriteEndObject();
     }
 
     void WriteArray(Utf8JsonWriter writer, Type elementType, bool nullable)

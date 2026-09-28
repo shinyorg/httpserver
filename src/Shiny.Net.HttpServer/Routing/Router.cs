@@ -1,16 +1,30 @@
+using Shiny.Net.HttpServer.Versioning;
+
 namespace Shiny.Net.HttpServer.Routing;
 
 /// <summary>The outcome of matching one request against the route table.</summary>
 public readonly struct RouteMatch
 {
-    internal RouteMatch(Endpoint? endpoint, string? allowedMethods)
+    internal RouteMatch(RouteEndpoint[]? candidates, string? allowedMethods)
     {
-        this.Endpoint = endpoint;
+        this.candidates = candidates;
         this.AllowedMethods = allowedMethods;
     }
 
-    /// <summary>The selected endpoint, or null when nothing matched.</summary>
-    public Endpoint? Endpoint { get; }
+    readonly RouteEndpoint[]? candidates;
+
+    /// <summary>
+    /// The selected endpoint, or null when nothing matched. When the route has several API versions
+    /// this is the first registered; which one a request actually gets is decided by API version
+    /// selection, which can see the request — see <see cref="Candidates"/>.
+    /// </summary>
+    public Endpoint? Endpoint => this.candidates is { Length: > 0 } c ? c[0] : null;
+
+    /// <summary>
+    /// Every endpoint registered for the matched route and method, in registration order. One,
+    /// except for a route with several API versions, where it is all of them.
+    /// </summary>
+    public IReadOnlyList<RouteEndpoint> Candidates => this.candidates ?? [];
 
     /// <summary>
     /// Comma-separated methods registered for a path that matched by URL but not by method.
@@ -40,6 +54,13 @@ public sealed class Router
 
     /// <summary>Every endpoint registered, in registration order. A snapshot; safe to enumerate.</summary>
     public IReadOnlyList<RouteEndpoint> Endpoints => this.table.Endpoints;
+
+    /// <summary>
+    /// The API versioning options in force, or null for the defaults. Set when the pipeline is
+    /// composed — from <c>AddApiVersioning</c> in the container, or <c>UseApiVersioning</c> without
+    /// one — and read by everything that has to pick between an endpoint's versions.
+    /// </summary>
+    internal ApiVersioningOptions? Versioning { get; set; }
 
     /// <summary>Raised after any change, with the new endpoint count. Useful for logging and tests.</summary>
     public event EventHandler<int>? Changed;

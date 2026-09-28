@@ -1,4 +1,7 @@
 using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Linq;
 
 namespace Shiny.Net.HttpServer.SourceGenerators;
 
@@ -13,7 +16,10 @@ enum BindingSource
     HttpContext,
     HttpRequest,
     HttpResponse,
-    CancellationToken
+    CancellationToken,
+
+    /// <summary>The verified delivery from webhook verification — throws at request time when there is none.</summary>
+    WebhookContext
 }
 
 /// <summary>How a bound string turns into the parameter's type.</summary>
@@ -73,7 +79,8 @@ sealed record EndpointMethodModel(
     bool ApiExcluded,
     EquatableArray<ApiResponseModel> Responses,
     AuthorizationModel Authorization,
-    EndpointPolicyModel Policies
+    EndpointPolicyModel Policies,
+    ApiVersionModel Versions
 ) : IEquatable<EndpointMethodModel>;
 
 /// <summary>
@@ -99,11 +106,21 @@ sealed record EndpointPolicyModel(
     int? OutputCacheSeconds,
     bool OutputCacheDisabled,
     bool AntiforgeryRequired,
-    bool AntiforgeryDisabled
+    bool AntiforgeryDisabled,
+    bool Idempotent,
+    bool IdempotencyKeyRequired,
+    int? IdempotencyExpirationSeconds,
+    bool IdempotencyDisabled,
+    bool ContentDigest,
+    bool ContentDigestRequireRequest,
+    bool ContentDigestAlwaysEmit,
+    bool ContentDigestDisabled,
+    string? WebhookVerifier = null
 ) : IEquatable<EndpointPolicyModel>
 {
     public static readonly EndpointPolicyModel None = new(
-        null, false, null, false, null, false, null, null, false, null, null, false, false, false
+        null, false, null, false, null, false, null, null, false, null, null, false, false, false,
+        false, false, null, false, false, false, false, false
     );
 
     public bool HasCors => this.CorsDisabled || this.CorsPolicy is not null;
@@ -120,13 +137,22 @@ sealed record EndpointPolicyModel(
 
     public bool HasAntiforgery => this.AntiforgeryRequired || this.AntiforgeryDisabled;
 
+    public bool HasWebhook => this.WebhookVerifier is not null;
+
+    public bool HasIdempotency => this.Idempotent || this.IdempotencyDisabled;
+
+    public bool HasContentDigest => this.ContentDigest || this.ContentDigestDisabled;
+
     public bool HasAny
         => this.HasCors
             || this.HasRateLimit
             || this.HasIpFilter
             || this.HasRequestTimeout
             || this.HasOutputCache
-            || this.HasAntiforgery;
+            || this.HasAntiforgery
+            || this.HasWebhook
+            || this.HasIdempotency
+            || this.HasContentDigest;
 }
 
 /// <summary>What <c>[Authorize]</c> and <c>[AllowAnonymous]</c> on a class and method add up to.</summary>
@@ -161,3 +187,125 @@ sealed record JsonContextModel(
     string FullyQualifiedName,
     EquatableArray<string> SerializableTypes
 ) : IEquatable<JsonContextModel>;
+
+/// <summary>
+/// The API versions a generated endpoint declares, read from <c>[ApiVersion]</c>,
+/// <c>[MapToApiVersion]</c> and <c>[ApiVersionNeutral]</c>. Versions are kept as their canonical
+/// text so the model stays equatable and the emitted code reads like the attribute did.
+/// </summary>
+sealed record ApiVersionModel(
+    EquatableArray<string> Supported,
+    EquatableArray<string> Deprecated,
+    EquatableArray<string> Mapped,
+    bool Neutral
+) : IEquatable<ApiVersionModel>
+{
+    public static readonly ApiVersionModel None = new(
+        EquatableArray<string>.Empty,
+        EquatableArray<string>.Empty,
+        EquatableArray<string>.Empty,
+        false
+    );
+
+    public bool HasValue => this.Neutral || this.Supported.Count > 0 || this.Deprecated.Count > 0 || this.Mapped.Count > 0;
+
+    public bool IsVersioned => !this.Neutral && this.HasValue;
+
+    /// <summary>
+    /// True when this endpoint and <paramref name="other"/> would both claim some version with equal
+    /// standing — both mapping it explicitly, or both serving it only because it was declared. An
+    /// explicit mapping beside an implicit one is not a clash: the explicit one wins, as at runtime.
+    /// </summary>
+    public bool ClashesWith(ApiVersionModel other)
+    {
+        if (!this.IsVersioned || !other.IsVersioned)
+            return true;
+
+        return Keys(this.Mapped).Overlaps(Keys(other.Mapped))
+            || Keys(this.Implicit()).Overlaps(Keys(other.Implicit()));
+    }
+
+    IEnumerable<string> Implicit()
+        => this.Mapped.Count > 0 ? Enumerable.Empty<string>() : this.Supported.Concat(this.Deprecated);
+
+    static HashSet<string> Keys(IEnumerable<string> versions)
+        => new(versions.Select(v => Key(v)!), StringComparer.Ordinal);
+
+    /// <summary>
+    /// A comparison key — <c>1</c>, <c>v1</c> and <c>1.0</c> all give <c>1.0</c> — or null when the
+    /// text is not a version the runtime would parse.
+    /// <para>
+    /// A second implementation of the runtime <c>ApiVersion</c> parser, for the same reason
+    /// <see cref="RouteTemplateInfo"/> is one: the generator targets netstandard2.0 and cannot call
+    /// the library. The syntax it accepts is kept identical.
+    /// </para>
+    /// </summary>
+    public static string? Key(string? text)
+    {
+        if (text is null)
+            return null;
+
+        text = text.Trim();
+
+        if (text.Length > 1 && (text[0] == 'v' || text[0] == 'V') && char.IsDigit(text[1]))
+            text = text.Substring(1);
+
+        if (text.Length == 0)
+            return null;
+
+        string? group = null;
+
+        if (text.Length >= 10 && text[4] == '-' && text[7] == '-')
+        {
+            if (!DateTime.TryParseExact(text.Substring(0, 10), "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out _))
+                return null;
+
+            group = text.Substring(0, 10);
+            text = text.Substring(10);
+
+            if (text.Length == 0)
+                return group;
+
+            if (text[0] == '-')
+                return IsStatus(text.Substring(1)) ? group + "-" + text.Substring(1).ToLowerInvariant() : null;
+
+            if (text[0] != '.')
+                return null;
+
+            text = text.Substring(1);
+        }
+
+        string? status = null;
+        var dash = text.IndexOf('-');
+        if (dash >= 0)
+        {
+            status = text.Substring(dash + 1);
+            if (!IsStatus(status))
+                return null;
+
+            text = text.Substring(0, dash);
+        }
+
+        var dot = text.IndexOf('.');
+        var major = dot < 0 ? text : text.Substring(0, dot);
+        var minor = dot < 0 ? "0" : text.Substring(dot + 1);
+
+        if (!IsNumber(major) || !IsNumber(minor))
+            return null;
+
+        var key = int.Parse(major, CultureInfo.InvariantCulture) + "." + int.Parse(minor, CultureInfo.InvariantCulture);
+
+        if (group is not null)
+            key = group + "." + key;
+
+        return status is null ? key : key + "-" + status.ToLowerInvariant();
+    }
+
+    static bool IsNumber(string text)
+        => text.Length > 0
+            && text.All(c => c >= '0' && c <= '9')
+            && int.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out _);
+
+    static bool IsStatus(string text)
+        => text.Length > 0 && text.All(c => (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'));
+}

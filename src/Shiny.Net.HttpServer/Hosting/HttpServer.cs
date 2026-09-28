@@ -862,6 +862,11 @@ public sealed class HttpServer : IAsyncDisposable
         for (var i = this.afterRouting.Count - 1; i >= 0; i--)
             invoke = this.afterRouting[i](invoke);
 
+        // API versioning needs no middleware of its own — selection happens inside routing — only
+        // its options, which an app registers with AddApiVersioning. One set explicitly with
+        // UseApiVersioning (a server without a container) is kept.
+        this.Router.Versioning ??= this.Services?.GetService(typeof(Versioning.ApiVersioningOptions)) as Versioning.ApiVersioningOptions;
+
         // Always composed in, even with an empty table. Skipping it would be a micro-optimisation
         // that quietly made every route added after startup unreachable; walking an empty trie is
         // two null checks.
@@ -1118,6 +1123,17 @@ public sealed class HttpServer : IAsyncDisposable
             );
 
             await http.ProcessAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (ProxyProtocolException ex)
+        {
+            // A missing, malformed or untrusted PROXY header. Worth seeing when a balancer is being
+            // set up, but a port scanner trips it too, so not an error.
+            this.logger.LogDebug("Connection {ConnectionId} rejected: {Reason}", connection.ConnectionId, ex.Message);
+        }
+        catch (TlsChallengeAnsweredException)
+        {
+            // A validation handshake (ACME TLS-ALPN-01): it was answered, and it never carries HTTP.
+            this.logger.LogDebug("Connection {ConnectionId} answered a TLS challenge", connection.ConnectionId);
         }
         catch (Exception ex) when (ex is AuthenticationException or OperationCanceledException)
         {

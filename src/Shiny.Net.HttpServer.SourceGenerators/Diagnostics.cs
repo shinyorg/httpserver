@@ -100,6 +100,24 @@ static class Diagnostics
         isEnabledByDefault: true
     );
 
+    public static readonly DiagnosticDescriptor InvalidApiVersion = new(
+        "SWS030",
+        "Invalid API version",
+        "'{0}' on '{1}' is not a valid API version. Use a form such as 1.0, 2, 1.0-beta or 2026-01-15.",
+        Category,
+        DiagnosticSeverity.Error,
+        isEnabledByDefault: true
+    );
+
+    public static readonly DiagnosticDescriptor UndeclaredMappedApiVersion = new(
+        "SWS031",
+        "Mapped API version is not declared",
+        "'{0}' is mapped to API version {1}, which neither its class nor the method declares with [ApiVersion]. It is served, but not reported to clients as a supported version.",
+        Category,
+        DiagnosticSeverity.Warning,
+        isEnabledByDefault: true
+    );
+
     public static readonly DiagnosticDescriptor UnusedRouteToken = new(
         "SWS009",
         "Route token is never bound",

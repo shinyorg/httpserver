@@ -578,7 +578,7 @@ public sealed class MediatorEndpointGenerator : IIncrementalGenerator
     /// <summary>
     /// Reads the policy names off the mediator's own HTTP attributes.
     /// <para>
-    /// The last three groups — timeouts, output caching, antiforgery — are read by the same names
+    /// The later groups — timeouts, output caching, antiforgery, idempotency, content digests — are read by the same names
     /// this repo's own attributes use, so they light up if the mediator's attributes ever carry
     /// them. Until then they read as absent, which is exactly right: a mediator endpoint gets
     /// whatever the pipeline's default policy says, the same as any other unmarked route.
@@ -598,7 +598,15 @@ public sealed class MediatorEndpointGenerator : IIncrementalGenerator
         attribute.GetNamedInt("OutputCacheSeconds") ?? group?.GetNamedInt("OutputCacheSeconds"),
         GetNamedBool(attribute, "NoOutputCache") || GetNamedBool(group, "NoOutputCache"),
         GetNamedBool(attribute, "ValidateAntiforgery") || GetNamedBool(group, "ValidateAntiforgery"),
-        GetNamedBool(attribute, "DisableAntiforgery") || GetNamedBool(group, "DisableAntiforgery")
+        GetNamedBool(attribute, "DisableAntiforgery") || GetNamedBool(group, "DisableAntiforgery"),
+        GetNamedBool(attribute, "Idempotent") || GetNamedBool(group, "Idempotent"),
+        true,
+        attribute.GetNamedInt("IdempotencyExpirationSeconds") ?? group?.GetNamedInt("IdempotencyExpirationSeconds"),
+        GetNamedBool(attribute, "DisableIdempotency") || GetNamedBool(group, "DisableIdempotency"),
+        GetNamedBool(attribute, "ContentDigest") || GetNamedBool(group, "ContentDigest"),
+        GetNamedBool(attribute, "RequireRequestDigest") || GetNamedBool(group, "RequireRequestDigest"),
+        true,
+        GetNamedBool(attribute, "DisableContentDigest") || GetNamedBool(group, "DisableContentDigest")
     );
 
     static EquatableArray<string> MergeTags(AttributeData? group, AttributeData attribute)

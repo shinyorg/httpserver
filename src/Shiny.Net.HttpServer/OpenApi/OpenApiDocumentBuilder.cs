@@ -4,6 +4,7 @@ using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Unicode;
 using Shiny.Net.HttpServer.Routing;
+using Shiny.Net.HttpServer.Versioning;
 
 namespace Shiny.Net.HttpServer.OpenApi;
 
@@ -24,10 +25,18 @@ public static class OpenApiDocumentBuilder
 {
     /// <summary>Builds the document as UTF-8 bytes, ready to write to a response or a file.</summary>
     public static byte[] Build(HttpServer server, OpenApiOptions? options = null)
+        => Build(server, options, apiVersion: null);
+
+    /// <summary>
+    /// Builds the document for one API version, overriding <see cref="OpenApiOptions.ApiVersion"/> —
+    /// which is how a single set of options serves a document per version.
+    /// </summary>
+    public static byte[] Build(HttpServer server, OpenApiOptions? options, ApiVersion? apiVersion)
     {
         ArgumentNullException.ThrowIfNull(server);
 
         options ??= new OpenApiOptions();
+        apiVersion ??= options.ApiVersion;
 
         var buffer = new ArrayBufferWriter<byte>(4096);
         var writerOptions = new JsonWriterOptions
@@ -41,28 +50,75 @@ public static class OpenApiDocumentBuilder
             Encoder = JavaScriptEncoder.Create(UnicodeRanges.All)
         };
 
+        var versioning = VersioningOptions(server);
+
         using (var writer = new Utf8JsonWriter(buffer, writerOptions))
-            Write(writer, server.Router, options);
+            Write(writer, server.Router, options, apiVersion, versioning);
 
         return buffer.WrittenSpan.ToArray();
     }
+
+    /// <summary>
+    /// Every API version the route table's endpoints serve, ascending — the documents a
+    /// per-version <c>MapOpenApi</c> can produce, and what a UI's version picker should list.
+    /// </summary>
+    public static IReadOnlyList<ApiVersion> GetApiVersions(HttpServer server)
+    {
+        ArgumentNullException.ThrowIfNull(server);
+
+        var versions = new SortedSet<ApiVersion>();
+        foreach (var endpoint in server.Router.Endpoints)
+        {
+            if (endpoint.GetMetadata<ApiVersionMetadata>() is { IsVersioned: true } metadata)
+                versions.UnionWith(metadata.ImplementedVersions);
+        }
+
+        return [.. versions];
+    }
+
+    internal static ApiVersioningOptions VersioningOptions(HttpServer server)
+        => server.Router.Versioning
+            ?? server.Services?.GetService(typeof(ApiVersioningOptions)) as ApiVersioningOptions
+            ?? ApiVersioningOptions.Default;
 
     /// <summary>Builds the document as a string. Handy for tests and for writing it out at build time.</summary>
     public static string BuildJson(HttpServer server, OpenApiOptions? options = null)
         => Encoding.UTF8.GetString(Build(server, options));
 
-    static void Write(Utf8JsonWriter writer, Router router, OpenApiOptions options)
+    /// <summary>Builds one API version's document as a string.</summary>
+    public static string BuildJson(HttpServer server, OpenApiOptions? options, ApiVersion? apiVersion)
+        => Encoding.UTF8.GetString(Build(server, options, apiVersion));
+
+    static void Write(
+        Utf8JsonWriter writer,
+        Router router,
+        OpenApiOptions options,
+        ApiVersion? apiVersion,
+        ApiVersioningOptions versioning
+    )
     {
         var schemas = new OpenApiSchemaWriter();
-        var paths = GroupByPath(router, options);
+        var paths = GroupByPath(router, options, apiVersion, versioning);
 
         writer.WriteStartObject();
         writer.WriteString("openapi", "3.0.3");
 
         writer.WriteStartObject("info");
         writer.WriteString("title", options.Title);
-        writer.WriteString("version", options.Version);
-        if (options.Description is { Length: > 0 } description)
+
+        // A version's document is that version of the API, so that is its version — the document's
+        // own revision number means nothing to a client choosing between v1 and v2.
+        writer.WriteString("version", apiVersion?.ToString() ?? options.Version);
+
+        var description = options.Description;
+        if (apiVersion is not null && IsDeprecatedVersion(router, apiVersion, versioning))
+        {
+            description = String.IsNullOrEmpty(description)
+                ? "This API version has been deprecated."
+                : description + " This API version has been deprecated.";
+        }
+
+        if (description is { Length: > 0 })
             writer.WriteString("description", description);
         writer.WriteEndObject();
 
@@ -108,12 +164,21 @@ public static class OpenApiDocumentBuilder
     /// </summary>
     static SortedDictionary<string, SortedDictionary<string, ApiOperation>> GroupByPath(
         Router router,
-        OpenApiOptions options
+        OpenApiOptions options,
+        ApiVersion? apiVersion,
+        ApiVersioningOptions versioning
     )
     {
         var paths = new SortedDictionary<string, SortedDictionary<string, ApiOperation>>(StringComparer.Ordinal);
 
-        foreach (var endpoint in router.Endpoints)
+        // In one version's document, endpoints that map the version explicitly go first: where two
+        // serve the same path and method at that version, the first one in wins, and routing would
+        // pick the explicit one.
+        IEnumerable<RouteEndpoint> endpoints = apiVersion is null
+            ? router.Endpoints
+            : router.Endpoints.OrderBy(e => e.GetMetadata<ApiVersionMetadata>()?.IsExplicitlyMappedTo(apiVersion) == true ? 0 : 1);
+
+        foreach (var endpoint in endpoints)
         {
             var declared = endpoint.GetMetadata<ApiOperation>();
             if (declared is { Exclude: true })
@@ -122,9 +187,29 @@ public static class OpenApiDocumentBuilder
             if (declared is null && !options.IncludeUndescribedRoutes)
                 continue;
 
-            var operation = declared ?? new ApiOperation();
-            EnsurePathParameters(operation, endpoint.Template);
+            var versions = endpoint.GetMetadata<ApiVersionMetadata>();
+
+            // One version's document holds what that version serves, plus everything that is not
+            // versioned at all — a health check is part of every version of the API.
+            if (apiVersion is not null && versions is { IsVersioned: true } && !versions.IsMappedTo(apiVersion))
+                continue;
+
+            // Copied for a versioned document: the same endpoint can be current in one version's
+            // document and deprecated in another's, and the operation object is shared by both.
+            var operation = declared is null
+                ? new ApiOperation()
+                : apiVersion is null ? declared : Copy(declared);
+
+            var substitute = apiVersion is not null && versioning.SubstituteApiVersionInUrl
+                ? versioning.FormatGroupName(apiVersion)
+                : null;
+
+            EnsurePathParameters(operation, endpoint.Template, substitute is not null);
             EnsureResponses(operation);
+
+            if (apiVersion is not null && versions is { IsVersioned: true } &&
+                (versions.IsDeprecated(apiVersion) || versioning.Policies.Deprecations.ContainsKey(apiVersion)))
+                operation.Deprecated = true;
 
             // Read from the authorization metadata rather than asked for separately: an endpoint is
             // documented as protected because it is protected.
@@ -135,7 +220,7 @@ public static class OpenApiDocumentBuilder
 
             var method = endpoint.Method.ToLowerInvariant();
 
-            foreach (var path in PathsFor(endpoint.Template))
+            foreach (var path in PathsFor(endpoint.Template, substitute))
             {
                 if (!paths.TryGetValue(path.Path, out var operations))
                     paths[path.Path] = operations = new SortedDictionary<string, ApiOperation>(StringComparer.Ordinal);
@@ -156,18 +241,18 @@ public static class OpenApiDocumentBuilder
     /// matches two URLs and OpenAPI has no way to say "optional" about a path segment, so it
     /// becomes two paths.
     /// </summary>
-    static List<(string Path, string? OmittedParameter)> PathsFor(RouteTemplate template)
+    static List<(string Path, string? OmittedParameter)> PathsFor(RouteTemplate template, string? versionSegment)
     {
-        var full = BuildPath(template, template.Segments.Count);
+        var full = BuildPath(template, template.Segments.Count, versionSegment);
         var results = new List<(string, string?)> { (full, null) };
 
         if (template.Segments is [.., { IsOptional: true } last])
-            results.Add((BuildPath(template, template.Segments.Count - 1), last.Text));
+            results.Add((BuildPath(template, template.Segments.Count - 1, versionSegment), last.Text));
 
         return results;
     }
 
-    static string BuildPath(RouteTemplate template, int segmentCount)
+    static string BuildPath(RouteTemplate template, int segmentCount, string? versionSegment)
     {
         if (segmentCount == 0)
             return "/";
@@ -181,11 +266,52 @@ public static class OpenApiDocumentBuilder
             // Constraints and the catch-all marker are routing syntax, not part of the URL.
             if (segment.Kind == RouteSegmentKind.Literal)
                 builder.Append(segment.Text);
+            else if (versionSegment is not null && segment.Constraint.IsApiVersion)
+                builder.Append(versionSegment);
             else
                 builder.Append('{').Append(segment.Text).Append('}');
         }
 
         return builder.ToString();
+    }
+
+    /// <summary>A shallow copy with its own lists, safe to adjust for one document.</summary>
+    static ApiOperation Copy(ApiOperation operation)
+    {
+        var copy = new ApiOperation
+        {
+            Summary = operation.Summary,
+            Description = operation.Description,
+            OperationId = operation.OperationId,
+            Exclude = operation.Exclude,
+            Deprecated = operation.Deprecated,
+            RequiresAuthorization = operation.RequiresAuthorization,
+            RequestBody = operation.RequestBody
+        };
+
+        foreach (var tag in operation.Tags)
+            copy.Tags.Add(tag);
+
+        foreach (var parameter in operation.Parameters)
+            copy.Parameters.Add(parameter);
+
+        foreach (var response in operation.Responses)
+            copy.Responses.Add(response);
+
+        return copy;
+    }
+
+    /// <summary>
+    /// True when a version is deprecated across the API: deprecated somewhere, supported nowhere —
+    /// or retired by a deprecation policy.
+    /// </summary>
+    static bool IsDeprecatedVersion(Router router, ApiVersion version, ApiVersioningOptions versioning)
+    {
+        if (versioning.Policies.Deprecations.ContainsKey(version))
+            return true;
+
+        var (_, deprecated) = ApiVersionSelection.Report(router.Endpoints);
+        return deprecated.Contains(version);
     }
 
     static ApiOperation WithoutParameter(ApiOperation operation, string name)
@@ -219,12 +345,26 @@ public static class OpenApiDocumentBuilder
     /// Fills in path parameters the template declares but nobody described — which is every raw
     /// route, and any generated one whose token binds somewhere unusual.
     /// </summary>
-    static void EnsurePathParameters(ApiOperation operation, RouteTemplate template)
+    static void EnsurePathParameters(ApiOperation operation, RouteTemplate template, bool versionSubstituted = false)
     {
         foreach (var segment in template.Segments)
         {
             if (segment.Kind == RouteSegmentKind.Literal)
                 continue;
+
+            // Written into the path as the version itself, so there is no parameter left to
+            // describe — and one described anyway would make the document invalid.
+            if (versionSubstituted && segment.Constraint.IsApiVersion)
+            {
+                for (var i = operation.Parameters.Count - 1; i >= 0; i--)
+                {
+                    if (operation.Parameters[i].In == ApiParameterLocation.Path &&
+                        string.Equals(operation.Parameters[i].Name, segment.Text, StringComparison.OrdinalIgnoreCase))
+                        operation.Parameters.RemoveAt(i);
+                }
+
+                continue;
+            }
 
             var alreadyDescribed = operation.Parameters.Any(
                 p => p.In == ApiParameterLocation.Path
@@ -365,8 +505,14 @@ public static class OpenApiDocumentBuilder
             if (body.Description is { Length: > 0 } text)
                 writer.WriteString("description", text);
 
+            // A JsonPatchDocument body has exactly one media type. Describing it as the default
+            // application/json would send generated clients a Content-Type the endpoint answers with 415.
+            var contentType = body.Type == typeof(JsonPatch.JsonPatchDocument) && body.ContentType == "application/json"
+                ? JsonPatch.JsonPatchDocument.MediaType
+                : body.ContentType;
+
             writer.WriteStartObject("content");
-            writer.WriteStartObject(body.ContentType);
+            writer.WriteStartObject(contentType);
             writer.WritePropertyName("schema");
             schemas.WriteSchema(writer, body.Type);
             writer.WriteEndObject();

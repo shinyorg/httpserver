@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.DependencyInjection;
 using Shiny.DocumentDb;
+using Shiny.Net.HttpServer.JsonPatch;
 using Shiny.Net.HttpServer.OpenApi;
 
 namespace Shiny.Net.HttpServer.DocumentDb.Internal;
@@ -53,7 +54,7 @@ static class DocumentCollectionEndpointHandlers
 
             routes.Add(endpoints
                 .Map(HttpMethods.Patch, "/{id}", Handler(http => Write(http, RouteId(http), collectionName, options, patch: true)))
-                .Describe(o => Describe(o, $"Patch-{collectionName}", collectionName, Problem(404))));
+                .Describe(o => Describe(o, $"Patch-{collectionName}", collectionName, Problem(404), Problem(409), Problem(422))));
         }
 
         if (ops.HasFlag(DocumentEndpoints.Delete))
@@ -110,6 +111,10 @@ static class DocumentCollectionEndpointHandlers
         catch (BadRequestException ex)
         {
             return Results.Problem(StatusCodes.Status400BadRequest, detail: ex.Message);
+        }
+        catch (JsonPatchException ex)
+        {
+            return ex.ToResult();
         }
         catch (NotSupportedException ex)
         {
@@ -228,7 +233,13 @@ static class DocumentCollectionEndpointHandlers
             .FirstOrDefault(http.RequestAborted)
             .ConfigureAwait(false);
 
-        return match is null ? NotFound(id) : Content(match);
+        if (match is null)
+            return NotFound(id);
+
+        if (options.Operations.HasFlag(DocumentEndpoints.Write))
+            http.Response.Headers[JsonPatchDocument.AcceptPatchHeader] = PatchBody.AcceptPatch;
+
+        return Content(match);
     }
 
     static async Task<IResult> Count(HttpContext http, string name, DocumentCollectionEndpointOptions options)
@@ -259,10 +270,34 @@ static class DocumentCollectionEndpointHandlers
     {
         AssertUnscoped(options, patch ? "patched" : "replaced");
 
+        var collection = Collection(http, name, options);
+
+        if (patch && http.Request.IsJsonPatch())
+        {
+            // A merge patch can be handed to the store as a partial update, but a JSON Patch cannot: its ops
+            // (array positions, move, test) only mean something against the current document. So it reads that
+            // document, applies the patch to it, and writes the result back as a full replace. Unscoped by
+            // construction — AssertUnscoped above has already refused the scoped case.
+            var existing = await collection
+                .Query()
+                .Where(IdClause(options.IdProperty, id))
+                .FirstOrDefault(http.RequestAborted)
+                .ConfigureAwait(false);
+
+            if (existing is null)
+                return NotFound(id);
+
+            var patched = await PatchBody.ApplyAsync(http, existing).ConfigureAwait(false);
+            patched[options.IdProperty] ??= id;
+
+            var written = await collection.Update(patched, patch: false, http.RequestAborted).ConfigureAwait(false);
+            return written == 0 ? NotFound(id) : Results.NoContent();
+        }
+
         var body = await ReadObject(http).ConfigureAwait(false);
         body[options.IdProperty] ??= id;
 
-        var affected = await Collection(http, name, options)
+        var affected = await collection
             .Update(body, patch, http.RequestAborted)
             .ConfigureAwait(false);
 

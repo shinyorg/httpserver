@@ -623,6 +623,7 @@ sealed class Http2Connection
         info.IsEncrypted = this.connection.IsEncrypted;
         info.ClientCertificate = this.connection.ClientCertificate;
         info.IsTunneled = this.connection.IsTunneled;
+        info.ProxyProtocol = (this.connection as IProxyProtocolConnection)?.ProxyProtocol;
 
         if (this.connection.RemoteEndPoint is IPEndPoint remote)
         {
@@ -660,6 +661,22 @@ sealed class Http2Connection
         response.Headers.IsReadOnly = true;
 
         return this.WriteHeaderBlockAsync(stream, fields, endStream, cancellationToken);
+    }
+
+    /// <summary>
+    /// Writes an interim (1xx) HEADERS frame. Never END_STREAM: a 1xx is by definition not the end of
+    /// anything, and a peer that sees one ending a stream must treat it as malformed.
+    /// </summary>
+    internal ValueTask WriteInformationalAsync(Http2Stream stream, int statusCode, HeaderDictionary headers, CancellationToken cancellationToken)
+    {
+        var fields = new List<HeaderField>(headers.Count + 1)
+        {
+            new(":status", statusCode.ToString(System.Globalization.CultureInfo.InvariantCulture))
+        };
+
+        AppendFields(fields, headers);
+
+        return this.WriteHeaderBlockAsync(stream, fields, endStream: false, cancellationToken);
     }
 
     /// <summary>

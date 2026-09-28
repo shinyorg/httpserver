@@ -27,6 +27,10 @@ sealed class SocketConnectionListener : IConnectionListener
         this.logger = logger;
         this.requestedEndPoint = new IPEndPoint(endpoint.Address, endpoint.Port);
 
+        // Here rather than per connection: a PROXY configuration that trusts nobody should stop the
+        // server starting, not quietly refuse every client once it is up.
+        endpoint.ProxyProtocol?.Validate();
+
         // Connection ids have to stay unique across a multi-endpoint server, and each listener
         // counts on its own — so the listener's position goes into the id.
         this.connectionIdPrefix = listenerIndex == 0 ? "c" : $"c{listenerIndex}-";
@@ -108,7 +112,7 @@ sealed class SocketConnectionListener : IConnectionListener
 
                 // Returned before the TLS handshake runs — that happens on the connection's own
                 // task, so a client that stalls mid-handshake cannot hold up the accept loop.
-                return SocketConnection.Create(id, accepted, this.options, this.endpoint.Https);
+                return SocketConnection.Create(id, accepted, this.options, this.endpoint.Https, this.endpoint.ProxyProtocol);
             }
             catch (Exception ex) when (ex is ObjectDisposedException or OperationCanceledException)
             {

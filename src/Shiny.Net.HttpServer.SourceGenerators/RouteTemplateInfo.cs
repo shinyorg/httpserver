@@ -16,10 +16,11 @@ namespace Shiny.Net.HttpServer.SourceGenerators;
 /// </summary>
 public sealed class RouteTemplateInfo
 {
-    RouteTemplateInfo(string template, IReadOnlyList<string> parameterNames)
+    RouteTemplateInfo(string template, IReadOnlyList<string> parameterNames, IReadOnlyList<string>? apiVersionParameterNames = null)
     {
         this.Template = template;
         this.ParameterNames = parameterNames;
+        this.ApiVersionParameterNames = apiVersionParameterNames ?? Array.Empty<string>();
     }
 
     /// <summary>The normalized template, always with a leading slash and no trailing slash.</summary>
@@ -27,6 +28,12 @@ public sealed class RouteTemplateInfo
 
     /// <summary>Names of every <c>{token}</c> and <c>{*catchAll}</c> in the template.</summary>
     public IReadOnlyList<string> ParameterNames { get; }
+
+    /// <summary>
+    /// Tokens carrying the <c>apiVersion</c> constraint. Routing reads the version from them, so a
+    /// handler has no need to bind them and is not warned for leaving them unbound.
+    /// </summary>
+    public IReadOnlyList<string> ApiVersionParameterNames { get; }
 
     public bool HasParameter(string name)
         => this.ParameterNames.Any(p => string.Equals(p, name, StringComparison.OrdinalIgnoreCase));
@@ -60,6 +67,7 @@ public sealed class RouteTemplateInfo
 
         var parts = normalized.Split('/');
         var names = new List<string>();
+        var versionNames = new List<string>();
 
         for (var i = 0; i < parts.Length; i++)
         {
@@ -76,7 +84,9 @@ public sealed class RouteTemplateInfo
             {
                 if (part.IndexOf('{') >= 0 || part.IndexOf('}') >= 0)
                 {
-                    error = $"segment '{part}' mixes literal text and a parameter; give the parameter its own segment";
+                    error = part.IndexOf(":apiVersion}", StringComparison.OrdinalIgnoreCase) >= 0
+                        ? $"segment '{part}' mixes literal text and a parameter; write the version segment as '{{version:apiVersion}}' on its own — the apiVersion constraint already accepts a leading 'v'"
+                        : $"segment '{part}' mixes literal text and a parameter; give the parameter its own segment";
                     return null;
                 }
                 continue;
@@ -127,6 +137,7 @@ public sealed class RouteTemplateInfo
             }
 
             var colon = inner.IndexOf(':');
+            var isApiVersion = false;
             if (colon >= 0)
             {
                 var constraint = inner.Substring(colon + 1);
@@ -137,6 +148,8 @@ public sealed class RouteTemplateInfo
                     error = $"unknown route constraint ':{constraint}'";
                     return null;
                 }
+
+                isApiVersion = string.Equals(constraint, "apiversion", StringComparison.OrdinalIgnoreCase);
             }
 
             if (inner.Length == 0)
@@ -152,9 +165,12 @@ public sealed class RouteTemplateInfo
             }
 
             names.Add(inner);
+
+            if (isApiVersion)
+                versionNames.Add(inner);
         }
 
-        return new RouteTemplateInfo("/" + normalized, names);
+        return new RouteTemplateInfo("/" + normalized, names, versionNames);
     }
 
     /// <summary>
@@ -184,6 +200,7 @@ public sealed class RouteTemplateInfo
                 case "dateonly":
                 case "timeonly":
                 case "timespan":
+                case "apiversion":
                     return true;
                 default:
                     return false;

@@ -17,7 +17,7 @@
     <PackageReadmeFile>readme.md</PackageReadmeFile>
     <PackageReleaseNotes>https://shinylib.net/release-notes</PackageReleaseNotes>
     <PackageProjectUrl>https://shinylib.net</PackageProjectUrl>
-    <PackageTags>http httpserver webserver maui aot mcp ssh azure-relay jwt shiny</PackageTags>
+    <PackageTags>http httpserver webserver maui aot mcp ssh azure-relay jwt oauth shiny</PackageTags>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">

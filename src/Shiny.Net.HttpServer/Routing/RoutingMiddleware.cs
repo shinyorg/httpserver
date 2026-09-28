@@ -1,3 +1,5 @@
+using Shiny.Net.HttpServer.Versioning;
+
 namespace Shiny.Net.HttpServer.Routing;
 
 /// <summary>
@@ -22,6 +24,28 @@ sealed class RoutingMiddleware(Router router, RequestDelegate fallback, RequestD
 
         if (match.Endpoint is { } endpoint)
         {
+            // A route with API versions — one versioned endpoint, or several sharing the route —
+            // is resolved to the endpoint for the requested version before anything reads
+            // ctx.Endpoint, so authorization and the rest see the endpoint that will actually run.
+            if (ApiVersionSelection.RequiresSelection(match.Candidates))
+            {
+                var options = router.Versioning ?? ApiVersioningOptions.Default;
+                var selection = ApiVersionSelection.Select(options, context, match.Candidates);
+
+                if (selection.Endpoint is null)
+                {
+                    await ApiVersionSelection.WriteErrorAsync(options, context, match.Candidates, selection).ConfigureAwait(false);
+                    return;
+                }
+
+                endpoint = selection.Endpoint;
+
+                if (selection.Version is { } version)
+                    ApiVersionSelection.SetRequestedVersion(context, version);
+
+                ApiVersionSelection.WriteHeaders(options, context, match.Candidates, selection.Version);
+            }
+
             context.Endpoint = endpoint;
             await endpointPipeline(context).ConfigureAwait(false);
             return;

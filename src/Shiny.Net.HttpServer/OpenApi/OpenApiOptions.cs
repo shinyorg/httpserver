@@ -9,6 +9,17 @@ public sealed class OpenApiOptions
 
     public string Version { get; set; } = "1.0.0";
 
+    /// <summary>
+    /// Limits the document to one API version: endpoints serving it, plus unversioned and
+    /// version-neutral ones. Operations the version deprecates are flagged <c>deprecated</c>, and
+    /// <c>info.version</c> becomes the API version. Null (the default) documents everything.
+    /// <para>
+    /// For one document per version without listing them, map the document with a
+    /// <c>{documentName}</c> token instead: <c>app.MapOpenApi("/openapi/{documentName}.json")</c>.
+    /// </para>
+    /// </summary>
+    public Versioning.ApiVersion? ApiVersion { get; set; }
+
     public string? Description { get; set; }
 
     /// <summary>

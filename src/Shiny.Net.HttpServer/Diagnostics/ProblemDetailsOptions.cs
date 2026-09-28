@@ -88,6 +88,7 @@ public sealed class ProblemDetailsOptions
     static int DefaultStatusCode(Exception exception) => exception switch
     {
         BadHttpRequestException bad => bad.StatusCode,
+        JsonPatch.JsonPatchException patch => patch.StatusCode,
         ArgumentException or FormatException or JsonException => StatusCodes.Status400BadRequest,
         UnauthorizedAccessException => StatusCodes.Status403Forbidden,
         KeyNotFoundException => StatusCodes.Status404NotFound,

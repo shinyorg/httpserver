@@ -13,6 +13,7 @@ namespace Shiny.Net.HttpServer;
 public sealed class HttpResponse
 {
     IResponseBodyControl control = NullResponseBodyControl.Instance;
+    IInformationalResponseWriter? informational;
 
     internal HttpResponse(HttpContext context)
     {
@@ -210,6 +211,127 @@ public sealed class HttpResponse
         this.Headers.Set(HeaderNames.Location, location);
     }
 
+    // ---- Informational (1xx) responses. ----
+
+    /// <summary>
+    /// Sends <c>103 Early Hints</c> (RFC 8297): an interim response carrying <c>Link</c> headers the
+    /// browser can start fetching — stylesheets, scripts, fonts, a preconnect to a CDN — while this
+    /// handler is still working out the real response. It turns server "think time" (a database
+    /// query, a template render) into download time for the page's critical subresources.
+    /// <para>
+    /// Each value is one <c>Link</c> header value, for example
+    /// <c>&lt;/app.css&gt;; rel=preload; as=style</c> or <c>&lt;https://cdn.example.com&gt;; rel=preconnect</c>.
+    /// Browsers act on <c>preload</c> and <c>preconnect</c> hints, and only for navigations; repeat the
+    /// same <c>Link</c> headers on the final response too, since hints are advisory and a client or
+    /// intermediary is free to discard them.
+    /// </para>
+    /// <para>
+    /// Must be called before the final response has started. Returns false, having sent nothing, when
+    /// the request arrived over HTTP/1.0 (which predates 1xx responses, so a 1.0 client would read the
+    /// hint as the final response) or when the response is not attached to a connection.
+    /// </para>
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The final response has already started.</exception>
+    public ValueTask<bool> SendEarlyHintsAsync(IEnumerable<string> links, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(links);
+
+        var headers = new HeaderDictionary(1);
+        foreach (var link in links)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(link, nameof(links));
+            headers.Append(HeaderNames.Link, link);
+        }
+
+        if (headers.Count == 0)
+            throw new ArgumentException("Early Hints need at least one Link value.", nameof(links));
+
+        return this.SendInformationalResponseAsync(StatusCodes.Status103EarlyHints, headers, cancellationToken);
+    }
+
+    /// <summary>
+    /// Sends <c>103 Early Hints</c> for one or more <c>Link</c> header values. See
+    /// <see cref="SendEarlyHintsAsync(IEnumerable{string}, CancellationToken)"/>.
+    /// </summary>
+    public ValueTask<bool> SendEarlyHintsAsync(params string[] links)
+        => this.SendEarlyHintsAsync((IEnumerable<string>)links, CancellationToken.None);
+
+    /// <summary>
+    /// Sends an interim <c>1xx</c> response ahead of the final one. Most callers want
+    /// <see cref="SendEarlyHintsAsync(IEnumerable{string}, CancellationToken)"/>; this is the general
+    /// form, for a <c>102 Processing</c> keep-alive on a slow operation or a 1xx code of your own.
+    /// <para>
+    /// Any number may be sent, in order, before the final response. Each goes out immediately —
+    /// framed as an interim status line and header block on HTTP/1.1, and as a HEADERS frame without
+    /// END_STREAM on HTTP/2 and HTTP/3. Nothing here touches <see cref="Headers"/> or
+    /// <see cref="StatusCode"/>; the final response is still yours to shape afterwards.
+    /// </para>
+    /// <para>
+    /// <c>101 Switching Protocols</c> is refused: it is not interim, it ends HTTP on the connection,
+    /// and the WebSocket and upgrade paths own it. <c>100 Continue</c> is allowed but rarely needed —
+    /// the server already answers <c>Expect: 100-continue</c> itself on HTTP/1.1.
+    /// </para>
+    /// </summary>
+    /// <returns>
+    /// True when the response was sent. False, having sent nothing, over HTTP/1.0 (which has no
+    /// interim responses — a 1.0 client would take it as the final answer) or when the response is not
+    /// attached to a connection.
+    /// </returns>
+    /// <exception cref="ArgumentOutOfRangeException">The status is not 1xx, or is 101.</exception>
+    /// <exception cref="ArgumentException">A header would corrupt the framing (a line break, or a body-framing header).</exception>
+    /// <exception cref="InvalidOperationException">The final response has already started.</exception>
+    public ValueTask<bool> SendInformationalResponseAsync(
+        int statusCode,
+        HeaderDictionary? headers = null,
+        CancellationToken cancellationToken = default
+    )
+    {
+        if (statusCode is < 100 or > 199 || statusCode == StatusCodes.Status101SwitchingProtocols)
+            throw new ArgumentOutOfRangeException(
+                nameof(statusCode),
+                statusCode,
+                "An informational response needs a 1xx status other than 101 Switching Protocols."
+            );
+
+        headers ??= new HeaderDictionary(0);
+        ValidateInformationalHeaders(headers);
+
+        // Throwing rather than ignoring: once the final status line is out, anything 1xx that follows
+        // would be read as garbage in the body (HTTP/1.1) or a malformed stream (HTTP/2 and 3). A call
+        // here is a bug in the handler's ordering, and it should hear about it.
+        if (this.HasStarted)
+            throw new InvalidOperationException(
+                "Informational (1xx) responses must be sent before the final response starts."
+            );
+
+        return this.informational is { } writer
+            ? writer.WriteInformationalAsync(statusCode, headers, cancellationToken)
+            : ValueTask.FromResult(false);
+    }
+
+    static void ValidateInformationalHeaders(HeaderDictionary headers)
+    {
+        foreach (var (name, values) in headers)
+        {
+            // An interim response has no body, so body framing on it is meaningless at best — and on
+            // HTTP/1.1 a client that believed it would wait for bytes that never come.
+            if (name.Equals(HeaderNames.ContentLength, StringComparison.OrdinalIgnoreCase)
+                || name.Equals(HeaderNames.TransferEncoding, StringComparison.OrdinalIgnoreCase))
+                throw new ArgumentException($"'{name}' cannot be sent on an informational response.", nameof(headers));
+
+            if (name.AsSpan().IndexOfAny('\r', '\n') >= 0)
+                throw new ArgumentException($"Header name '{name}' contains a line break.", nameof(headers));
+
+            foreach (var value in values)
+            {
+                // Written straight into an HTTP/1.1 head, a line break would let a value inject its own
+                // headers — or end the interim response early and start forging the final one.
+                if (value is not null && value.AsSpan().IndexOfAny('\r', '\n') >= 0)
+                    throw new ArgumentException($"Header '{name}' contains a line break.", nameof(headers));
+            }
+        }
+    }
+
     /// <summary>
     /// Puts <paramref name="bodyControl"/> in charge of framing this response. A middleware that
     /// wants to see or transform the body wraps <see cref="BodyControl"/> and binds the wrapper —
@@ -221,6 +343,12 @@ public sealed class HttpResponse
     {
         ArgumentNullException.ThrowIfNull(bodyControl);
         this.control = bodyControl;
+
+        // Only the connection's own control can frame an interim response, so a wrapper bound on top
+        // of it (compression, a recorder) must not hide it. Captured here and left alone by anything
+        // that does not implement it.
+        if (bodyControl is IInformationalResponseWriter writer)
+            this.informational = writer;
     }
 
     /// <summary>
@@ -245,6 +373,7 @@ public sealed class HttpResponse
         this.ReasonPhrase = null;
         this.onStarting = null;
         this.control = NullResponseBodyControl.Instance;
+        this.informational = null;
         this.Headers.Reset();
         this.trailers?.Reset();
     }

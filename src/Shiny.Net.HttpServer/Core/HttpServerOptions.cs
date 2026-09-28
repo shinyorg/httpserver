@@ -28,6 +28,13 @@ public sealed class HttpServerOptions
     public HttpsOptions? Https { get; set; }
 
     /// <summary>
+    /// PROXY protocol settings, for a server behind a TCP load balancer. Null (the default) reads
+    /// no header. See <see cref="ProxyProtocolOptions"/>.
+    /// <para>Ignored once <see cref="Endpoints"/> has anything in it — set it per endpoint there.</para>
+    /// </summary>
+    public ProxyProtocolOptions? ProxyProtocol { get; set; }
+
+    /// <summary>
     /// Everything the server should listen on. Empty by default, in which case
     /// <see cref="Address"/>/<see cref="Port"/>/<see cref="Https"/> describe the one endpoint —
     /// that shorthand is what most embedded servers want and it stays the documented path.
@@ -74,7 +81,7 @@ public sealed class HttpServerOptions
     internal IReadOnlyList<HttpServerEndpoint> ResolveEndpoints() =>
         this.Endpoints.Count > 0
             ? [.. this.Endpoints]
-            : [new HttpServerEndpoint(this.Address, this.Port) { Https = this.Https }];
+            : [new HttpServerEndpoint(this.Address, this.Port) { Https = this.Https, ProxyProtocol = this.ProxyProtocol }];
 
     /// <summary>Pending-connection queue depth handed to <c>listen()</c>.</summary>
     public int Backlog { get; set; } = 128;
@@ -248,6 +255,33 @@ public sealed class HttpServerEndpoint
 
     /// <summary>TLS for this endpoint alone. Null serves plain HTTP.</summary>
     public HttpsOptions? Https { get; set; }
+
+    /// <summary>
+    /// PROXY protocol for this endpoint alone. Null reads no header. Per endpoint because only the
+    /// port the balancer forwards to should accept one — a loopback or admin port beside it should not.
+    /// </summary>
+    public ProxyProtocolOptions? ProxyProtocol { get; set; }
+
+    /// <summary>
+    /// Expects a PROXY protocol header (v1 or v2) from the balancer at the front of every connection
+    /// on this endpoint. Returns the endpoint, so it chains off <see cref="HttpServerOptions.Listen"/>:
+    /// <code>
+    /// options.Listen(IPAddress.Any, 8080).UseProxyProtocol(p => p.Trust("10.0.0.0/8"));
+    /// </code>
+    /// <paramref name="mode"/> defaults to <see cref="ProxyProtocolMode.Required"/>, the right
+    /// setting once the balancer is the only way in.
+    /// </summary>
+    public HttpServerEndpoint UseProxyProtocol(Action<ProxyProtocolOptions> configure, ProxyProtocolMode mode = ProxyProtocolMode.Required)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+
+        var options = this.ProxyProtocol ?? new ProxyProtocolOptions();
+        options.Mode = mode;
+        configure(options);
+        this.ProxyProtocol = options;
+
+        return this;
+    }
 }
 
 /// <summary>Protocol limits. These exist to keep a misbehaving or hostile client from exhausting memory.</summary>
@@ -290,6 +324,39 @@ public sealed class HttpsOptions
     /// </summary>
     public Func<string?, X509Certificate2?>? CertificateSelector { get; set; }
 
+    /// <summary>
+    /// Chooses a complete certificate context — the certificate <em>and</em> the intermediates to send
+    /// with it — per connection from SNI. Consulted before <see cref="CertificateSelector"/> and
+    /// <see cref="Certificate"/>; returning null falls through to them.
+    /// <para>
+    /// Two things a bare certificate cannot do. It carries the chain explicitly: a server certificate
+    /// from a public CA is useless without its intermediate, and <see cref="SslStream"/> only sends
+    /// intermediates it can find in a machine store, which on Linux and in containers usually means
+    /// none. And it is read on every handshake, so swapping what it returns replaces the certificate
+    /// on a running server — no restart, no dropped connections. This is how ACME renewal installs a
+    /// new certificate.
+    /// </para>
+    /// </summary>
+    public Func<string?, SslStreamCertificateContext?>? CertificateContextSelector { get; set; }
+
+    /// <summary>
+    /// Looks at each client's ClientHello before the handshake, and answers the ones it recognises
+    /// as challenges rather than as HTTP.
+    /// <para>
+    /// For ACME's TLS-ALPN-01 validation (RFC 8737): the CA connects offering only the
+    /// <c>acme-tls/1</c> protocol and expects a special self-signed certificate proving control of
+    /// the name. .NET does not expose the client's ALPN list to certificate selection, so the hello is
+    /// read and parsed here first, then replayed to the real handshake. Return null for a normal
+    /// connection; return a response to complete that handshake instead, after which the connection
+    /// is closed without carrying a request.
+    /// </para>
+    /// <para>
+    /// Costs one extra small read per connection while set, so leave it null unless something needs
+    /// it. The ACME package sets it only when TLS-ALPN-01 is enabled.
+    /// </para>
+    /// </summary>
+    public Func<TlsClientHello, TlsChallengeResponse?>? ChallengeResponder { get; set; }
+
     public SslProtocols SslProtocols { get; set; } = SslProtocols.Tls12 | SslProtocols.Tls13;
 
     public ClientCertificateMode ClientCertificateMode { get; set; } = ClientCertificateMode.NoCertificate;
@@ -303,11 +370,11 @@ public sealed class HttpsOptions
     /// </summary>
     public TimeSpan HandshakeTimeout { get; set; } = TimeSpan.FromSeconds(10);
 
-    internal SslServerAuthenticationOptions ToSslServerAuthenticationOptions(bool offerHttp2 = false)
+    internal SslServerAuthenticationOptions ToSslServerAuthenticationOptions(bool offerHttp2 = false, string? serverName = null)
     {
-        if (this.Certificate is null && this.CertificateSelector is null)
+        if (this.Certificate is null && this.CertificateSelector is null && this.CertificateContextSelector is null)
             throw new InvalidOperationException(
-                $"{nameof(HttpsOptions)} requires either {nameof(this.Certificate)} or {nameof(this.CertificateSelector)}."
+                $"{nameof(HttpsOptions)} requires {nameof(this.Certificate)}, {nameof(this.CertificateSelector)} or {nameof(this.CertificateContextSelector)}."
             );
 
         var options = new SslServerAuthenticationOptions
@@ -322,11 +389,18 @@ public sealed class HttpsOptions
             CertificateRevocationCheckMode = X509RevocationMode.NoCheck
         };
 
-        if (this.CertificateSelector is { } selector)
+        if (this.CertificateContextSelector?.Invoke(serverName) is { } context)
+            options.ServerCertificateContext = context;
+        else if (this.CertificateSelector is { } selector)
             options.ServerCertificateSelectionCallback = (_, hostName) => selector(hostName)
                 ?? throw new InvalidOperationException($"No certificate available for host '{hostName}'.");
-        else
+        else if (this.Certificate is not null)
             options.ServerCertificate = this.Certificate;
+        else
+            // Only a context selector is configured and it has nothing yet — an ACME certificate
+            // that has not been issued, typically. An AuthenticationException, so the connection
+            // is logged as a refused handshake and not as a server fault.
+            throw new AuthenticationException($"No certificate is available yet for host '{serverName}'.");
 
         if (this.ClientCertificateMode != ClientCertificateMode.NoCertificate)
         {
