@@ -36,10 +36,18 @@ public sealed class RelayServerOptions
 
     /// <summary>
     /// Decides whether a registration is allowed and, when it is, which subdomain it gets. Return
-    /// null to refuse. The default accepts any token matching <see cref="Token"/> and grants the
-    /// requested subdomain when it is free.
+    /// null to refuse. Asynchronous so it can consult a database or an identity service; it is
+    /// cancelled after <see cref="AuthorizeTimeout"/> or when the relay stops, and an exception
+    /// refuses the registration. The default accepts any token matching <see cref="Token"/> and
+    /// grants the requested subdomain when it is free.
     /// </summary>
-    public Func<TunnelRegistrationRequest, string?>? Authorize { get; set; }
+    public Func<TunnelRegistrationRequest, CancellationToken, ValueTask<string?>>? Authorize { get; set; }
+
+    /// <summary>
+    /// How long <see cref="Authorize"/> may take before the registration is refused. A control
+    /// connection is held open while it runs, so a stalled lookup must not hold it forever.
+    /// </summary>
+    public TimeSpan AuthorizeTimeout { get; set; } = TimeSpan.FromSeconds(15);
 
     /// <summary>Shared secret the default <see cref="Authorize"/> compares against. Null accepts anything.</summary>
     public string? Token { get; set; }
@@ -71,4 +79,10 @@ public sealed class TunnelRegistrationRequest(string? token, string? requestedSu
     public string? RequestedSubdomain { get; } = requestedSubdomain;
 
     public EndPoint? RemoteEndPoint { get; } = remoteEndPoint;
+
+    /// <summary>
+    /// Set by <see cref="RelayServerOptions.Authorize"/> to tag the tunnel it grants — a key id, an
+    /// account — and read back from <see cref="RelayTunnel.State"/>.
+    /// </summary>
+    public object? State { get; set; }
 }

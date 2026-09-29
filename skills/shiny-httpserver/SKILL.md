@@ -206,6 +206,9 @@ triggers:
 - RunTunnelAsync
 - RelayTunnelProvider
 - RelayServer
+- RelayTunnel
+- TunnelConnected
+- TunnelDisconnected
 - AddSshTunnel
 - QuickTunnel
 - QuickTunnelHost
@@ -1838,6 +1841,13 @@ await app.RunTunnelAsync(provider, logger, ct);
   "first `https://` in the output" — providers print a welcome banner full of links to their own site
   before announcing your address.
 - Always put authentication in front of anything exposed by a tunnel.
+- Hosting the relay with a real key registry: `RelayServerOptions.Authorize` is async —
+  `(request, ct) => ValueTask<string?>` returning the subdomain to grant or `null` to refuse. Pass
+  `ct` into the lookup (it carries `AuthorizeTimeout`, 15s by default), and do not catch-and-grant:
+  a throw already refuses the registration and is logged. Tag the grant with `request.State = keyId`
+  rather than keeping the token; `relay.TunnelConnected` / `TunnelDisconnected` report it, `relay.Tunnels`
+  lists it, and revoking is "make `Authorize` refuse, **then** `await relay.DisconnectAsync(t =>
+  Equals(t.State, keyId))`" — in the other order a reconnecting client is simply let back in.
 - `AzureRelay` is deliberately **not** AOT-clean; do not suggest it for a trimmed/AOT app.
 - `Shiny.Net.HttpServer.Tunnels` supervises the vendor agents — `cloudflared`, `ngrok`,
   `tailscale` — for hosts that can start a process. **Not on a phone:** iOS forbids it outright, so

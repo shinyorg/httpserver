@@ -44,6 +44,101 @@ public sealed class RelayServer : IAsyncDisposable
     /// <summary>Hosts currently registered, for diagnostics and admin endpoints.</summary>
     public IReadOnlyCollection<string> RegisteredHosts => (IReadOnlyCollection<string>)this.sessions.Keys;
 
+    /// <summary>A snapshot of the tunnels currently registered.</summary>
+    public IReadOnlyList<RelayTunnel> Tunnels => [.. this.sessions.Values.Select(x => x.Tunnel)];
+
+    /// <summary>
+    /// Raised once a tunnel is registered and its client has been told its public URL. Raised on the
+    /// tunnel's own connection task; keep handlers short. An exception from a handler is logged and
+    /// does not affect the tunnel.
+    /// </summary>
+    public event EventHandler<RelayTunnelEventArgs>? TunnelConnected;
+
+    /// <summary>
+    /// Raised exactly once for every tunnel <see cref="TunnelConnected"/> reported, however it ended —
+    /// including by <see cref="StopAsync"/>, before that returns.
+    /// </summary>
+    public event EventHandler<RelayTunnelDisconnectedEventArgs>? TunnelDisconnected;
+
+    /// <summary>
+    /// Closes the tunnel registered for <paramref name="host"/> and every public exchange in flight on
+    /// it. Returns false when no tunnel holds that host. A client with a reconnect delay will dial back
+    /// and go through <see cref="RelayServerOptions.Authorize"/> again — so to keep it out, make that
+    /// refuse it (revoke the key) before calling this.
+    /// </summary>
+    public async ValueTask<bool> DisconnectAsync(string host)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(host);
+
+        if (!this.sessions.TryGetValue(host, out var session))
+            return false;
+
+        await this.CloseAsync(session, RelayTunnelCloseReason.Disconnected).ConfigureAwait(false);
+        return true;
+    }
+
+    /// <summary>
+    /// Closes every tunnel <paramref name="predicate"/> matches — every tunnel whose
+    /// <see cref="RelayTunnel.State"/> names a revoked key, say. Returns how many were closed.
+    /// </summary>
+    public async ValueTask<int> DisconnectAsync(Func<RelayTunnel, bool> predicate)
+    {
+        ArgumentNullException.ThrowIfNull(predicate);
+
+        var count = 0;
+        foreach (var session in this.sessions.Values)
+        {
+            if (!predicate(session.Tunnel))
+                continue;
+
+            await this.CloseAsync(session, RelayTunnelCloseReason.Disconnected).ConfigureAwait(false);
+            count++;
+        }
+
+        return count;
+    }
+
+    async ValueTask CloseAsync(TunnelSession session, RelayTunnelCloseReason reason)
+    {
+        session.SetCloseReason(reason);
+
+        // Only this session's entry: the host may already belong to a client that registered again.
+        this.sessions.TryRemove(KeyValuePair.Create(session.Host, session));
+        await session.DisposeAsync().ConfigureAwait(false);
+        this.RaiseDisconnected(session);
+    }
+
+    void RaiseDisconnected(TunnelSession session)
+    {
+        if (!session.TryMarkEnded())
+            return;
+
+        this.logger.LogInformation("Tunnel for {Host} closed ({Reason})", session.Host, session.CloseReason);
+
+        try
+        {
+            this.TunnelDisconnected?.Invoke(this, new RelayTunnelDisconnectedEventArgs(session.Tunnel, session.CloseReason));
+        }
+        catch (Exception ex)
+        {
+            this.logger.LogError(ex, "A TunnelDisconnected handler threw for {Host}", session.Host);
+        }
+    }
+
+    void RaiseConnected(TunnelSession session)
+    {
+        session.MarkAnnounced();
+
+        try
+        {
+            this.TunnelConnected?.Invoke(this, new RelayTunnelEventArgs(session.Tunnel));
+        }
+        catch (Exception ex)
+        {
+            this.logger.LogError(ex, "A TunnelConnected handler threw for {Host}", session.Host);
+        }
+    }
+
     /// <summary>Where tunnel clients should connect. Reflects the real port when 0 was requested.</summary>
     public string? ControlUrl => this.controlListener?.ListenDescription;
 
@@ -108,11 +203,8 @@ public sealed class RelayServer : IAsyncDisposable
         if (this.publicListener is not null)
             await this.publicListener.UnbindAsync(cancellationToken).ConfigureAwait(false);
 
-        foreach (var host in this.sessions.Keys)
-        {
-            if (this.sessions.TryRemove(host, out var session))
-                await session.DisposeAsync().ConfigureAwait(false);
-        }
+        foreach (var session in this.sessions.Values)
+            await this.CloseAsync(session, RelayTunnelCloseReason.RelayStopped).ConfigureAwait(false);
 
         this.controlLoop = null;
         this.publicLoop = null;
@@ -204,7 +296,7 @@ public sealed class RelayServer : IAsyncDisposable
         }
 
         var request = new TunnelRegistrationRequest(token_, requestedSubdomain, connection.RemoteEndPoint);
-        var subdomain = (this.options.Authorize ?? this.DefaultAuthorize)(request);
+        var subdomain = await this.AuthorizeAsync(request, token).ConfigureAwait(false);
 
         if (subdomain is null)
         {
@@ -215,8 +307,24 @@ public sealed class RelayServer : IAsyncDisposable
             return;
         }
 
+        // Checked again: other registrations may have completed while this one was authorizing.
+        if (this.sessions.Count >= this.options.MaxTunnels)
+        {
+            await channel.SendAsync(TunnelFrameType.HelloReject, 0, "The relay is at capacity.", token)
+                .ConfigureAwait(false);
+            await connection.DisposeAsync().ConfigureAwait(false);
+            return;
+        }
+
         var host = $"{subdomain}.{this.options.Domain}".ToLowerInvariant();
-        var session = new TunnelSession(host, connection, channel);
+        var tunnel = new RelayTunnel(
+            host,
+            this.BuildPublicUrl(host),
+            connection.RemoteEndPoint,
+            DateTimeOffset.UtcNow,
+            request.State
+        );
+        var session = new TunnelSession(tunnel, connection, channel);
 
         if (!this.sessions.TryAdd(host, session))
         {
@@ -226,18 +334,47 @@ public sealed class RelayServer : IAsyncDisposable
             return;
         }
 
-        await channel.SendAsync(TunnelFrameType.HelloAck, 0, this.BuildPublicUrl(host), token).ConfigureAwait(false);
-        this.logger.LogInformation("Tunnel registered for {Host} from {Remote}", host, connection.RemoteEndPoint);
-
         try
         {
+            // Inside the try: a client gone before the acknowledgement must not leave its host claimed.
+            await channel.SendAsync(TunnelFrameType.HelloAck, 0, tunnel.PublicUrl, token).ConfigureAwait(false);
+            this.logger.LogInformation("Tunnel registered for {Host} from {Remote}", host, connection.RemoteEndPoint);
+            this.RaiseConnected(session);
+
             await session.RunAsync(token).ConfigureAwait(false);
         }
         finally
         {
-            this.sessions.TryRemove(host, out _);
-            await session.DisposeAsync().ConfigureAwait(false);
-            this.logger.LogInformation("Tunnel for {Host} closed", host);
+            var reason = token.IsCancellationRequested
+                ? RelayTunnelCloseReason.RelayStopped
+                : RelayTunnelCloseReason.ConnectionClosed;
+
+            await this.CloseAsync(session, reason).ConfigureAwait(false);
+        }
+    }
+
+    async ValueTask<string?> AuthorizeAsync(TunnelRegistrationRequest request, CancellationToken cancellationToken)
+    {
+        if (this.options.Authorize is not { } authorize)
+            return this.DefaultAuthorize(request);
+
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(this.options.AuthorizeTimeout);
+
+        try
+        {
+            return await authorize(request, timeout.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            this.logger.LogWarning("Tunnel authorization for {Remote} timed out", request.RemoteEndPoint);
+            return null;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Refused with the same message as any other refusal: the reason is the relay's business.
+            this.logger.LogError(ex, "Tunnel authorization for {Remote} failed", request.RemoteEndPoint);
+            return null;
         }
     }
 

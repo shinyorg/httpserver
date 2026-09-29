@@ -463,6 +463,221 @@ public class TunnelEndToEndTests
     }
 
     [Fact]
+    public async Task Grants_the_subdomain_an_asynchronous_Authorize_returns()
+    {
+        TunnelRegistrationRequest? seen = null;
+
+        await using var relay = await StartRelayAsync(async (request, ct) =>
+        {
+            seen = request;
+            await Task.Delay(50, ct);
+            return request.Token == "device-key" ? "assigned" : null;
+        });
+
+        await using var provider = CreateProvider(relay, "device-key", subdomain: "asked-for");
+        await provider.BindAsync(Token);
+
+        Assert.Equal("asked-for", seen?.RequestedSubdomain);
+        Assert.Contains("assigned.localhost", provider.PublicUrl);
+        Assert.Contains("assigned.localhost", relay.RegisteredHosts);
+    }
+
+    [Fact]
+    public async Task Refuses_a_registration_when_Authorize_throws()
+    {
+        await using var relay = await StartRelayAsync((_, _) => throw new InvalidOperationException("database is down"));
+        await using var provider = CreateProvider(relay, "device-key");
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(async () => await provider.BindAsync(Token));
+        Assert.Contains("refused", ex.Message);
+        Assert.DoesNotContain("database", ex.Message);
+        Assert.Empty(relay.RegisteredHosts);
+    }
+
+    [Fact]
+    public async Task Refuses_a_registration_when_Authorize_outlives_its_timeout()
+    {
+        await using var relay = await StartRelayAsync(
+            async (_, ct) =>
+            {
+                await Task.Delay(Timeout.Infinite, ct);
+                return "never";
+            },
+            authorizeTimeout: TimeSpan.FromMilliseconds(200)
+        );
+        await using var provider = CreateProvider(relay, "device-key");
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(async () => await provider.BindAsync(Token));
+        Assert.Contains("refused", ex.Message);
+        Assert.Empty(relay.RegisteredHosts);
+    }
+
+    // Grants each token its own subdomain and tags the tunnel with it, the way a key registry would.
+    static ValueTask<string?> TagWithToken(TunnelRegistrationRequest request, CancellationToken _)
+    {
+        request.State = request.Token;
+        return ValueTask.FromResult(request.Token);
+    }
+
+    [Fact]
+    public async Task Reports_a_connected_tunnel_with_the_state_Authorize_set()
+    {
+        await using var relay = await StartRelayAsync(TagWithToken);
+        var connected = new TaskCompletionSource<RelayTunnel>(TaskCreationOptions.RunContinuationsAsynchronously);
+        relay.TunnelConnected += (_, e) => connected.TrySetResult(e.Tunnel);
+
+        await using var provider = CreateProvider(relay, "key-1");
+        await provider.BindAsync(Token);
+
+        var tunnel = await connected.Task.WaitAsync(TimeSpan.FromSeconds(10), Token);
+        Assert.Equal("key-1.localhost", tunnel.Host);
+        Assert.Equal("key-1", tunnel.State);
+        Assert.Equal(provider.PublicUrl, tunnel.PublicUrl);
+        Assert.NotNull(tunnel.RemoteEndPoint);
+        Assert.Equal("key-1.localhost", Assert.Single(relay.Tunnels).Host);
+    }
+
+    [Fact]
+    public async Task Disconnects_a_tunnel_by_host()
+    {
+        await using var relay = await StartRelayAsync(TagWithToken);
+        var closed = new TaskCompletionSource<RelayTunnelDisconnectedEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
+        relay.TunnelDisconnected += (_, e) => closed.TrySetResult(e);
+
+        await using var provider = CreateProvider(relay, "key-1");
+        await provider.BindAsync(Token);
+
+        Assert.False(await relay.DisconnectAsync("nobody.localhost"));
+        Assert.True(await relay.DisconnectAsync("KEY-1.localhost"));
+
+        var e = await closed.Task.WaitAsync(TimeSpan.FromSeconds(10), Token);
+        Assert.Equal(RelayTunnelCloseReason.Disconnected, e.Reason);
+        Assert.Equal("key-1.localhost", e.Tunnel.Host);
+        Assert.Empty(relay.Tunnels);
+
+        using var client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{relay.PublicPort}") };
+        var request = new HttpRequestMessage(HttpMethod.Get, "/x");
+        request.Headers.Host = "key-1.localhost";
+        var response = await client.SendAsync(request, Token);
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Disconnects_every_tunnel_a_predicate_matches()
+    {
+        await using var relay = await StartRelayAsync(TagWithToken);
+
+        await using var first = CreateProvider(relay, "key-1");
+        await using var second = CreateProvider(relay, "key-2");
+        await first.BindAsync(Token);
+        await second.BindAsync(Token);
+
+        var closed = await relay.DisconnectAsync(x => Equals(x.State, "key-1"));
+
+        Assert.Equal(1, closed);
+        Assert.Equal("key-2.localhost", Assert.Single(relay.Tunnels).Host);
+    }
+
+    [Fact]
+    public async Task Reports_ConnectionClosed_when_the_client_goes_away()
+    {
+        await using var relay = await StartRelayAsync(TagWithToken);
+        var closed = new TaskCompletionSource<RelayTunnelCloseReason>(TaskCreationOptions.RunContinuationsAsynchronously);
+        relay.TunnelDisconnected += (_, e) => closed.TrySetResult(e.Reason);
+
+        var provider = CreateProvider(relay, "key-1");
+        await provider.BindAsync(Token);
+        await provider.DisposeAsync();
+
+        Assert.Equal(RelayTunnelCloseReason.ConnectionClosed, await closed.Task.WaitAsync(TimeSpan.FromSeconds(10), Token));
+        Assert.Empty(relay.Tunnels);
+    }
+
+    [Fact]
+    public async Task Reports_RelayStopped_before_StopAsync_returns()
+    {
+        var relay = await StartRelayAsync(TagWithToken);
+        var reasons = new List<RelayTunnelCloseReason>();
+        relay.TunnelDisconnected += (_, e) => { lock (reasons) reasons.Add(e.Reason); };
+
+        await using var provider = CreateProvider(relay, "key-1");
+        await provider.BindAsync(Token);
+        await relay.DisposeAsync();
+
+        lock (reasons)
+            Assert.Equal([RelayTunnelCloseReason.RelayStopped], reasons);
+    }
+
+    [Fact]
+    public async Task A_reconnecting_client_is_authorized_again_and_keeps_its_host()
+    {
+        var authorizations = 0;
+        await using var relay = await StartRelayAsync((request, ct) =>
+        {
+            Interlocked.Increment(ref authorizations);
+            return TagWithToken(request, ct);
+        });
+
+        var connections = 0;
+        var reconnected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        relay.TunnelConnected += (_, _) =>
+        {
+            if (Interlocked.Increment(ref connections) == 2)
+                reconnected.TrySetResult();
+        };
+
+        await using var provider = new RelayTunnelProvider(new RelayTunnelOptions
+        {
+            Host = "127.0.0.1",
+            Port = relay.ControlPort,
+            Token = "key-1",
+            UseTls = false,
+            ReconnectDelay = TimeSpan.FromMilliseconds(50),
+            HandshakeTimeout = TimeSpan.FromSeconds(10)
+        });
+        await provider.BindAsync(Token);
+
+        Assert.True(await relay.DisconnectAsync("key-1.localhost"));
+        await reconnected.Task.WaitAsync(TimeSpan.FromSeconds(10), Token);
+
+        // The first session's teardown must not have removed the second session's claim on the host.
+        await Task.Delay(200, Token);
+        Assert.Equal("key-1.localhost", Assert.Single(relay.Tunnels).Host);
+        Assert.Equal(2, Volatile.Read(ref authorizations));
+    }
+
+    static async Task<RelayServer> StartRelayAsync(
+        Func<TunnelRegistrationRequest, CancellationToken, ValueTask<string?>> authorize,
+        TimeSpan? authorizeTimeout = null
+    )
+    {
+        var options = new RelayServerOptions
+        {
+            Address = IPAddress.Loopback,
+            ControlPort = 0,
+            PublicPort = 0,
+            Authorize = authorize
+        };
+        if (authorizeTimeout is { } timeout)
+            options.AuthorizeTimeout = timeout;
+
+        var relay = new RelayServer(options);
+        await relay.StartAsync(Token);
+        return relay;
+    }
+
+    static RelayTunnelProvider CreateProvider(RelayServer relay, string token, string? subdomain = null) => new(new RelayTunnelOptions
+    {
+        Host = "127.0.0.1",
+        Port = relay.ControlPort,
+        Token = token,
+        Subdomain = subdomain,
+        UseTls = false,
+        ReconnectDelay = null,
+        HandshakeTimeout = TimeSpan.FromSeconds(10)
+    });
+
+    [Fact]
     public async Task Refuses_a_subdomain_that_is_already_taken()
     {
         await using var first = await TunnelFixture.StartAsync(app => app.MapGet("/x", ctx => ctx.Response.WriteAsync("x")), "taken");

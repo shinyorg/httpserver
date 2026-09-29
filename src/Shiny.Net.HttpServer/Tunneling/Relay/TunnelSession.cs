@@ -10,7 +10,7 @@ namespace Shiny.Net.HttpServer.Tunneling;
 /// currently multiplexed over it.
 /// </summary>
 sealed class TunnelSession(
-    string host,
+    RelayTunnel tunnel,
     IConnection control,
     TunnelChannel channel
 ) : IAsyncDisposable
@@ -18,9 +18,32 @@ sealed class TunnelSession(
     readonly ConcurrentDictionary<uint, IConnection> streams = new();
     uint nextStreamId;
     int disposed;
+    int closeReason = -1;
+    int announced;
+    int ended;
 
     /// <summary>The host this tunnel answers for, lowercased and without a port.</summary>
-    public string Host { get; } = host;
+    public string Host => this.Tunnel.Host;
+
+    public RelayTunnel Tunnel { get; } = tunnel;
+
+    /// <summary>
+    /// Why the tunnel is ending. The first caller wins, so a disconnect is not relabelled by the
+    /// connection teardown it causes.
+    /// </summary>
+    public RelayTunnelCloseReason CloseReason => this.closeReason < 0
+        ? RelayTunnelCloseReason.ConnectionClosed
+        : (RelayTunnelCloseReason)this.closeReason;
+
+    public void SetCloseReason(RelayTunnelCloseReason reason)
+        => Interlocked.CompareExchange(ref this.closeReason, (int)reason, -1);
+
+    /// <summary>Marks the tunnel as reported connected. Only an announced tunnel is reported closed.</summary>
+    public void MarkAnnounced() => Volatile.Write(ref this.announced, 1);
+
+    /// <summary>True exactly once, for an announced tunnel: whoever gets it reports the close.</summary>
+    public bool TryMarkEnded()
+        => Volatile.Read(ref this.announced) == 1 && Interlocked.Exchange(ref this.ended, 1) == 0;
 
     public EndPoint? RemoteEndPoint => control.RemoteEndPoint;
 
