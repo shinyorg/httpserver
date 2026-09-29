@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Overrides src/Directory.Build.props: an analyzer loads into the compiler host, which is
+         netstandard2.0, not into the app being compiled. -->
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <RootNamespace>Shiny.Net.HttpServer.Switchboard.SourceGenerators</RootNamespace>
+
+    <IsRoslynComponent>true</IsRoslynComponent>
+    <EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>
+    <NoWarn>$(NoWarn);RS2008</NoWarn>
+
+    <!-- Not a package of its own: Shiny.Net.HttpServer.Switchboard packs this output under
+         analyzers/dotnet/cs. -->
+    <IsPackable>false</IsPackable>
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <DevelopmentDependency>true</DevelopmentDependency>
+    <IncludeSymbols>false</IncludeSymbols>
+    <IncludeSource>false</IncludeSource>
+    <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+  </PropertyGroup>
+
+  <!-- The trim/AOT analyzers inherited from src/Directory.Build.props do not apply to a
+       compile-time-only assembly and would only produce noise. -->
+  <PropertyGroup>
+    <IsAotCompatible>false</IsAotCompatible>
+    <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
+    <EnableAotAnalyzer>false</EnableAotAnalyzer>
+    <EnableSingleFileAnalyzer>false</EnableSingleFileAnalyzer>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.CodeAnalysis.Analyzers" PrivateAssets="all" />
+    <PackageReference Include="PolySharp" PrivateAssets="all" />
+  </ItemGroup>
+
+  <!-- The value-equality plumbing that keeps incremental caching honest, shared with the endpoint
+       generator rather than copied. -->
+  <ItemGroup>
+    <Compile Include="../Shiny.Net.HttpServer.SourceGenerators/EquatableArray.cs" Link="Shared/EquatableArray.cs" />
+    <Compile Include="../Shiny.Net.HttpServer.SourceGenerators/DiagnosticInfo.cs" Link="Shared/DiagnosticInfo.cs" />
+  </ItemGroup>
+
+</Project>

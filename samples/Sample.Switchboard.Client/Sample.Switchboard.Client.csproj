@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <RootNamespace>Sample.Switchboard.Client</RootNamespace>
+        <PublishAot>true</PublishAot>
+    </PropertyGroup>
+
+    <!-- Contracts/ holds ChatBoard.Contract.g.cs, exported by the server sample's build. It is
+         checked in so this project builds on its own; building the server rewrites it only when the
+         contract actually changed. -->
+
+    <ItemGroup>
+        <ProjectReference Include="../../src/Shiny.Net.HttpServer.Switchboard.Client/Shiny.Net.HttpServer.Switchboard.Client.csproj"/>
+        <ProjectReference Include="../../src/Shiny.Net.HttpServer.Switchboard.Client.SourceGenerators/Shiny.Net.HttpServer.Switchboard.Client.SourceGenerators.csproj"
+                          OutputItemType="Analyzer"
+                          ReferenceOutputAssembly="false"/>
+
+        <!-- Build order only: the server's build is what refreshes Contracts/. Nothing of it is
+             referenced — the exported file is the whole contract. -->
+        <ProjectReference Include="../Sample.Switchboard/Sample.Switchboard.csproj"
+                          ReferenceOutputAssembly="false"
+                          SkipGetTargetFrameworkProperties="true"/>
+    </ItemGroup>
+
+</Project>

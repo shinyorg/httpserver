@@ -21,6 +21,8 @@
         <Project Path="samples/Sample.Maui/Sample.Maui.csproj" />
         <Project Path="samples/Sample.Mcp/Sample.Mcp.csproj" />
         <Project Path="samples/Sample.TvOS/Sample.TvOS.csproj" />
+        <Project Path="samples/Sample.Switchboard/Sample.Switchboard.csproj" />
+        <Project Path="samples/Sample.Switchboard.Client/Sample.Switchboard.Client.csproj" />
     </Folder>
 
     <Project Path="src/Shiny.Net.HttpServer.Acme/Shiny.Net.HttpServer.Acme.csproj" />
@@ -39,6 +41,10 @@
     <Project Path="src/Shiny.Net.HttpServer.Proxy/Shiny.Net.HttpServer.Proxy.csproj" />
     <Project Path="src/Shiny.Net.HttpServer.SourceGenerators/Shiny.Net.HttpServer.SourceGenerators.csproj" />
     <Project Path="src/Shiny.Net.HttpServer.Ssh/Shiny.Net.HttpServer.Ssh.csproj" />
+    <Project Path="src/Shiny.Net.HttpServer.Switchboard/Shiny.Net.HttpServer.Switchboard.csproj" />
+    <Project Path="src/Shiny.Net.HttpServer.Switchboard.SourceGenerators/Shiny.Net.HttpServer.Switchboard.SourceGenerators.csproj" />
+    <Project Path="src/Shiny.Net.HttpServer.Switchboard.Client/Shiny.Net.HttpServer.Switchboard.Client.csproj" />
+    <Project Path="src/Shiny.Net.HttpServer.Switchboard.Client.SourceGenerators/Shiny.Net.HttpServer.Switchboard.Client.SourceGenerators.csproj" />
     <Project Path="src/Shiny.Net.HttpServer.Testing/Shiny.Net.HttpServer.Testing.csproj" />
     <Project Path="src/Shiny.Net.HttpServer.Tunnels/Shiny.Net.HttpServer.Tunnels.csproj" />
     <Project Path="src/Shiny.Net.HttpServer.Tus/Shiny.Net.HttpServer.Tus.csproj" />

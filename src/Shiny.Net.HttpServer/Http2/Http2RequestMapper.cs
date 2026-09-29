@@ -138,6 +138,7 @@ static class Http2RequestMapper
 
         request.Cookies.SetRaw(JoinCookies(request));
         request.Body = new Http2RequestBodyStream(stream.RequestBodyReader);
+        request.BodyWithoutLength = stream.HasRequestBody && request.ContentLength is null;
 
         error = null;
         return true;

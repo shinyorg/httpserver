@@ -544,6 +544,10 @@ sealed class Http2Connection
             stream.State = Http2StreamState.HalfClosedRemote;
             stream.CompleteRequestBody();
         }
+        else
+        {
+            stream.HasRequestBody = true;
+        }
 
         stream.Handler = Task.Run(() => this.RunStreamAsync(stream, fields), CancellationToken.None);
     }

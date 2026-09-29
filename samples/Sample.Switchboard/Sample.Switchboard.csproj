@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <RootNamespace>Sample.Switchboard</RootNamespace>
+        <PublishAot>true</PublishAot>
+
+        <!-- Contract export: ChatBoard is marked [ExportContract], and this is where the file lands.
+             The client sample compiles it and references nothing else from this project. -->
+        <SwitchboardContractsOutputPath>$(MSBuildThisFileDirectory)../Sample.Switchboard.Client/Contracts</SwitchboardContractsOutputPath>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Microsoft.Extensions.DependencyInjection"/>
+        <PackageReference Include="Microsoft.Extensions.Logging.Console"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="../../src/Shiny.Net.HttpServer/Shiny.Net.HttpServer.csproj"/>
+        <ProjectReference Include="../../src/Shiny.Net.HttpServer.Switchboard/Shiny.Net.HttpServer.Switchboard.csproj"/>
+
+        <!-- Analyzers and build targets reach a consumer through the packages. Neither flows across
+             a ProjectReference, so an in-repo sample takes the explicit route for both. -->
+        <ProjectReference Include="../../src/Shiny.Net.HttpServer.SourceGenerators/Shiny.Net.HttpServer.SourceGenerators.csproj"
+                          OutputItemType="Analyzer"
+                          ReferenceOutputAssembly="false"/>
+        <ProjectReference Include="../../src/Shiny.Net.HttpServer.Switchboard.SourceGenerators/Shiny.Net.HttpServer.Switchboard.SourceGenerators.csproj"
+                          OutputItemType="Analyzer"
+                          ReferenceOutputAssembly="false"/>
+    </ItemGroup>
+
+    <Import Project="../../src/Shiny.Net.HttpServer.Switchboard/buildTransitive/Shiny.Net.HttpServer.Switchboard.targets"/>
+
+</Project>

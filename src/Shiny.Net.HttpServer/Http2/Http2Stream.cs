@@ -54,6 +54,12 @@ sealed class Http2Stream
     /// <summary>True once the handler has been dispatched, so a duplicate HEADERS is an error.</summary>
     public bool Dispatched { get; set; }
 
+    /// <summary>
+    /// Whether the HEADERS that opened the stream left it open for DATA — decided at that frame, since
+    /// by the time the handler runs the body may already have arrived and ended the stream.
+    /// </summary>
+    public bool HasRequestBody { get; set; }
+
     public Task? Handler { get; set; }
 
     /// <summary>Cancelled when the peer resets the stream or the connection goes away.</summary>

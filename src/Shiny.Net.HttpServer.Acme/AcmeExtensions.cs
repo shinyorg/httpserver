@@ -50,9 +50,49 @@ public static class AcmeServiceExtensions
 
         return builder;
     }
+
+    /// <summary>
+    /// Registers an <see cref="AcmeCertificateRegistry"/> — many certificates, chosen per connection by
+    /// SNI, with entries added at runtime — and wires it to the server: one HTTP-01 middleware for every
+    /// entry, every HTTPS endpoint without a certificate of its own, and renewal while the server runs.
+    /// <code>
+    /// builder.Options.Listen(IPAddress.Any, 80);
+    /// builder.Options.Listen(IPAddress.Any, 443).Https = new HttpsOptions();
+    ///
+    /// builder.AddAcmeRegistry(o =>
+    /// {
+    ///     o.Email = "ops@example.com";
+    ///     o.AcceptTermsOfService = true;
+    /// });
+    ///
+    /// var server = builder.Build();
+    /// var acme = server.GetAcmeCertificateRegistry();
+    /// acme.Set("site", ["example.com", "www.example.com"]);
+    /// await acme.IssueAsync("site");                 // nothing is ever ordered implicitly
+    /// </code>
+    /// A second call adds to the same options rather than replacing them.
+    /// </summary>
+    public static ShinyHttpServerBuilder AddAcmeRegistry(this ShinyHttpServerBuilder builder, Action<AcmeRegistryOptions>? configure = null)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+
+        OptionsRegistration.Configure(builder.Services, configure);
+
+        if (!builder.Services.Any(x => x.ServiceType == typeof(AcmeCertificateRegistry)))
+        {
+            builder.Services.AddSingleton(sp => new AcmeCertificateRegistry(
+                sp.GetRequiredService<AcmeRegistryOptions>(),
+                sp.GetService<ILoggerFactory>()
+            ));
+
+            builder.Configure(server => server.UseAcme(server.Services!.GetRequiredService<AcmeCertificateRegistry>()));
+        }
+
+        return builder;
+    }
 }
 
-/// <summary>Wiring an <see cref="AcmeCertificateManager"/> into a server and its listeners.</summary>
+/// <summary>Wiring an <see cref="AcmeCertificateManager"/> or <see cref="AcmeCertificateRegistry"/> into a server and its listeners.</summary>
 public static class HttpServerAcmeExtensions
 {
     /// <summary>
@@ -70,12 +110,99 @@ public static class HttpServerAcmeExtensions
         ArgumentNullException.ThrowIfNull(server);
         ArgumentNullException.ThrowIfNull(manager);
 
-        server.Use(async (context, next) =>
+        UseChallengeMiddleware(server, manager.Challenges);
+
+        var logger = server.Services?.GetService<ILoggerFactory>()?.CreateLogger<AcmeCertificateManager>();
+        Func<string?, System.Net.Security.SslStreamCertificateContext?> selector = manager.SelectCertificate;
+
+        WireLifetime(
+            server,
+            attach: log => AttachEndpoints(server.Options, selector, https => https.UseAcme(manager), manager.Options.Challenges, log),
+            start: manager.StartRenewal,
+            stop: manager.StopRenewalAsync,
+            logger
+        );
+
+        return server;
+    }
+
+    /// <summary>
+    /// Connects <paramref name="registry"/> to <paramref name="server"/>: one middleware answers HTTP-01 at
+    /// <c>/.well-known/acme-challenge/</c> for every entry — including entries added after the server
+    /// started — every HTTPS endpoint configured without a certificate selects the entry's certificate
+    /// by SNI, and entries with a certificate renew while the server is running.
+    /// <para>
+    /// The challenge middleware goes in where this is called, so call it before anything that would turn
+    /// the CA's plain GET away. <c>AddAcmeRegistry</c> calls this for you.
+    /// </para>
+    /// </summary>
+    public static HttpServer UseAcme(this HttpServer server, AcmeCertificateRegistry registry)
+    {
+        ArgumentNullException.ThrowIfNull(server);
+        ArgumentNullException.ThrowIfNull(registry);
+
+        UseChallengeMiddleware(server, registry.Challenges);
+
+        var logger = server.Services?.GetService<ILoggerFactory>()?.CreateLogger<AcmeCertificateRegistry>();
+        Func<string?, System.Net.Security.SslStreamCertificateContext?> selector = registry.SelectCertificate;
+
+        WireLifetime(
+            server,
+            attach: log => AttachEndpoints(server.Options, selector, https => https.UseAcme(registry), registry.Options.Challenges, log),
+            start: registry.StartRenewal,
+            stop: registry.StopRenewalAsync,
+            logger
+        );
+
+        return server;
+    }
+
+    /// <summary>
+    /// Serves the registry's certificates on this endpoint, chosen by SNI, and answers TLS-ALPN-01 on it
+    /// for every entry when that challenge is enabled.
+    /// </summary>
+    public static HttpsOptions UseAcme(this HttpsOptions https, AcmeCertificateRegistry registry)
+    {
+        ArgumentNullException.ThrowIfNull(https);
+        ArgumentNullException.ThrowIfNull(registry);
+
+        https.CertificateContextSelector = registry.SelectCertificate;
+
+        if (registry.Options.Challenges.HasFlag(AcmeChallengeTypes.TlsAlpn01))
+            https.ChallengeResponder = registry.Challenges.Respond;
+
+        return https;
+    }
+
+    /// <summary>
+    /// Serves the registry's certificates on the HTTP/3 listener, chosen by SNI per connection, renewals
+    /// and entries added later included. TLS-ALPN-01 is never answered over QUIC (RFC 8737 is TCP only).
+    /// </summary>
+    public static Http3Options UseAcme(this Http3Options http3, AcmeCertificateRegistry registry)
+    {
+        ArgumentNullException.ThrowIfNull(http3);
+        ArgumentNullException.ThrowIfNull(registry);
+
+        http3.CertificateContextSelector = registry.SelectCertificate;
+        return http3;
+    }
+
+    /// <summary>The registry <c>AddAcmeRegistry</c> registered.</summary>
+    public static AcmeCertificateRegistry GetAcmeCertificateRegistry(this HttpServer server)
+    {
+        ArgumentNullException.ThrowIfNull(server);
+
+        return server.Services?.GetService<AcmeCertificateRegistry>()
+            ?? throw new InvalidOperationException("No AcmeCertificateRegistry is registered. Call builder.AddAcmeRegistry(...) first.");
+    }
+
+    static void UseChallengeMiddleware(HttpServer server, AcmeChallengeResponder challenges)
+        => server.Use(async (context, next) =>
         {
             var request = context.Request;
             if (request.Path.StartsWith(AcmeChallengeResponder.HttpChallengePrefix, StringComparison.Ordinal)
                 && (request.Method == HttpMethods.Get || request.Method == HttpMethods.Head)
-                && manager.Challenges.TryGetHttp(request.Path[AcmeChallengeResponder.HttpChallengePrefix.Length..], out var keyAuthorization))
+                && challenges.TryGetHttp(request.Path[AcmeChallengeResponder.HttpChallengePrefix.Length..], out var keyAuthorization))
             {
                 // RFC 8555 §8.3: the body is the key authorization, nothing else.
                 context.Response.StatusCode = StatusCodes.Status200OK;
@@ -86,11 +213,11 @@ public static class HttpServerAcmeExtensions
             await next(context).ConfigureAwait(false);
         });
 
-        var logger = server.Services?.GetService<ILoggerFactory>()?.CreateLogger<AcmeCertificateManager>();
-
+    static void WireLifetime(HttpServer server, Action<ILogger?> attach, Action start, Func<Task> stop, ILogger? logger)
+    {
         // Attached now so the endpoints are wired even before a start; reported on at start, once the
         // endpoint list is final.
-        AttachEndpoints(server.Options, manager, logger: null);
+        attach(null);
 
         server.StateChanged += (_, state) =>
         {
@@ -99,21 +226,19 @@ public static class HttpServerAcmeExtensions
                 case HttpServerState.Starting:
                     // Again at every start, so an endpoint added after UseAcme — or a restart with new
                     // endpoints — is still covered.
-                    AttachEndpoints(server.Options, manager, logger);
+                    attach(logger);
                     break;
                 case HttpServerState.Running:
-                    manager.StartRenewal();
+                    start();
                     break;
                 case HttpServerState.Stopping:
-                    _ = manager.StopRenewalAsync();
+                    _ = stop();
                     break;
             }
         };
 
         if (server.IsRunning)
-            manager.StartRenewal();
-
-        return server;
+            start();
     }
 
     /// <summary>
@@ -155,10 +280,17 @@ public static class HttpServerAcmeExtensions
         return http3;
     }
 
-    /// <summary>Serves the certificate of the manager <c>AddAcme</c> registered on the HTTP/3 listener.</summary>
+    /// <summary>
+    /// Serves the certificate of the manager <c>AddAcme</c> registered on the HTTP/3 listener — or, when
+    /// only <c>AddAcmeRegistry</c> was called, the registry's certificates by SNI.
+    /// </summary>
     public static Http3Options UseAcme(this Http3Options http3, HttpServer server)
     {
         ArgumentNullException.ThrowIfNull(server);
+
+        if (server.Services?.GetService<AcmeCertificateManager>() is null && server.Services?.GetService<AcmeCertificateRegistry>() is { } registry)
+            return http3.UseAcme(registry);
+
         return http3.UseAcme(server.GetAcmeCertificateManager());
     }
 
@@ -171,7 +303,13 @@ public static class HttpServerAcmeExtensions
             ?? throw new InvalidOperationException("No AcmeCertificateManager is registered. Call builder.AddAcme(...) first.");
     }
 
-    static void AttachEndpoints(HttpServerOptions options, AcmeCertificateManager manager, ILogger? logger)
+    static void AttachEndpoints(
+        HttpServerOptions options,
+        Func<string?, System.Net.Security.SslStreamCertificateContext?> selector,
+        Action<HttpsOptions> useAcme,
+        AcmeChallengeTypes challenges,
+        ILogger? logger
+    )
     {
         var serving = 0;
         var port80 = false;
@@ -184,10 +322,8 @@ public static class HttpServerAcmeExtensions
                 continue;
             }
 
-            Func<string?, System.Net.Security.SslStreamCertificateContext?> selector = manager.SelectCertificate;
-
             if (https.CertificateContextSelector is null && https.CertificateSelector is null && https.Certificate is null)
-                https.UseAcme(manager);
+                useAcme(https);
 
             if (Equals(https.CertificateContextSelector, selector))
                 serving++;
@@ -196,10 +332,10 @@ public static class HttpServerAcmeExtensions
         if (serving == 0)
             logger?.LogWarning(
                 "ACME is configured but no HTTPS endpoint serves its certificate. Add one without a certificate " +
-                "(endpoint.Https = new HttpsOptions()) or call https.UseAcme(manager) on it"
+                "(endpoint.Https = new HttpsOptions()) or call https.UseAcme(...) on it"
             );
 
-        if (!port80 && manager.Options.Challenges.HasFlag(AcmeChallengeTypes.Http01))
+        if (!port80 && challenges.HasFlag(AcmeChallengeTypes.Http01))
             logger?.LogInformation(
                 "HTTP-01 validation connects to port 80 and no cleartext endpoint is bound there — fine if a router or " +
                 "proxy forwards port 80 to this server, otherwise validation will fail"

@@ -187,8 +187,10 @@ sealed class AcmeClient
     {
         for (var attempt = 0; ; attempt++)
         {
-            var nonce = this.nonce ?? await this.NewNonceAsync(cancellationToken).ConfigureAwait(false);
-            this.nonce = null;
+            // Taken and cleared in one step: the client is shared by every certificate a registry
+            // holds, and two requests signed with the same nonce means one of them is refused.
+            var nonce = Interlocked.Exchange(ref this.nonce, null)
+                ?? await this.NewNonceAsync(cancellationToken).ConfigureAwait(false);
 
             var kid = useJwk ? null : this.AccountUrl ?? throw new InvalidOperationException("No ACME account yet.");
             var body = AcmeJws.Sign(this.key, url, nonce, kid, payload);

@@ -1,6 +1,6 @@
 ---
 name: shiny-httpserver
-description: Generate code using Shiny.Net.HttpServer — a dependency-light, AOT/trim-clean HTTP/1.1, HTTP/2 & HTTP/3 server that runs anywhere .NET runs, including .NET MAUI and native tvOS, where ASP.NET Core cannot. Covers routing, middleware, source-generated typed endpoints, results and JSON, content negotiation with XML/MessagePack/protobuf formatters in both directions, static files and Blazor WASM, uploads/downloads, WebSockets, SSE, sessions, OpenAPI, authentication (Basic/API key/cookie/JWT), authorization, CORS, rate limiting, IP filtering, TLS and self-signed certificates, tunnelling (relay, SSH, quick tunnels, Azure Relay, and supervised cloudflared/ngrok/tailscale agents), serving a directory over WebDAV, serving gRPC and gRPC-Web, hosting an MCP server with RFC 9728 OAuth discovery, receiving the OAuth/OIDC loopback redirect so a desktop app or CLI can sign in through the system browser (RFC 8252), health checks, OpenTelemetry-shaped metrics and tracing, W3C access logs, request timeouts, output caching and conditional requests, request decompression, antiforgery and browser security headers, a reverse proxy with destination clusters, load balancing, health checks, session affinity, transforms, WebSocket forwarding and IConfiguration-driven routes, mDNS/Bonjour advertising and discovery, MAUI lifecycle (background/foreground, Android foreground service, network rebinding), host filtering against DNS rebinding, request localization, webhook signature verification (GitHub/Stripe/Slack/Standard Webhooks), idempotency keys, RFC 9530 content digests, 103 Early Hints, the PROXY protocol, RFC 6902 JSON Patch, API versioning with per-version OpenAPI, a Scalar API reference page, tus resumable uploads, CalDAV/CardDAV, automatic HTTPS via ACME (Let's Encrypt/ZeroSSL), and an in-memory test harness.
+description: Generate code using Shiny.Net.HttpServer — a dependency-light, AOT/trim-clean HTTP/1.1, HTTP/2 & HTTP/3 server that runs anywhere .NET runs, including .NET MAUI and native tvOS, where ASP.NET Core cannot. Covers routing, middleware, source-generated typed endpoints, results and JSON, content negotiation with XML/MessagePack/protobuf formatters in both directions, static files and Blazor WASM, uploads/downloads, WebSockets, SSE, SignalR-style switchboards (real-time two-way calls over SSE with groups, an operator, client results, resumable lines, and a generated typed .NET client), sessions, OpenAPI, authentication (Basic/API key/cookie/JWT), authorization, CORS, rate limiting, IP filtering, TLS and self-signed certificates, tunnelling (relay, SSH, quick tunnels, Azure Relay, and supervised cloudflared/ngrok/tailscale agents), serving a directory over WebDAV, serving gRPC and gRPC-Web, hosting an MCP server with RFC 9728 OAuth discovery, receiving the OAuth/OIDC loopback redirect so a desktop app or CLI can sign in through the system browser (RFC 8252), health checks, OpenTelemetry-shaped metrics and tracing, W3C access logs, request timeouts, output caching and conditional requests, request decompression, antiforgery and browser security headers, a reverse proxy with destination clusters, load balancing, health checks, session affinity, transforms, WebSocket forwarding and IConfiguration-driven routes, mDNS/Bonjour advertising and discovery, MAUI lifecycle (background/foreground, Android foreground service, network rebinding), host filtering against DNS rebinding, request localization, webhook signature verification (GitHub/Stripe/Slack/Standard Webhooks), idempotency keys, RFC 9530 content digests, 103 Early Hints, the PROXY protocol, RFC 6902 JSON Patch, API versioning with per-version OpenAPI, a Scalar API reference page, tus resumable uploads, CalDAV/CardDAV, automatic HTTPS via ACME (Let's Encrypt/ZeroSSL), and an in-memory test harness.
 auto_invoke: true
 triggers:
 - Shiny.Net.HttpServer
@@ -164,6 +164,27 @@ triggers:
 - MapMcpProtectedResource
 - SendEventsAsync
 - ServerSentEvents
+- Switchboard
+- Shiny.Net.HttpServer.Switchboard
+- Shiny.Net.HttpServer.Switchboard.Client
+- AddSwitchboard
+- MapSwitchboard
+- IOperator
+- CallerContext
+- LineMethod
+- NotALineMethod
+- ISwitchboardFilter
+- AddSwitchboardFilter
+- ExportContract
+- SwitchboardContractsOutputPath
+- SwitchboardLine
+- SwitchboardLineBuilder
+- SwitchboardClient
+- HangUpAsync
+- SignalR
+- hub
+- IHubContext
+- real-time push to clients
 - UseSessions
 - ISession
 - MapOpenApi
@@ -406,6 +427,15 @@ triggers:
 - ZeroSSL
 - AcmeCertificateManager
 - AcmeOptions
+- AcmeCertificateRegistry
+- AcmeRegistryOptions
+- AddAcmeRegistry
+- AcmeRegistryEntry
+- AcmeCertificateState
+- SNI certificate selection
+- certificate per host
+- import certificate
+- edge server
 - AcmeDirectories
 - automatic HTTPS
 - certificate renewal
@@ -449,6 +479,8 @@ Invoke this skill when the user wants to:
   authenticate to
 - Find or be found by another device on the same network without anyone typing an IP address
 - Keep an embedded server working as a phone is backgrounded, resumed, or moved between networks
+- Push to clients and let them call back, SignalR-style (a switchboard), including from a MAUI app,
+  with a .NET client that resumes after a drop
 - Report health, metrics or traces from an embedded server
 - Cache responses, honour conditional requests, bound how long a handler may take, or forward a
   route to another server
@@ -613,7 +645,7 @@ builder.Options.Listen(IPAddress.Any, 8080)
 - `TrustedProxies` must not be empty, or the server refuses to start. Only generate `.Trust("0.0.0.0/0").Trust("::/0")` when the user says the port is firewalled so only the balancer can reach it.
 - `Required` (the default for `UseProxyProtocol`) closes connections that have no header. Use `Optional` only while migrating.
 - `ctx.Connection.ProxyProtocol` (null if none): `ProxyEndPoint`, `DestinationEndPoint`, `Alpn`, `Authority`, `UniqueId`, `Ssl`, `GetTlv(0xEA)`.
-- Prefer this over `UseForwardedHeaders`: it can't be spoofed by clients and it works with TLS passthrough. Don't enable both unless the balancer overwrites `X-Forwarded-For`, because that header overrides the PROXY address on HTTP/1.1.
+- Prefer this over `UseForwardedHeaders`: it can't be spoofed by clients and it works with TLS passthrough. `UseForwardedHeaders` trusts **any** sender (no trusted-proxy list) and applies to HTTP/1.1 only — never generate it for a server that faces the internet directly. Don't enable both unless the balancer overwrites `X-Forwarded-For`, because that header overrides the PROXY address on HTTP/1.1.
 - TCP endpoints only: not HTTP/3, not tunnel providers. The reverse proxy does not send a PROXY header.
 
 ## Lifecycle — and knowing *why* the server stopped
@@ -1391,6 +1423,102 @@ await registry.SendToUserAsync("ada", "your build finished");
   that lost signal — a dropped mobile connection goes quiet rather than closing. Set
   `KeepAliveInterval = null` to switch it off (do that in tests that assert on frames).
 
+## Switchboard — SignalR-style calls
+
+`Shiny.Net.HttpServer.Switchboard` (server) and `Shiny.Net.HttpServer.Switchboard.Client` (.NET
+client). **Reach for it whenever the user asks for SignalR, a hub, `IHubContext`, or "push to clients
+and let them call back"** — ASP.NET Core SignalR cannot run in MAUI, and hand-rolling SSE plus
+`IWebSocketRegistry` rebuilds half of this badly. Use raw SSE only for one-way feeds; use raw
+WebSockets only for high-rate binary traffic.
+
+Tiers: a switchboard class is **tier 3** (source-generated dispatch, like `[Route]` classes);
+`MapSwitchboard` is **tier 1**; `ISwitchboardFilter` is **tier 2** (switchboard middleware).
+
+Vocabulary: switchboard = hub, **line** = connection (`Context.LineId`, `Clients.Line(id)`),
+**operator** = `IHubContext` (`IOperator<TBoard>` / `IOperator<TBoard, TClient>`), **hang up** = abort.
+Not wire-compatible with SignalR — never generate a SignalR client against it, or vice versa.
+
+```csharp
+using Shiny.Net.HttpServer.Switchboard;
+
+public interface IChatClient                      // what the server calls on clients
+{
+    Task MessageReceived(ChatMessage message);
+    Task<bool> ConfirmDelete(string room);          // Task<T> = a client result (server waits)
+}
+
+public class ChatBoard(IRoomStore rooms) : Switchboard<IChatClient>   // or : Switchboard (untyped)
+{
+    public override Task OnConnectedAsync() => Clients.Caller.MessageReceived(…);
+    public override Task OnDisconnectedAsync(DisconnectContext d) => …;  // d.Reason: ClientClosed/Dropped/HungUp/ServerShutdown/Faulted
+
+    public Task JoinRoom(string room) => Groups.AddToGroupAsync(Context.LineId, room);
+    public Task Send(string room, string text) => Clients.Group(room).MessageReceived(new(room, Context.UserIdentifier!, text));
+    public IReadOnlyList<RoomInfo> Rooms() => rooms.List();                                   // returns a value
+    public async IAsyncEnumerable<ChatMessage> History(string room, [EnumeratorCancellation] CancellationToken ct) { … }  // streams
+
+    [Authorize(Roles = "admin")]
+    public async Task DeleteRoom(string room)
+    {
+        if (!await Clients.Caller.ConfirmDelete(room)) throw new SwitchboardException("Cancelled");  // message reaches the client
+    }
+}
+
+builder.AddSwitchboard(o => o.ResumeWindow = TimeSpan.FromSeconds(30));
+app.MapSwitchboard<ChatBoard>("/chat").RequireAuthorization();
+
+// outside a switchboard
+public class Shipped(IOperator<ChatBoard, IChatClient> board)
+{
+    public Task Handle(Order o) => board.Clients.User(o.CustomerId).MessageReceived(…);
+}
+await board.Lines.HangUpUserAsync("mallory", "Banned");     // token dies; client does not reconnect
+```
+
+Client:
+
+```csharp
+using Shiny.Net.HttpServer.Switchboard.Client;
+
+var line = new SwitchboardLineBuilder()
+    .WithUrl("https://host/chat", o => o.AccessTokenProvider = () => GetTokenAsync())
+    .WithJson(ChatJson.Default)                 // the same JsonSerializerContext as the server
+    .WithAutomaticReconnect()
+    .Build();
+
+line.On<ChatMessage>("MessageReceived", m => …);
+line.On<string, bool>("ConfirmDelete", room => AskAsync(room));      // answers a client result
+line.Reconnected += (_, e) => { if (e.NewLine) /* rejoin groups */; };
+line.Closed += (_, e) => …;                                          // e.Reason: ClientClosed/HungUp/ServerClosed/Dropped/RetriesExhausted/Faulted
+await line.StartAsync();
+var n = await line.InvokeAsync<int>("Count");
+await foreach (var m in line.StreamAsync<ChatMessage>("History", "general")) { }
+
+// Typed client from shared contract interfaces:
+[SwitchboardClient<IChatBoard, IChatClient>] public partial class ChatBoardClient;
+// → calls as methods, IChatClient methods as events, Task<T> ones as a handler property, Register(IChatClient)
+```
+
+Rules that matter when generating code:
+- **Every argument/result type needs JSON metadata** on both sides (`[JsonSerializable]` in a context;
+  pass it to `WithJson` on the client). Primitives are built in. Never suggest reflection.
+- One instance **per call** — keep state in `Context.Items` (safe without locks while
+  `MaximumParallelInvocationsPerLine` is 1, the default) or a service, never in fields.
+- Methods are called by name: **no overloads** (SWB003); rename with `[LineMethod("x")]`, hide with
+  `[NotALineMethod]`. Parameters: JSON by position, plus `CancellationToken`, `CallerContext`,
+  `[FromServices] T`. No `IAsyncEnumerable<T>` parameters (client streaming is not supported).
+- Client results only from `Clients.Caller` / `Clients.Line(id)` (typed: `Task<T>` on a group throws
+  `NotSupportedException`). They work from inside a switchboard method — no parallelism setting needed.
+- A dropped line is resumed within `ResumeWindow` with its id, groups, `Items` and missed messages;
+  after that the client gets a **new line** (`Reconnected.NewLine`) and must rejoin groups.
+- `[Authorize]` on methods is enforced by the switchboard itself; `[AllowAnonymous]` on a method cannot
+  lift a class requirement (SWB007).
+- Contract for a client in another repo: `[ExportContract(Namespace = "X.Contracts")]` on the board
+  plus `<SwitchboardContractsOutputPath>` in the server csproj writes one self-contained file.
+- Name clash: code inside a `Shiny.Net.HttpServer.*` namespace must qualify the `Switchboard` base
+  class (CS0118). A file importing both server and client namespaces must alias `SwitchboardException`.
+- In-process only (no backplane), .NET client only (no JS client).
+
 ## Timeouts, caching and conditional requests
 
 ```csharp
@@ -1562,6 +1690,38 @@ builder.AddAcme(o =>
 - No wildcards (DNS-01 not supported). Persist `StorePath` — re-ordering on every start hits rate limits.
 - The core hooks it uses are public: `HttpsOptions.CertificateContextSelector` (per-handshake certificate
   + chain, also on `Http3Options`) and `HttpsOptions.ChallengeResponder` (sees SNI + ALPN first).
+- Metrics on the server meter: `shiny.acme.certificate.issuances` (result) and
+  `shiny.acme.certificate.expiry` (days, observable). `manager.IssuanceFailed` fires on every failed order.
+
+**Many hosts, one certificate each, added at runtime** (an edge server, a multi-tenant host) — use
+`AcmeCertificateRegistry`, not several managers:
+
+```csharp
+builder.AddAcmeRegistry(o =>
+{
+    o.Email = "ops@example.com";
+    o.AcceptTermsOfService = true;
+    o.DirectoryUrl = AcmeDirectories.LetsEncryptStaging;
+    // o.FallbackCertificate = ServerCertificate.Create(...);   // unknown SNI gets this, not a failed handshake
+});
+var app = builder.Build();
+var acme = app.GetAcmeCertificateRegistry();       // no container: new AcmeCertificateRegistry(opts); app.UseAcme(acme);
+// HTTP/3: o.UseAcme(acme) on Http3Options
+
+acme.Set("grafana", ["grafana.example.com"]);      // add/rename; loads a stored cert; NEVER orders
+await acme.IssueAsync("grafana", ct);              // the only first issuance; throws AcmeException
+await acme.ImportAsync("grafana", fullChainPem, keyPem, ct);   // or X509Certificate2 / pfx bytes
+await acme.RemoveAsync("grafana");
+acme.IssuanceFailed += (_, e) => ...;              // e.Name, e.Exception, e.IsRenewal
+```
+
+- Do not generate code that calls `IssueAsync` automatically on `Set`/startup/discovery: first issuance is
+  meant to be explicit, and a failed one is deliberately not retried (CA rate limits). Renewal of an
+  issued certificate is automatic.
+- SNI: exact name → `*.` wildcard on a served cert → `FallbackCertificate` → refused. One HTTP-01
+  middleware and one TLS-ALPN-01 hook serve every entry, including ones added after start.
+- `acme.Entries` / `GetEntry(name)` give `State` (`None`/`Issuing`/`Issued`/`Failed`), `NotAfter`,
+  `NextRenewal`, `LastError` for a status screen.
 
 ## Proxying to another server
 
@@ -1633,6 +1793,11 @@ routes mapped in code are untouched.
 - **Do not put a proxy on a tunnel without authentication and rate limiting in front of it**, and keep
   the destination fixed rather than reading it from the request.
 - `HttpForwarder.ForwardAsync(ctx, "http://…")` forwards from inside a hand-written handler.
+- Response trailers are relayed (h2/h3 trailing HEADERS, h1 chunked trailers) and `TE: trailers` is
+  forwarded, so **gRPC proxies**: set `o.RequestVersion = HttpVersion.Version20; o.VersionPolicy =
+  HttpVersionPolicy.RequestVersionExact;` for an h2c upstream, and the caller must use h2/h3.
+- Metrics on the server meter: `shiny.proxy.upstream.request.duration` (to response headers, by
+  `server.address`) and `shiny.proxy.upstream.errors` (`error.type` = `ProxyError` kind).
 
 ## Tunnelling
 
@@ -2085,6 +2250,12 @@ anything about how the OS frames bytes.
 | SWS011 | `IHttpEndpoint` without a verb attribute on the class |
 | SWS030 | Invalid API version in `[ApiVersion]` / `[MapToApiVersion]` |
 | SWS031 | **Warning** — `[MapToApiVersion]` names a version the class never declares |
+| SWB001–SWB006 | Switchboard can't be dispatched: generic/inaccessible class, no constructor, duplicate method name, unbindable parameter, unsupported return, generic method |
+| SWB007 | **Warning** — `[AllowAnonymous]` on a method of an `[Authorize]` switchboard has no effect |
+| SWB008 | `TClient` interface member that can't be called on a client (non-method, non-`Task` return) |
+| SWB009 | **Warning** — a contract interface method clients can't call under its name |
+| SWB010 | **Warning** — a type `[ExportContract]` can't include |
+| SWBC001–SWBC003 | Typed client (`[SwitchboardClient<,>]`): class not partial/top-level, unsupported member, name collision |
 
 The generator also emits metadata for `[RequestTimeout]`, `[DisableRequestTimeout]`, `[OutputCache]`,
 `[NoOutputCache]`, `[ValidateAntiforgery]`, `[DisableAntiforgery]`, `[Idempotent]`, `[DisableIdempotency]`,

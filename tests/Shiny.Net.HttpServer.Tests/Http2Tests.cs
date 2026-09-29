@@ -216,6 +216,35 @@ public class Http2InteropTests
     }
 
     [Fact]
+    public async Task Reports_a_body_sent_without_a_content_length()
+    {
+        await using var server = await TestServer.StartAsync(app =>
+        {
+            app.MapPost("/has-body", async ctx =>
+            {
+                using var reader = new StreamReader(ctx.Request.Body);
+                var body = await reader.ReadToEndAsync(Token);
+                await ctx.Response.WriteAsync($"{ctx.Request.HasBody}:{ctx.Request.ContentLength?.ToString() ?? "none"}:{body}");
+            });
+            app.MapGet("/no-body", ctx => ctx.Response.WriteAsync(ctx.Request.HasBody.ToString()));
+        });
+
+        using var client = CreateClient(server.Port);
+
+        // A stream of unknown length: HTTP/2 sends it with no Content-Length, as gRPC always does.
+        var content = new StreamContent(new UnseekableStream("streamed"u8.ToArray()));
+        var response = await client.PostAsync("/has-body", content, Token);
+        Assert.Equal("True:none:streamed", await response.Content.ReadAsStringAsync(Token));
+
+        Assert.Equal("False", await client.GetStringAsync("/no-body", Token));
+    }
+
+    sealed class UnseekableStream(byte[] data) : MemoryStream(data)
+    {
+        public override bool CanSeek => false;
+    }
+
+    [Fact]
     public async Task Carries_headers_both_ways()
     {
         await using var server = await TestServer.StartAsync(app => app.MapGet("/echo", ctx =>

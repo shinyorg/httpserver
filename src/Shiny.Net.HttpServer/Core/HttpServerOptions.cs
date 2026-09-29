@@ -98,9 +98,21 @@ public sealed class HttpServerOptions
     public bool IncludeDateHeader { get; set; } = true;
 
     /// <summary>
-    /// When true, Scheme and client IP are taken from X-Forwarded-Proto / X-Forwarded-For.
-    /// Only enable when the server genuinely sits behind a proxy or tunnel you control — otherwise
-    /// any client can spoof its own address.
+    /// When true, Scheme, Host and client IP are taken from X-Forwarded-Proto / X-Forwarded-Host /
+    /// X-Forwarded-For.
+    /// <para>
+    /// <b>Warning — this trusts every sender.</b> There is no list of trusted proxies: the headers are
+    /// believed from whichever peer sent them, so any client that can reach the server directly can set
+    /// its own address, scheme and host — walking around IP filters, rate-limit partitions, host
+    /// filtering and HTTPS-only checks. Only enable it when <em>every</em> connection arrives through a
+    /// proxy or tunnel you control, which strips or overwrites the headers. Never enable it on an edge
+    /// server that faces the internet directly.
+    /// </para>
+    /// <para>
+    /// <b>HTTP/1.1 only.</b> Requests arriving over HTTP/2 or HTTP/3 are not rewritten, whatever this
+    /// says. Behind a proxy that speaks h2 to this server, read the headers yourself (and decide who to
+    /// trust) — see <see cref="HttpContextExtensions.GetClientIpAddress"/>.
+    /// </para>
     /// </summary>
     public bool UseForwardedHeaders { get; set; }
 

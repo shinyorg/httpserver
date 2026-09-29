@@ -170,8 +170,12 @@ public class AcmeTests
         ca.OfferedChallenges = ["dns-01"];
         await using var host = await AcmeHost.StartAsync(ca, startRenewal: false);
 
+        var failed = new List<Exception>();
+        host.Manager.IssuanceFailed += (_, e) => failed.Add(e);
+
         var ex = await Assert.ThrowsAsync<AcmeException>(() => host.Manager.EnsureCertificateAsync(Token));
         Assert.Contains("dns-01", ex.Message);
+        Assert.Same(ex, Assert.Single(failed));
     }
 
     [Fact]
@@ -437,9 +441,9 @@ public class AcmeTests
         return new AcmeCertificateManager(options);
     }
 
-    static string TempDirectory() => Path.Combine(Path.GetTempPath(), "shiny-acme-" + Guid.NewGuid().ToString("N"));
+    internal static string TempDirectory() => Path.Combine(Path.GetTempPath(), "shiny-acme-" + Guid.NewGuid().ToString("N"));
 
-    static async Task WaitFor(Func<bool> condition, int seconds = 20)
+    internal static async Task WaitFor(Func<bool> condition, int seconds = 20)
     {
         var deadline = DateTime.UtcNow.AddSeconds(seconds);
         while (!condition())
@@ -451,9 +455,9 @@ public class AcmeTests
         }
     }
 
-    sealed record Presented(X509Certificate2 Certificate, X509Certificate2[] Chain);
+    internal sealed record Presented(X509Certificate2 Certificate, X509Certificate2[] Chain);
 
-    static async Task<Presented> Handshake(int port, string host, SslApplicationProtocol? protocol = null)
+    internal static async Task<Presented> Handshake(int port, string host, SslApplicationProtocol? protocol = null)
     {
         using var tcp = new TcpClient();
         await tcp.ConnectAsync(IPAddress.Loopback, port, Token);
@@ -478,7 +482,7 @@ public class AcmeTests
     }
 
     /// <summary>Collects every log line, so a failed wait can say what the renewal loop saw.</summary>
-    sealed class ListLoggerFactory : ILoggerFactory, ILogger
+    internal sealed class ListLoggerFactory : ILoggerFactory, ILogger
     {
         readonly List<string> entries = [];
 

@@ -39,33 +39,51 @@ sealed class AcmeIssuer(
         }
     }
 
-    async Task<byte[]> RunAsync(IReadOnlyList<AcmeIdentifier> identifiers, string? replaces, CancellationToken cancellationToken)
+    byte[] NewOrderPayload(IReadOnlyList<AcmeIdentifier> identifiers, string? replaces) => AcmeJws.Json(writer =>
     {
-        var payload = AcmeJws.Json(writer =>
+        writer.WriteStartObject();
+        writer.WriteStartArray("identifiers");
+        foreach (var identifier in identifiers)
         {
             writer.WriteStartObject();
-            writer.WriteStartArray("identifiers");
-            foreach (var identifier in identifiers)
-            {
-                writer.WriteStartObject();
-                writer.WriteString("type", identifier.Type);
-                writer.WriteString("value", identifier.Value);
-                writer.WriteEndObject();
-            }
-            writer.WriteEndArray();
-
-            if (options.Profile is { } profile)
-                writer.WriteString("profile", profile);
-
-            // RFC 9773 §5: tells the CA which certificate this one replaces, which is what exempts a
-            // renewal it asked for from rate limits.
-            if (replaces is not null)
-                writer.WriteString("replaces", replaces);
-
+            writer.WriteString("type", identifier.Type);
+            writer.WriteString("value", identifier.Value);
             writer.WriteEndObject();
-        });
+        }
+        writer.WriteEndArray();
 
-        var created = await client.PostAsync(client.Directory.NewOrder, payload, cancellationToken).ConfigureAwait(false);
+        if (options.Profile is { } profile)
+            writer.WriteString("profile", profile);
+
+        // RFC 9773 §5: tells the CA which certificate this one replaces, which is what exempts a
+        // renewal it asked for from rate limits.
+        if (replaces is not null)
+            writer.WriteString("replaces", replaces);
+
+        writer.WriteEndObject();
+    });
+
+    async Task<byte[]> RunAsync(IReadOnlyList<AcmeIdentifier> identifiers, string? replaces, CancellationToken cancellationToken)
+    {
+        AcmeResponse created;
+        try
+        {
+            created = await client.PostAsync(client.Directory.NewOrder, NewOrderPayload(identifiers, replaces), cancellationToken).ConfigureAwait(false);
+        }
+        catch (AcmeException ex) when (replaces is not null
+            && ex.ProblemType is not ("urn:ietf:params:acme:error:rateLimited" or "urn:ietf:params:acme:error:accountDoesNotExist"))
+        {
+            // A CA may refuse to let this account replace a certificate it did not issue to it — the
+            // usual case for one imported from another ACME client. Naming it was only a courtesy
+            // (it exempts an ARI-requested renewal from rate limits), so order again without it.
+            logger.LogInformation(
+                "The CA refused the order naming the certificate it replaces ({Problem}); ordering without it",
+                ex.ProblemType ?? ex.Message
+            );
+
+            created = await client.PostAsync(client.Directory.NewOrder, NewOrderPayload(identifiers, null), cancellationToken).ConfigureAwait(false);
+        }
+
         var orderUrl = created.Location
             ?? throw new AcmeException("The CA created the order but did not say where it is (no Location header).");
 

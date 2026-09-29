@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Shiny.Net.HttpServer.Switchboard</RootNamespace>
+    <Description>SignalR-shaped real-time calls for Shiny.Net.HttpServer, over Server-Sent Events and plain HTTP POSTs instead of WebSockets. Switchboard classes, groups, users, an operator for reaching lines from outside, server hang-ups, and resumable lines — source-generated dispatch, no reflection, runs in .NET MAUI.</Description>
+    <PackageTags>$(PackageTags) switchboard realtime sse server-sent-events signalr</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Shiny.Net.HttpServer/Shiny.Net.HttpServer.csproj" />
+  </ItemGroup>
+
+  <!-- The generator ships inside this package rather than beside it. A switchboard class without
+       its generated dispatcher cannot be mapped at all, so referencing half of the feature is not a
+       state worth making possible. -->
+  <ItemGroup>
+    <ProjectReference Include="../Shiny.Net.HttpServer.Switchboard.SourceGenerators/Shiny.Net.HttpServer.Switchboard.SourceGenerators.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false"
+                      PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="../Shiny.Net.HttpServer.Switchboard.SourceGenerators/bin/$(Configuration)/netstandard2.0/Shiny.Net.HttpServer.Switchboard.SourceGenerators.dll"
+          Pack="true"
+          PackagePath="analyzers/dotnet/cs"
+          Visible="false" />
+  </ItemGroup>
+
+  <!-- The contract-export copy step. buildTransitive, so it applies to a project that references this
+       package directly or through another one. -->
+  <ItemGroup>
+    <None Include="buildTransitive/**" Pack="true" PackagePath="buildTransitive" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Shiny.Net.HttpServer.Tests" />
+  </ItemGroup>
+
+</Project>

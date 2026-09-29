@@ -139,6 +139,7 @@ public static class ProxyExtensions
             if (destination is null)
             {
                 logger?.LogWarning("Cluster {Cluster} has no available destination", cluster.Id);
+                ProxyMetrics.RecordError(ProxyError.NoAvailableDestination, null);
                 await HttpForwarder.FailAsync(context, options, ProxyError.NoAvailableDestination, null).ConfigureAwait(false);
 
                 return;

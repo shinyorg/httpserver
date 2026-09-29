@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Net.Http.Headers;
 using Microsoft.Extensions.Logging;
@@ -85,6 +86,21 @@ public static class HttpForwarder
         CancellationToken cancellationToken
     )
     {
+        var error = await SendCoreAsync(context, destination, options, client, logger, cancellationToken).ConfigureAwait(false);
+        ProxyMetrics.RecordError(error, destination.Address.Authority);
+
+        return error;
+    }
+
+    static async ValueTask<ProxyError> SendCoreAsync(
+        HttpContext context,
+        ProxyDestination destination,
+        ProxyOptions options,
+        HttpMessageInvoker client,
+        ILogger? logger,
+        CancellationToken cancellationToken
+    )
+    {
         var upgrading = options.ForwardUpgrades && IsUpgradeRequest(context) && context.Transport is not null;
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted, cancellationToken);
@@ -96,6 +112,9 @@ public static class HttpForwarder
 
         using var outbound = await BuildRequestAsync(context, destination, options, upgrading).ConfigureAwait(false);
 
+        var authority = destination.Address.Authority;
+        var started = Stopwatch.GetTimestamp();
+
         HttpResponseMessage upstream;
         try
         {
@@ -103,10 +122,12 @@ public static class HttpForwarder
         }
         catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
         {
+            ProxyMetrics.RecordDuration(context.Request.Method, authority, Stopwatch.GetElapsedTime(started).TotalSeconds, null, ProxyError.RequestCanceled);
             return ProxyError.RequestCanceled;
         }
         catch (OperationCanceledException ex)
         {
+            ProxyMetrics.RecordDuration(context.Request.Method, authority, Stopwatch.GetElapsedTime(started).TotalSeconds, null, ProxyError.RequestTimeout);
             logger?.LogWarning("Proxy to {Destination} timed out", outbound.RequestUri);
             await FailAsync(context, options, ProxyError.RequestTimeout, ex).ConfigureAwait(false);
 
@@ -116,11 +137,14 @@ public static class HttpForwarder
         {
             // The upstream is unreachable or answered nonsense. That is a 502 — the caller's
             // request was fine, ours was not answered.
+            ProxyMetrics.RecordDuration(context.Request.Method, authority, Stopwatch.GetElapsedTime(started).TotalSeconds, null, ProxyError.Request);
             logger?.LogWarning(ex, "Proxy to {Destination} failed", outbound.RequestUri);
             await FailAsync(context, options, ProxyError.Request, ex).ConfigureAwait(false);
 
             return ProxyError.Request;
         }
+
+        ProxyMetrics.RecordDuration(context.Request.Method, authority, Stopwatch.GetElapsedTime(started).TotalSeconds, (int)upstream.StatusCode, ProxyError.None);
 
         using (upstream)
         {
@@ -136,6 +160,22 @@ public static class HttpForwarder
 
             // Whatever framing the upstream used described its connection, not ours.
             context.Response.Headers.Remove(HeaderNames.TransferEncoding);
+
+            // Trailer is hop-by-hop and was not copied, but what it announces is end to end: an
+            // HTTP/1.1 caller learns from it which trailers to expect after the last chunk.
+            if (upstream.Headers.TryGetValues(HeaderNames.Trailer, out var announced))
+            {
+                foreach (var value in announced)
+                {
+                    foreach (var name in value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                        context.Response.DeclareTrailer(name);
+                }
+
+                // A Content-Length body ends at its last byte, with nowhere after it for a trailer
+                // section. An HTTP/2 upstream may send both; an HTTP/1.1 caller then needs chunked.
+                if (string.Equals(context.Request.Protocol, HttpProtocols.Http11, StringComparison.Ordinal))
+                    context.Response.Headers.Remove(HeaderNames.ContentLength);
+            }
 
             if (options.Transforms.HasResponseTransforms)
                 await options.Transforms.ApplyResponseAsync(new ResponseTransformContext(context, upstream)).ConfigureAwait(false);
@@ -165,7 +205,25 @@ public static class HttpForwarder
                 return ProxyError.ResponseBody;
             }
 
+            // Only readable once the body has been read to its end. gRPC's status rides here
+            // (grpc-status, grpc-message), so a proxy that drops them turns every call into an
+            // "unknown" failure. The server sends them however the caller's protocol can: a
+            // trailing HEADERS frame on HTTP/2 and HTTP/3, the chunked trailer section on HTTP/1.1.
+            CopyTrailers(upstream, context.Response);
+
             return ProxyError.None;
+        }
+    }
+
+    static void CopyTrailers(HttpResponseMessage upstream, HttpResponse response)
+    {
+        foreach (var header in upstream.TrailingHeaders)
+        {
+            if (IsHopByHop(header.Key))
+                continue;
+
+            foreach (var value in header.Value)
+                response.AppendTrailer(header.Key, value);
         }
     }
 
@@ -205,7 +263,14 @@ public static class HttpForwarder
             // The handshake headers *are* the upgrade. Stripping them as hop-by-hop, which they
             // otherwise are, would turn a WebSocket request into an ordinary GET.
             if (!upgrading && IsHopByHop(header.Key))
+            {
+                // TE is hop-by-hop, but "trailers" in it is the caller saying it can take them — and
+                // gRPC servers refuse a call without it. The one value worth passing on.
+                if (string.Equals(header.Key, HeaderNames.TE, StringComparison.OrdinalIgnoreCase) && OffersTrailers(header.Value))
+                    message.Headers.TryAddWithoutValidation(HeaderNames.TE, "trailers");
+
                 continue;
+            }
 
             var values = new string[header.Value.Count];
             for (var i = 0; i < header.Value.Count; i++)
@@ -447,6 +512,17 @@ public static class HttpForwarder
         foreach (var hop in HopByHop)
         {
             if (string.Equals(name, hop, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return false;
+    }
+
+    static bool OffersTrailers(IReadOnlyList<string?> values)
+    {
+        for (var i = 0; i < values.Count; i++)
+        {
+            if (HasToken(values[i], "trailers"))
                 return true;
         }
 

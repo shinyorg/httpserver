@@ -123,6 +123,19 @@ A `Upgrade` request is completed against the upstream and the connection is then
 outright, so a WebSocket, and anything else that upgrades on HTTP/1.1, is forwarded end to end. On by
 default; `options.ForwardUpgrades = false` turns it off.
 
+## gRPC and trailers
+
+The upstream's response trailers are relayed on every protocol version (a trailing HEADERS frame on
+HTTP/2 and HTTP/3, the chunked trailer section on HTTP/1.1), and `TE: trailers` is forwarded, so
+gRPC's status arrives intact. Set `RequestVersion = HttpVersion.Version20` and
+`VersionPolicy = HttpVersionPolicy.RequestVersionExact` for an h2c upstream.
+
+## Metrics
+
+On the server's meter: `shiny.proxy.upstream.request.duration` (seconds to the upstream's response
+headers, by `server.address`, method and status) and `shiny.proxy.upstream.errors` (by `ProxyError`
+kind).
+
 ## Notes
 
 - The default outbound client has redirects off, cookies off, and no automatic decompression:

@@ -132,6 +132,7 @@ static class Http3RequestMapper
 
         request.Cookies.SetRaw(JoinCookies(request));
         request.Body = new MemoryStream(body, writable: false);
+        request.BodyWithoutLength = body.Length > 0 && request.ContentLength is null;
 
         error = null;
         return true;

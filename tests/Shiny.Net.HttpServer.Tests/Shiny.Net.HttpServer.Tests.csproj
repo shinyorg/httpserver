@@ -42,6 +42,10 @@
     <!-- The gRPC tests drive the endpoints with Google's own client, which is the only way to know
          the wire format is right rather than merely self-consistent. -->
     <PackageReference Include="Grpc.Net.Client" />
+
+    <!-- Drives the switchboard generator over source snippets, to test the diagnostics it reports
+         for code that must not compile. -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" />
   </ItemGroup>
 
   <!-- Content for the embedded static-file source. Serving assets out of the assembly is the
@@ -107,6 +111,18 @@
     <ProjectReference Include="../../src/Shiny.Net.HttpServer.Acme/Shiny.Net.HttpServer.Acme.csproj" />
     <ProjectReference Include="../../src/Shiny.Net.HttpServer.Mediator/Shiny.Net.HttpServer.Mediator.csproj" />
     <ProjectReference Include="../../src/Shiny.Net.HttpServer.DocumentDb/Shiny.Net.HttpServer.DocumentDb.csproj" />
+    <ProjectReference Include="../../src/Shiny.Net.HttpServer.Switchboard/Shiny.Net.HttpServer.Switchboard.csproj" />
+    <ProjectReference Include="../../src/Shiny.Net.HttpServer.Switchboard.Client/Shiny.Net.HttpServer.Switchboard.Client.csproj" />
+    <ProjectReference Include="../../src/Shiny.Net.HttpServer.Switchboard.Client.SourceGenerators/Shiny.Net.HttpServer.Switchboard.Client.SourceGenerators.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="true" />
+
+    <!-- As with the mediator generator: analyzers do not flow across a ProjectReference, so the
+         switchboard generator is referenced the way the package delivers it. -->
+    <!-- Also a referenced assembly, so the diagnostics tests can drive the generator directly. -->
+    <ProjectReference Include="../../src/Shiny.Net.HttpServer.Switchboard.SourceGenerators/Shiny.Net.HttpServer.Switchboard.SourceGenerators.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="true" />
 
     <!-- The CLI is an executable, but its argument parsing and its create/update guard are ordinary
          classes, and they are the parts that would rot silently. -->

@@ -1,0 +1,53 @@
+<Project>
+
+  <!--
+    Contract export. A switchboard marked [ExportContract] gets its contract generated as a source file
+    wrapped in #if SHINY_SWITCHBOARD_CONTRACT_EXPORT, so it compiles to nothing in the server. When the
+    project sets SwitchboardContractsOutputPath, this copies each one there after compiling, with the
+    guard removed, so a client that cannot reference a shared contracts assembly can compile it as is.
+
+    A source generator cannot write files itself; the compiler's own generated-files output is the only
+    way out, so it is switched on here — and only when an output path has been asked for.
+  -->
+
+  <PropertyGroup Condition="'$(SwitchboardContractsOutputPath)' != ''">
+    <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
+  </PropertyGroup>
+
+  <Target Name="ShinySwitchboardExportContracts"
+          AfterTargets="CoreCompile"
+          Condition="'$(SwitchboardContractsOutputPath)' != ''"
+          DependsOnTargets="_ShinySwitchboardFindContracts;_ShinySwitchboardWriteContracts" />
+
+  <Target Name="_ShinySwitchboardFindContracts">
+    <PropertyGroup>
+      <_ShinySwitchboardGenerated>$(CompilerGeneratedFilesOutputPath)</_ShinySwitchboardGenerated>
+      <_ShinySwitchboardGenerated Condition="'$(_ShinySwitchboardGenerated)' == ''">$(IntermediateOutputPath)generated</_ShinySwitchboardGenerated>
+    </PropertyGroup>
+
+    <ItemGroup>
+      <_ShinySwitchboardContract Include="$(_ShinySwitchboardGenerated)/Shiny.Net.HttpServer.Switchboard.SourceGenerators/**/*.Contract.g.cs" />
+    </ItemGroup>
+
+    <Warning Condition="'@(_ShinySwitchboardContract)' == ''"
+             Text="SwitchboardContractsOutputPath is set, but no switchboard in this project is marked [ExportContract], so there is nothing to export." />
+
+    <MakeDir Directories="$(SwitchboardContractsOutputPath)" Condition="'@(_ShinySwitchboardContract)' != ''" />
+  </Target>
+
+  <!-- Batched: runs once per exported contract. -->
+  <Target Name="_ShinySwitchboardWriteContracts" Outputs="%(_ShinySwitchboardContract.Identity)" Condition="'@(_ShinySwitchboardContract)' != ''">
+    <PropertyGroup>
+      <_ShinySwitchboardText>$([System.IO.File]::ReadAllText('%(_ShinySwitchboardContract.FullPath)'))</_ShinySwitchboardText>
+      <_ShinySwitchboardText>$(_ShinySwitchboardText.Replace('#if SHINY_SWITCHBOARD_CONTRACT_EXPORT', '').Replace('#endif // SHINY_SWITCHBOARD_CONTRACT_EXPORT', ''))</_ShinySwitchboardText>
+    </PropertyGroup>
+
+    <!-- Only when different: the file usually lands in another project's source tree, and a rewrite
+         on every build would churn its git status. -->
+    <WriteLinesToFile File="$(SwitchboardContractsOutputPath)/%(_ShinySwitchboardContract.Filename)%(_ShinySwitchboardContract.Extension)"
+                      Lines="$([MSBuild]::Escape($(_ShinySwitchboardText)))"
+                      Overwrite="true"
+                      WriteOnlyWhenDifferent="true" />
+  </Target>
+
+</Project>

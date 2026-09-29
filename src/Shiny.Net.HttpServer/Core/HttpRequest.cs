@@ -99,7 +99,13 @@ public sealed class HttpRequest
     PipeReader? bodyReader;
 
     /// <summary>True when a body is present (either a positive Content-Length or chunked).</summary>
-    public bool HasBody => this.IsChunked || this.ContentLength > 0 || this.BodyDecoded;
+    public bool HasBody => this.IsChunked || this.ContentLength > 0 || this.BodyDecoded || this.BodyWithoutLength;
+
+    /// <summary>
+    /// Set by HTTP/2 and HTTP/3 when the request carries a body but no Content-Length, which both
+    /// protocols allow — the stream's end is the body's end. gRPC calls are always sent this way.
+    /// </summary>
+    internal bool BodyWithoutLength { get; set; }
 
     /// <summary>
     /// Set when a middleware replaced <see cref="Body"/> with a decoded stream whose length is not
@@ -120,6 +126,7 @@ public sealed class HttpRequest
         this.RawTarget = "/";
         this.IsChunked = false;
         this.BodyDecoded = false;
+        this.BodyWithoutLength = false;
         this.body = null;
         this.bodyReader = null;
         this.Headers.Reset();
