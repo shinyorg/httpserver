@@ -17,6 +17,9 @@ public sealed class RelayTunnel(
     /// <summary>The public URL the client was handed.</summary>
     public string PublicUrl { get; } = publicUrl;
 
+    /// <summary>The scheme of <see cref="PublicUrl"/>: <c>http</c> or <c>https</c>.</summary>
+    public string PublicScheme { get; } = publicUrl[..Math.Max(0, publicUrl.IndexOf("://", StringComparison.Ordinal))];
+
     /// <summary>Where the client's control connection came from.</summary>
     public EndPoint? RemoteEndPoint { get; } = remoteEndPoint;
 

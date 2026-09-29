@@ -646,6 +646,89 @@ public class TunnelEndToEndTests
         Assert.Equal(2, Volatile.Read(ref authorizations));
     }
 
+    [Fact]
+    public async Task Advertises_and_forwards_the_scheme_Authorize_chose_for_one_tunnel()
+    {
+        // The relay's own default is http; one tunnel is told it is https.
+        await using var relay = await StartRelayAsync((request, _) =>
+        {
+            if (request.Token == "secure")
+                request.PublicScheme = "HTTPS";
+            return ValueTask.FromResult(request.Token);
+        });
+
+        await using var server = new HttpServer(new HttpServerOptions { Port = 0, UseForwardedHeaders = true });
+        server.MapGet("/scheme", ctx => ctx.Response.WriteAsync(ctx.Request.Scheme));
+
+        await using var secure = CreateProvider(relay, "secure");
+        await using var plain = CreateProvider(relay, "plain");
+        using var stopping = CancellationTokenSource.CreateLinkedTokenSource(Token);
+        var running = Task.WhenAll(
+            server.RunTunnelAsync(secure, cancellationToken: stopping.Token),
+            server.RunTunnelAsync(plain, cancellationToken: stopping.Token)
+        );
+
+        var deadline = DateTime.UtcNow.AddSeconds(15);
+        while ((secure.PublicUrl is null || plain.PublicUrl is null) && DateTime.UtcNow < deadline)
+            await Task.Delay(25, Token);
+
+        Assert.StartsWith("https://secure.localhost:", secure.PublicUrl);
+        Assert.StartsWith("http://plain.localhost:", plain.PublicUrl);
+        Assert.Equal("https", relay.Tunnels.Single(x => x.Host == "secure.localhost").PublicScheme);
+
+        Assert.Equal("https", await GetSchemeAsync("secure.localhost"));
+        Assert.Equal("http", await GetSchemeAsync("plain.localhost"));
+
+        await stopping.CancelAsync();
+        try { await running.WaitAsync(TimeSpan.FromSeconds(10), CancellationToken.None); }
+        catch (Exception ex) when (ex is OperationCanceledException or TimeoutException) { }
+
+        // A client per host: the relay pins a connection to its first tunnel and answers 421 to a switch.
+        async Task<string> GetSchemeAsync(string host)
+        {
+            using var client = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{relay.PublicPort}") };
+            var request = new HttpRequestMessage(HttpMethod.Get, "/scheme");
+            request.Headers.Host = host;
+            var response = await client.SendAsync(request, Token);
+            return await response.Content.ReadAsStringAsync(Token);
+        }
+    }
+
+    [Fact]
+    public async Task Refuses_a_registration_when_Authorize_sets_an_unsupported_scheme()
+    {
+        await using var relay = await StartRelayAsync((request, _) =>
+        {
+            request.PublicScheme = "ftp";
+            return ValueTask.FromResult<string?>("anything");
+        });
+        await using var provider = CreateProvider(relay, "key-1");
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(async () => await provider.BindAsync(Token));
+        Assert.Contains("refused", ex.Message);
+        Assert.Empty(relay.Tunnels);
+    }
+
+    [Fact]
+    public async Task Binds_the_control_and_public_listeners_to_their_own_addresses()
+    {
+        // 192.0.2.1 (TEST-NET-1) is on no local interface: a listener that fell back to Address
+        // could not bind, so starting at all proves both overrides were used.
+        await using var relay = new RelayServer(new RelayServerOptions
+        {
+            Address = IPAddress.Parse("192.0.2.1"),
+            ControlAddress = IPAddress.Loopback,
+            PublicAddress = IPAddress.Loopback,
+            ControlPort = 0,
+            PublicPort = 0
+        });
+
+        await relay.StartAsync(Token);
+
+        Assert.Contains("127.0.0.1", relay.ControlUrl);
+        Assert.Contains("127.0.0.1", relay.PublicUrl);
+    }
+
     static async Task<RelayServer> StartRelayAsync(
         Func<TunnelRegistrationRequest, CancellationToken, ValueTask<string?>> authorize,
         TimeSpan? authorizeTimeout = null

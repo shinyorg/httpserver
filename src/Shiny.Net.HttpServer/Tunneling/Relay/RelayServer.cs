@@ -160,13 +160,13 @@ public sealed class RelayServer : IAsyncDisposable
 
         this.controlListener = new SocketConnectionListener(
             new HttpServerOptions(),
-            new HttpServerEndpoint(this.options.Address, this.options.ControlPort) { Https = this.options.ControlHttps },
+            new HttpServerEndpoint(this.options.ControlAddress ?? this.options.Address, this.options.ControlPort) { Https = this.options.ControlHttps },
             this.loggerFactory.CreateLogger<SocketConnectionListener>()
         );
 
         this.publicListener = new SocketConnectionListener(
             new HttpServerOptions(),
-            new HttpServerEndpoint(this.options.Address, this.options.PublicPort) { Https = this.options.PublicHttps },
+            new HttpServerEndpoint(this.options.PublicAddress ?? this.options.Address, this.options.PublicPort) { Https = this.options.PublicHttps },
             this.loggerFactory.CreateLogger<SocketConnectionListener>(),
             listenerIndex: 1
         );
@@ -307,6 +307,16 @@ public sealed class RelayServer : IAsyncDisposable
             return;
         }
 
+        var scheme = (request.PublicScheme ?? this.options.PublicScheme).ToLowerInvariant();
+        if (scheme is not ("http" or "https"))
+        {
+            this.logger.LogError("Authorize set an unsupported public scheme '{Scheme}'; registration refused", scheme);
+            await channel.SendAsync(TunnelFrameType.HelloReject, 0, "Registration was refused.", token)
+                .ConfigureAwait(false);
+            await connection.DisposeAsync().ConfigureAwait(false);
+            return;
+        }
+
         // Checked again: other registrations may have completed while this one was authorizing.
         if (this.sessions.Count >= this.options.MaxTunnels)
         {
@@ -319,7 +329,7 @@ public sealed class RelayServer : IAsyncDisposable
         var host = $"{subdomain}.{this.options.Domain}".ToLowerInvariant();
         var tunnel = new RelayTunnel(
             host,
-            this.BuildPublicUrl(host),
+            this.BuildPublicUrl(host, scheme),
             connection.RemoteEndPoint,
             DateTimeOffset.UtcNow,
             request.State
@@ -413,15 +423,15 @@ public sealed class RelayServer : IAsyncDisposable
         return value[0] != '-' && value[^1] != '-';
     }
 
-    string BuildPublicUrl(string host)
+    string BuildPublicUrl(string host, string scheme)
     {
         var port = this.PublicPort;
-        var isDefaultPort = (this.options.PublicScheme == "https" && port == 443)
-            || (this.options.PublicScheme == "http" && port == 80);
+        var isDefaultPort = (scheme == "https" && port == 443)
+            || (scheme == "http" && port == 80);
 
         return this.options.IncludePortInPublicUrl && !isDefaultPort
-            ? $"{this.options.PublicScheme}://{host}:{port}"
-            : $"{this.options.PublicScheme}://{host}";
+            ? $"{scheme}://{host}:{port}"
+            : $"{scheme}://{host}";
     }
 
     static async ValueTask<(string? Token, string? Subdomain)?> ReadHelloAsync(
@@ -501,7 +511,7 @@ public sealed class RelayServer : IAsyncDisposable
                 }
 
                 var bytes = this.options.AddForwardedHeaders
-                    ? RequestHead.WithForwardedHeaders(current.Bytes, clientIp, this.options.PublicScheme, host)
+                    ? RequestHead.WithForwardedHeaders(current.Bytes, clientIp, session.Tunnel.PublicScheme, host)
                     : current.Bytes;
 
                 await session.SendAsync(streamId, bytes, token).ConfigureAwait(false);

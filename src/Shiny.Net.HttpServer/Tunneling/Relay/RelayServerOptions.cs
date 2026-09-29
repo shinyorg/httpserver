@@ -8,6 +8,19 @@ public sealed class RelayServerOptions
     /// <summary>Interface for both listeners. Defaults to loopback so an unconfigured relay is not public.</summary>
     public IPAddress Address { get; set; } = IPAddress.Loopback;
 
+    /// <summary>
+    /// Interface for the control listener, when it differs from <see cref="Address"/>. Null uses
+    /// <see cref="Address"/>.
+    /// </summary>
+    public IPAddress? ControlAddress { get; set; }
+
+    /// <summary>
+    /// Interface for the public listener, when it differs from <see cref="Address"/>. Null uses
+    /// <see cref="Address"/>. Behind a reverse proxy on the same host, set this to loopback and
+    /// <see cref="ControlAddress"/> to a public interface, so only the proxy can reach the public side.
+    /// </summary>
+    public IPAddress? PublicAddress { get; set; }
+
     /// <summary>Where tunnel clients register. Not where public traffic goes.</summary>
     public int ControlPort { get; set; } = 5050;
 
@@ -85,4 +98,13 @@ public sealed class TunnelRegistrationRequest(string? token, string? requestedSu
     /// account — and read back from <see cref="RelayTunnel.State"/>.
     /// </summary>
     public object? State { get; set; }
+
+    /// <summary>
+    /// Set by <see cref="RelayServerOptions.Authorize"/> to advertise this tunnel under a different
+    /// scheme than <see cref="RelayServerOptions.PublicScheme"/> — <c>http</c> for a host no
+    /// certificate covers yet, say. Used in the public URL handed to the client and in the
+    /// <c>X-Forwarded-Proto</c> the relay adds. <c>http</c> or <c>https</c>; anything else refuses
+    /// the registration.
+    /// </summary>
+    public string? PublicScheme { get; set; }
 }

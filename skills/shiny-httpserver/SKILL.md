@@ -1848,6 +1848,10 @@ await app.RunTunnelAsync(provider, logger, ct);
   rather than keeping the token; `relay.TunnelConnected` / `TunnelDisconnected` report it, `relay.Tunnels`
   lists it, and revoking is "make `Authorize` refuse, **then** `await relay.DisconnectAsync(t =>
   Equals(t.State, keyId))`" — in the other order a reconnecting client is simply let back in.
+- Relay behind a reverse proxy on the same host: `ControlAddress = IPAddress.Any`,
+  `PublicAddress = IPAddress.Loopback`, `IncludePortInPublicUrl = false`, and
+  `AddForwardedHeaders = false` (the proxy's `X-Forwarded-*` are the real ones). Per-tunnel scheme:
+  set `request.PublicScheme = "http"` in `Authorize` for a host without a certificate.
 - `AzureRelay` is deliberately **not** AOT-clean; do not suggest it for a trimmed/AOT app.
 - `Shiny.Net.HttpServer.Tunnels` supervises the vendor agents — `cloudflared`, `ngrok`,
   `tailscale` — for hosts that can start a process. **Not on a phone:** iOS forbids it outright, so
