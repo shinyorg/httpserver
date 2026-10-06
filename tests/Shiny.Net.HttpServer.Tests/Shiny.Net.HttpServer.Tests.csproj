@@ -112,6 +112,11 @@
     <ProjectReference Include="../../src/Shiny.Net.HttpServer.OAuthLoopback/Shiny.Net.HttpServer.OAuthLoopback.csproj" />
     <ProjectReference Include="../../src/Shiny.Net.HttpServer.Tus/Shiny.Net.HttpServer.Tus.csproj" />
     <ProjectReference Include="../../src/Shiny.Net.HttpServer.NuGet/Shiny.Net.HttpServer.NuGet.csproj" />
+    <ProjectReference Include="../../src/Shiny.Net.HttpServer.Npm/Shiny.Net.HttpServer.Npm.csproj" />
+    <ProjectReference Include="../../src/Shiny.Net.HttpServer.FileSync/Shiny.Net.HttpServer.FileSync.csproj" />
+    <!-- The sync client, driven against the real server - with HttpClient transfers and through
+         Shiny.Net.Http's own transfer manager, tus uploads included. -->
+    <ProjectReference Include="../../src/Shiny.Net.HttpServer.FileSync.Client/Shiny.Net.HttpServer.FileSync.Client.csproj" />
     <ProjectReference Include="../../src/Shiny.Net.HttpServer.CalDav/Shiny.Net.HttpServer.CalDav.csproj" />
     <ProjectReference Include="../../src/Shiny.Net.HttpServer.Acme/Shiny.Net.HttpServer.Acme.csproj" />
     <ProjectReference Include="../../src/Shiny.Net.HttpServer.Mediator/Shiny.Net.HttpServer.Mediator.csproj" />

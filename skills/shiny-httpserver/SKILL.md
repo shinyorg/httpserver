@@ -1,6 +1,6 @@
 ---
 name: shiny-httpserver
-description: Generate code using Shiny.Net.HttpServer — a dependency-light, AOT/trim-clean HTTP/1.1, HTTP/2 & HTTP/3 server that runs anywhere .NET runs, including .NET MAUI and native tvOS, where ASP.NET Core cannot. Covers routing, middleware, source-generated typed endpoints, results and JSON, content negotiation with XML/MessagePack/protobuf formatters in both directions, static files and Blazor WASM, uploads/downloads, WebSockets, SSE, SignalR-style switchboards (real-time two-way calls over SSE with groups, an operator, client results, resumable lines, and a generated typed .NET client), sessions, OpenAPI, authentication (Basic/API key/cookie/JWT), authorization, CORS, rate limiting, IP filtering, TLS and self-signed certificates, tunnelling (relay, SSH, quick tunnels, Azure Relay, and supervised cloudflared/ngrok/tailscale agents), serving a directory over WebDAV, serving gRPC and gRPC-Web, hosting an MCP server with RFC 9728 OAuth discovery, receiving the OAuth/OIDC loopback redirect so a desktop app or CLI can sign in through the system browser (RFC 8252), health checks, OpenTelemetry-shaped metrics and tracing, W3C access logs, request timeouts, output caching and conditional requests, request decompression, antiforgery and browser security headers, a reverse proxy with destination clusters, load balancing, health checks, session affinity, transforms, WebSocket forwarding and IConfiguration-driven routes, mDNS/Bonjour advertising and discovery, MAUI lifecycle (background/foreground, Android foreground service, network rebinding), host filtering against DNS rebinding, request localization, webhook signature verification (GitHub/Stripe/Slack/Standard Webhooks), idempotency keys, RFC 9530 content digests, 103 Early Hints, the PROXY protocol, RFC 6902 JSON Patch, API versioning with per-version OpenAPI, a Scalar API reference page, tus resumable uploads, CalDAV/CardDAV, a private NuGet feed (V3 protocol with push), automatic HTTPS via ACME (Let's Encrypt/ZeroSSL), and an in-memory test harness.
+description: Generate code using Shiny.Net.HttpServer — a dependency-light, AOT/trim-clean HTTP/1.1, HTTP/2 & HTTP/3 server that runs anywhere .NET runs, including .NET MAUI and native tvOS, where ASP.NET Core cannot. Covers routing, middleware, source-generated typed endpoints, results and JSON, content negotiation with XML/MessagePack/protobuf formatters in both directions, static files and Blazor WASM, uploads/downloads, WebSockets, SSE, SignalR-style switchboards (real-time two-way calls over SSE with groups, an operator, client results, resumable lines, and a generated typed .NET client), sessions, OpenAPI, authentication (Basic/API key/cookie/JWT), authorization, CORS, rate limiting, IP filtering, TLS and self-signed certificates, tunnelling (relay, SSH, quick tunnels, Azure Relay, and supervised cloudflared/ngrok/tailscale agents), serving a directory over WebDAV, serving gRPC and gRPC-Web, hosting an MCP server with RFC 9728 OAuth discovery, receiving the OAuth/OIDC loopback redirect so a desktop app or CLI can sign in through the system browser (RFC 8252), health checks, OpenTelemetry-shaped metrics and tracing, W3C access logs, request timeouts, output caching and conditional requests, request decompression, antiforgery and browser security headers, a reverse proxy with destination clusters, load balancing, health checks, session affinity, transforms, WebSocket forwarding and IConfiguration-driven routes, mDNS/Bonjour advertising and discovery, MAUI lifecycle (background/foreground, Android foreground service, network rebinding), host filtering against DNS rebinding, request localization, webhook signature verification (GitHub/Stripe/Slack/Standard Webhooks), idempotency keys, RFC 9530 content digests, 103 Early Hints, the PROXY protocol, RFC 6902 JSON Patch, API versioning with per-version OpenAPI, a Scalar API reference page, tus resumable uploads, CalDAV/CardDAV, a private NuGet feed (V3 protocol with push), a private npm registry (publish/install/dist-tags/deprecate/unpublish with npmjs.org fall-through), Dropbox-style two-way folder sync with content-defined chunking and a Shiny.Net.Http background-transfer client, automatic HTTPS via ACME (Let's Encrypt/ZeroSSL), and an in-memory test harness.
 auto_invoke: true
 triggers:
 - Shiny.Net.HttpServer
@@ -391,6 +391,44 @@ triggers:
 - host nuget packages
 - dotnet nuget push
 - X-NuGet-ApiKey
+- Shiny.Net.HttpServer.Npm
+- MapNpmRegistry
+- NpmRegistryOptions
+- NpmRegistryMountBuilder
+- INpmPackageStore
+- DiskNpmPackageStore
+- NpmPackageDocument
+- npm registry
+- private npm registry
+- npm server
+- verdaccio
+- npm publish
+- .npmrc
+- _authToken
+- Shiny.Net.HttpServer.FileSync
+- Shiny.Net.HttpServer.FileSync.Client
+- MapFileSync
+- FileSyncOptions
+- FileSyncMountBuilder
+- IFileSyncStore
+- DiskFileSyncStore
+- FileSyncEntry
+- FileSyncClient
+- FileSyncClientOptions
+- AddFileSyncClient
+- FileSyncResult
+- FileSyncActivity
+- file sync
+- folder sync
+- dropbox
+- onedrive
+- delta sync
+- binary diff
+- binary patch
+- content-defined chunking
+- FastCDC
+- deduplication
+- conflicted copy
 - Idempotency-Key
 - AddIdempotency
 - UseIdempotency
@@ -506,6 +544,8 @@ Invoke this skill when the user wants to:
   route to another server
 - Test endpoints without binding a port
 - Host a private NuGet feed that `dotnet nuget push` and `dotnet restore` talk to
+- Host a private npm registry that `npm publish` / `npm install` (and pnpm, Yarn) talk to
+- Sync a folder between devices and a server, Dropbox/OneDrive-style, moving only changed bytes
 - Sign a desktop app or CLI in through the system browser (the OAuth/OIDC loopback redirect,
   what VS Code and `gh auth login` do) without `HttpListener`
 
@@ -544,6 +584,9 @@ dotnet add package Shiny.Net.HttpServer.Tunnels          # cloudflared / ngrok /
 dotnet add package Shiny.Net.HttpServer.OAuthLoopback    # OAuth/OIDC loopback redirect receiver (desktop + CLI only)
 dotnet add package Shiny.Net.HttpServer.Tus              # tus 1.0.0 resumable uploads
 dotnet add package Shiny.Net.HttpServer.NuGet            # a private NuGet V3 feed (push, restore, search)
+dotnet add package Shiny.Net.HttpServer.Npm              # a private npm registry (publish, install, npmjs fall-through)
+dotnet add package Shiny.Net.HttpServer.FileSync         # Dropbox-style sync server (chunk store + change feed)
+dotnet add package Shiny.Net.HttpServer.FileSync.Client  # its client: two-way folder sync over Shiny.Net.Http
 dotnet add package Shiny.Net.HttpServer.CalDav           # calendars & contacts over CalDAV/CardDAV
 dotnet add package Shiny.Net.HttpServer.Acme             # automatic HTTPS via Let's Encrypt/ZeroSSL (public hosts, not phones)
 
@@ -1425,6 +1468,89 @@ app.MapNuGetFeed("/nuget", o =>
   so the directory is also a local source and can be seeded by copying files in (call `Reload()`).
 - Not supported: `.snupkg` symbol packages, the catalog, download counts, the V2/OData API. Do not
   promise them.
+- The routes are excluded from OpenAPI. Do not describe them.
+
+### A private npm registry
+
+`MapNpmRegistry` serves the npm registry API, so `npm install`, `publish`, `view`, `search`,
+`dist-tag`, `deprecate`, `unpublish`, `owner`, `whoami` and `login` work. Reach for it when the user
+says *npm registry*, *private npm*, *Verdaccio replacement*, or *publish our JS packages*. Tier 1:
+one catch-all route per HTTP method in one call, dispatched internally (npm's URLs do not fit
+templates).
+
+```csharp
+app.MapNpmRegistry("/npm", o =>
+{
+    o.Store = new DiskNpmPackageStore(Path.Combine(dataDir, "npm"));   // required
+    o.Tokens[config["Npm:Token"]!] = "ci";                              // token → user name (Bearer, constant-time)
+    o.Upstream = new Uri("https://registry.npmjs.org");                 // optional: one URL for private + public
+});
+
+// .npmrc
+// @acme:registry=http://host:5000/npm/          (or registry=… when Upstream is set)
+// //host:5000/npm/:_authToken=${NPM_TOKEN}
+```
+
+- The registry URL is `{server}{prefix}/` (with trailing slash). The `.npmrc` auth line must match it:
+  `//host:port/prefix/:_authToken=…`.
+- A writable registry with no `Tokens` and no `ValidateTokenAsync` throws when mapped. Use
+  `ReadOnly = true` for none. `RequireTokenForReads` makes installs authenticated too.
+- Only maintainers can publish or change an existing package (the first publisher is the
+  maintainer). `npm owner add` adds more; tokens map to user names for this.
+- `npm login` works only with `LoginAsync` (user/password → token). Otherwise hand tokens out.
+- A local package always wins over the same name upstream. Upstream responses are passed through,
+  not cached. Tarball requests for public packages come back here (npm's replace-registry-host)
+  and are passed on as well.
+- Publish bodies are base64 JSON, a third larger than the tarball. `Limits.MaxRequestBodySize`
+  (30 MB) applies before `MaxTarballSize` (100 MB).
+- Errors are npm-style `{"error": "..."}` bodies, not problem details. Do not wrap them.
+- Not supported: upstream caching, web login, 2FA/OTP, orgs/teams, provenance. Do not promise them.
+
+### Folder sync (Dropbox-style) — server and client
+
+`MapFileSync` is a content-addressed chunk store plus a change feed. `FileSyncClient` (in
+`Shiny.Net.HttpServer.FileSync.Client`, which has no dependency on the server package) keeps a
+local folder in sync with it both ways. Files are split into content-defined chunks (FastCDC,
+64 KB–1 MB), so an edit moves only the changed chunks, and downloads reuse chunks already on the
+device. Reach for it when the user says *sync a folder*, *Dropbox/OneDrive-like*, *delta/binary
+patch upload*, *only send what changed*, or *offline files that sync*. Server: tier 1, ten raw routes
+plus a tus mount in one call. Client: not a server tier; it is a separate client library.
+
+```csharp
+// server
+app.MapFileSync("/sync", o => o.Store = new DiskFileSyncStore(Path.Combine(dataDir, "sync")))
+   .RequireAuthorization();
+// per-user trees: o.StoreSelector = ctx => stores.GetOrAdd(ctx.User!.Identity!.Name!, n => new DiskFileSyncStore(...));
+// cleanup from a timer: await mount.CollectGarbageAsync();
+
+// app (MAUI)
+builder.Services.AddFileSyncClient(o =>
+{
+    o.ServerUri = new("https://files.example.com/sync");   // server URL + the MapFileSync prefix
+    o.LocalPath = Path.Combine(FileSystem.AppDataDirectory, "Documents");
+    o.Headers["Authorization"] = "Bearer " + token;         // or o.HeadersProvider for refreshing tokens
+});
+var result = await sync.SyncAsync();     // one pass: result.BytesTransferred vs result.BytesReused
+await sync.RunAsync(ct);                 // continuous: long-poll + FileSystemWatcher + ScanInterval
+```
+
+- Do not hand-roll "upload the whole file again" sync, or rsync-style patch endpoints, on top of
+  `MapPost`. Use this.
+- `AddFileSyncClient` registers Shiny.Net.Http transfers itself if the app has not. An app with its
+  own transfer delegate must call `AddHttpTransfers<TDelegate>()` **before** `AddFileSyncClient`.
+- Transfers are background (iOS `NSURLSession`, Android foreground service). Pack uploads go over tus
+  (`UseTusUploads`, default on; needs the server's `EnableTusUploads`, also on by default).
+  Downloads resume with `Range`. With no transfer manager registered (plain .NET), it falls back to
+  `HttpClient`. Outside a Shiny host, call `HttpClientHttpTransferManager.Start()`.
+- Conflicts never lose data: the server's version keeps the name and the local edit becomes
+  `name (conflicted copy {DeviceName} {date}).ext`. Handle `Activity` events with
+  `FileSyncActivityKind.Conflict` to tell the user.
+- Every client should use the same chunk sizes, or their uploads will not deduplicate.
+  `AverageChunkSize` must be a power of two.
+- Pack uploads through `PUT chunks/pack` (non-tus) are bounded by `Limits.MaxRequestBodySize`
+  (30 MB). Client packs default to 8 MB.
+- Not supported: version history/restore, empty-folder sync, sharing between accounts, selective
+  sync, a browser client. Do not promise them.
 - The routes are excluded from OpenAPI. Do not describe them.
 
 ## Realtime

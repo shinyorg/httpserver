@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Shiny.Net.HttpServer.FileSync.Client</RootNamespace>
+    <Description>The client for Shiny.Net.HttpServer.FileSync: keeps a local folder and the server in sync both ways, Dropbox-style. Changed files are split into content-defined chunks and only the chunks the other side lacks are moved; chunks already on the device (from the old version of a file or any other file) are reused, never downloaded again. Transfers run through Shiny.Net.Http, so they continue in the background on iOS and Android and resume after a dropped connection. Conflicts become conflicted copies, not lost edits.</Description>
+    <PackageTags>$(PackageTags) sync file-sync dropbox onedrive delta chunking client</PackageTags>
+    <DefineConstants>$(DefineConstants);FILESYNC_CLIENT</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The wire format, compiled into both ends from one source so they cannot drift. The server
+         package is not a dependency: an app that only syncs should not carry a server. -->
+    <Compile Include="../Shiny.Net.HttpServer.FileSync/Shared/*.cs" Link="Shared/%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Shiny.Net.Http" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Shiny.Net.HttpServer.Tests" />
+  </ItemGroup>
+
+</Project>

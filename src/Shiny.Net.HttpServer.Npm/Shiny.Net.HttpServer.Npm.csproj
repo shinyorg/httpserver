@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Shiny.Net.HttpServer.Npm</RootNamespace>
+    <Description>A private npm registry for Shiny.Net.HttpServer — the registry API npm, pnpm and Yarn speak: install (full and abbreviated metadata), publish, dist-tags, deprecate, unpublish, owners, search, whoami and login, with an optional fall-through to registry.npmjs.org for everything that is not yours. No database, no Node.js, and trim- and AOT-clean.</Description>
+    <PackageTags>$(PackageTags) npm registry private-registry verdaccio javascript</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Shiny.Net.HttpServer/Shiny.Net.HttpServer.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Shiny.Net.HttpServer.Tests" />
+  </ItemGroup>
+
+</Project>

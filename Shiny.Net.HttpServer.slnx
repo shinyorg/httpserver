@@ -31,12 +31,15 @@
     <Project Path="src/Shiny.Net.HttpServer.CommandLine/Shiny.Net.HttpServer.CommandLine.csproj" />
     <Project Path="src/Shiny.Net.HttpServer.Discovery/Shiny.Net.HttpServer.Discovery.csproj" />
     <Project Path="src/Shiny.Net.HttpServer.DocumentDb/Shiny.Net.HttpServer.DocumentDb.csproj" />
+    <Project Path="src/Shiny.Net.HttpServer.FileSync/Shiny.Net.HttpServer.FileSync.csproj" />
+    <Project Path="src/Shiny.Net.HttpServer.FileSync.Client/Shiny.Net.HttpServer.FileSync.Client.csproj" />
     <Project Path="src/Shiny.Net.HttpServer.Grpc/Shiny.Net.HttpServer.Grpc.csproj" />
     <Project Path="src/Shiny.Net.HttpServer.Jwt/Shiny.Net.HttpServer.Jwt.csproj" />
     <Project Path="src/Shiny.Net.HttpServer.Mcp/Shiny.Net.HttpServer.Mcp.csproj" />
     <Project Path="src/Shiny.Net.HttpServer.Mediator/Shiny.Net.HttpServer.Mediator.csproj" />
     <Project Path="src/Shiny.Net.HttpServer.Mediator.SourceGenerators/Shiny.Net.HttpServer.Mediator.SourceGenerators.csproj" />
     <Project Path="src/Shiny.Net.HttpServer.Mobile/Shiny.Net.HttpServer.Mobile.csproj" />
+    <Project Path="src/Shiny.Net.HttpServer.Npm/Shiny.Net.HttpServer.Npm.csproj" />
     <Project Path="src/Shiny.Net.HttpServer.NuGet/Shiny.Net.HttpServer.NuGet.csproj" />
     <Project Path="src/Shiny.Net.HttpServer.OAuthLoopback/Shiny.Net.HttpServer.OAuthLoopback.csproj" />
     <Project Path="src/Shiny.Net.HttpServer.Proxy/Shiny.Net.HttpServer.Proxy.csproj" />
