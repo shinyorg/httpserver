@@ -11,6 +11,8 @@ namespace Shiny.Net.HttpServer;
 public sealed class HttpRequest
 {
     Stream? body;
+    long? maxBodySize;
+    bool maxBodySizeLocked;
 
     internal HttpRequest(HttpContext context) => this.HttpContext = context;
 
@@ -98,6 +100,54 @@ public sealed class HttpRequest
     );
     PipeReader? bodyReader;
 
+    /// <summary>
+    /// The most body this request may carry, in bytes, or null for no limit. Starts at
+    /// <see cref="HttpServerLimits.MaxRequestBodySize"/>; routing then applies the endpoint's own
+    /// limit (<c>WithRequestSizeLimit</c>, <c>[RequestSizeLimit]</c>) before the handler runs.
+    /// <para>
+    /// The limit is checked as the body is read, not when the request arrives, so it can still be
+    /// changed by anything that runs first — a middleware that raises it for one path, say. Once the
+    /// body has started to be read it is fixed, and setting it throws; see
+    /// <see cref="IsMaxBodySizeReadOnly"/>. A body over the limit fails the read with a 413.
+    /// </para>
+    /// </summary>
+    public long? MaxBodySize
+    {
+        get => this.maxBodySize;
+        set
+        {
+            if (this.maxBodySizeLocked)
+                throw new InvalidOperationException(
+                    "The request body size limit cannot be changed once the body has started to be read."
+                );
+
+            if (value < 0)
+                throw new ArgumentOutOfRangeException(nameof(value), "The request body size limit cannot be negative.");
+
+            this.maxBodySize = value;
+        }
+    }
+
+    /// <summary>
+    /// True once <see cref="MaxBodySize"/> can no longer change: the body has started to be read, or
+    /// the protocol had to receive the whole body before the request was dispatched (HTTP/3, today).
+    /// </summary>
+    public bool IsMaxBodySizeReadOnly => this.maxBodySizeLocked;
+
+    /// <summary>Set by the protocol before the pipeline runs.</summary>
+    internal void InitializeMaxBodySize(long? limit, bool readOnly = false)
+    {
+        this.maxBodySize = limit;
+        this.maxBodySizeLocked = readOnly;
+    }
+
+    /// <summary>Fixes the limit for the read that is about to start, and returns it.</summary>
+    internal long? LockMaxBodySize()
+    {
+        this.maxBodySizeLocked = true;
+        return this.maxBodySize;
+    }
+
     /// <summary>True when a body is present (either a positive Content-Length or chunked).</summary>
     public bool HasBody => this.IsChunked || this.ContentLength > 0 || this.BodyDecoded || this.BodyWithoutLength;
 
@@ -129,6 +179,8 @@ public sealed class HttpRequest
         this.BodyWithoutLength = false;
         this.body = null;
         this.bodyReader = null;
+        this.maxBodySize = null;
+        this.maxBodySizeLocked = false;
         this.Headers.Reset();
         this.Query.Reset();
         this.Cookies.Reset();

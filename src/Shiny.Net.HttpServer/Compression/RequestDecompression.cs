@@ -54,8 +54,9 @@ public sealed class RequestDecompressionOptions
     /// <para>
     /// This is the whole reason inbound decompression needs a switch: a few hundred kilobytes of
     /// gzip expands to gigabytes if it was built to, and a phone has neither the memory nor the
-    /// battery to find out. Defaults to <see cref="HttpServerLimits.MaxRequestBodySize"/>, which
-    /// otherwise only bounds the compressed bytes on the wire.
+    /// battery to find out. Defaults to the request's <see cref="HttpRequest.MaxBodySize"/> — the
+    /// server-wide <see cref="HttpServerLimits.MaxRequestBodySize"/>, or the endpoint's own limit —
+    /// which otherwise only bounds the compressed bytes on the wire.
     /// </para>
     /// </summary>
     public long? MaxDecompressedBytes { get; set; }
@@ -92,9 +93,18 @@ public sealed class RequestDecompressionOptions
 /// app.UseRequestDecompression();
 /// </code>
 /// </summary>
-public sealed class RequestDecompressionMiddleware(RequestDecompressionOptions options, HttpServerLimits? limits = null) : IHttpMiddleware
+public sealed class RequestDecompressionMiddleware : IHttpMiddleware
 {
-    readonly RequestDecompressionOptions options = options ?? throw new ArgumentNullException(nameof(options));
+    readonly RequestDecompressionOptions options;
+
+    /// <param name="options">What to accept, and how far it may expand.</param>
+    /// <param name="limits">
+    /// No longer consulted: without <see cref="RequestDecompressionOptions.MaxDecompressedBytes"/> the
+    /// request's own <see cref="HttpRequest.MaxBodySize"/> applies, which already starts at the
+    /// server-wide limit and follows the endpoint's. Kept so existing calls compile.
+    /// </param>
+    public RequestDecompressionMiddleware(RequestDecompressionOptions options, HttpServerLimits? limits = null)
+        => this.options = options ?? throw new ArgumentNullException(nameof(options));
 
     public async ValueTask InvokeAsync(HttpContext context, RequestDelegate next)
     {
@@ -130,10 +140,8 @@ public sealed class RequestDecompressionMiddleware(RequestDecompressionOptions o
             return;
         }
 
-        var limit = this.options.MaxDecompressedBytes ?? limits?.MaxRequestBodySize;
         var decompressed = provider.CreateStream(context.Request.Body);
-
-        context.Request.Body = limit is { } max ? new BoundedReadStream(decompressed, max) : decompressed;
+        context.Request.Body = new BoundedReadStream(decompressed, this.options.MaxDecompressedBytes, context.Request);
 
         // The header describes bytes that are no longer there. Leaving either in place would have
         // a handler read a Content-Length that does not match what it can read, which is worse
@@ -166,10 +174,16 @@ public sealed class RequestDecompressionMiddleware(RequestDecompressionOptions o
 /// <summary>
 /// A read stream that refuses to hand out more than it was told to. What stands between a 200KB
 /// upload and the 10GB it decompresses to.
+/// <para>
+/// Without a limit of its own it takes the request's, settled after the first read — by which point
+/// routing has applied the endpoint's limit and the transport has fixed it.
+/// </para>
 /// </summary>
-sealed class BoundedReadStream(Stream inner, long limit) : Stream
+sealed class BoundedReadStream(Stream inner, long? fixedLimit, HttpRequest request) : Stream
 {
     long read;
+    long? limit;
+    bool resolved;
 
     public override bool CanRead => true;
     public override bool CanSeek => false;
@@ -197,9 +211,15 @@ sealed class BoundedReadStream(Stream inner, long limit) : Stream
     {
         this.read += count;
 
-        if (this.read > limit)
+        if (!this.resolved)
+        {
+            this.resolved = true;
+            this.limit = fixedLimit ?? request.MaxBodySize;
+        }
+
+        if (this.limit is { } max && this.read > max)
             throw new BadHttpRequestException(
-                $"The decompressed request body exceeded {limit} bytes.",
+                $"The decompressed request body exceeded {max} bytes.",
                 StatusCodes.Status413PayloadTooLarge
             );
 

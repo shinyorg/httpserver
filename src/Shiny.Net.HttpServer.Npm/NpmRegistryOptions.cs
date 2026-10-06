@@ -51,7 +51,8 @@ public sealed class NpmRegistryOptions
     /// <summary>
     /// Largest tarball a publish accepts. Default 100 MB. npm sends it base64-encoded inside JSON,
     /// a third larger, and the server's <see cref="HttpServerLimits.MaxRequestBodySize"/> (30 MB by
-    /// default) is checked first - raise that too for big packages.
+    /// default) is checked first - raise it for the registry's write routes for big packages:
+    /// <c>.ForWrites(r =&gt; r.WithRequestSizeLimit(...))</c> on what <c>MapNpmRegistry</c> returns.
     /// </summary>
     public long MaxTarballSize { get; set; } = 100L * 1024 * 1024;
 

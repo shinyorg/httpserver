@@ -16,7 +16,7 @@ namespace Shiny.Net.HttpServer.Http1;
 /// keeps a busy keep-alive connection close to allocation-free.
 /// </para>
 /// </summary>
-sealed class Http1Connection
+sealed class Http1Connection : IRequestBodyStart
 {
     readonly IConnection connection;
     readonly HttpServerOptions options;
@@ -27,6 +27,10 @@ sealed class Http1Connection
     readonly HttpContext context = new();
     readonly Http1RequestParser parser = new();
     readonly Http1OutputProducer output;
+
+    // The client asked for 100 Continue and has not had it yet. Sent when the body is first read,
+    // so a request refused before then — unauthorized, unrouted, over its limit — never sends it.
+    bool continuePending;
 
     public Http1Connection(
         IConnection connection,
@@ -237,11 +241,12 @@ sealed class Http1Connection
         {
             this.ValidateHost(request);
             this.ApplyForwardedHeaders();
+            request.InitializeMaxBodySize(this.options.Limits.MaxRequestBodySize);
             var bodyStream = this.CreateRequestBodyStream(request);
             request.Body = bodyStream;
             request.Cookies.SetRaw(request.Headers.GetFirst(HeaderNames.Cookie));
 
-            await this.SendContinueIfExpectedAsync(request, connectionToken).ConfigureAwait(false);
+            this.continuePending = bodyStream is not EmptyReadStream && ExpectsContinue(request);
             await this.RunPipelineAsync().ConfigureAwait(false);
             await this.output.CompleteAsync(connectionToken).ConfigureAwait(false);
 
@@ -251,6 +256,11 @@ sealed class Http1Connection
                 return false;
 
             if (!this.output.AllowsKeepAlive)
+                return false;
+
+            // A client still waiting for 100 Continue may or may not send its body now that it has a
+            // final response (RFC 9110 §10.1.1). Not knowing which, the connection cannot be reused.
+            if (this.continuePending)
                 return false;
 
             // Unread body bytes would be misparsed as the head of the next request, so either
@@ -412,10 +422,12 @@ sealed class Http1Connection
                 "Request specifies both Transfer-Encoding: chunked and Content-Length."
             );
 
+        // The size limit is not checked here: routing has not run yet, and the endpoint may allow
+        // more (or less) than the server default. The stream checks it when the body is first read.
         if (isChunked)
         {
             request.IsChunked = true;
-            return new ChunkedReadStream(this.connection.Input, this.options.Limits.MaxRequestBodySize);
+            return new ChunkedReadStream(this.connection.Input, maxBodySize: null, start: this);
         }
 
         if (!hasContentLength)
@@ -424,25 +436,42 @@ sealed class Http1Connection
         var contentLength = request.Headers.ContentLength
             ?? throw new BadHttpRequestException("Malformed Content-Length header.");
 
-        if (this.options.Limits.MaxRequestBodySize is { } max && contentLength > max)
-            throw new BadHttpRequestException(
-                $"Request body of {contentLength} bytes exceeds the {max} byte limit.",
-                StatusCodes.Status413PayloadTooLarge
-            );
-
         return contentLength == 0
             ? EmptyReadStream.Instance
-            : new ContentLengthReadStream(this.connection.Input, contentLength);
+            : new ContentLengthReadStream(this.connection.Input, contentLength, this);
     }
 
-    async ValueTask SendContinueIfExpectedAsync(HttpRequest request, CancellationToken cancellationToken)
-    {
-        var expect = request.Headers.GetFirst(HeaderNames.Expect);
-        if (expect is null || !expect.Contains("100-continue", StringComparison.OrdinalIgnoreCase))
-            return;
+    static bool ExpectsContinue(HttpRequest request)
+        => request.Headers.GetFirst(HeaderNames.Expect) is { } expect
+            && expect.Contains("100-continue", StringComparison.OrdinalIgnoreCase);
 
-        // Sent eagerly rather than on first body read. Slightly less precise than the spec's intent,
-        // but it keeps clients that block waiting for it from stalling for a full round of timeouts.
+    /// <summary>
+    /// Called by the body stream just before its first read: fixes the size limit, and sends the
+    /// 100 Continue the client may be waiting on — unless the declared length is already over the
+    /// limit, in which case the read is about to fail with a 413 and the body is better never sent.
+    /// </summary>
+    async ValueTask<long?> IRequestBodyStart.StartAsync(CancellationToken cancellationToken)
+    {
+        var request = this.context.Request;
+        var max = request.LockMaxBodySize();
+
+        if (this.continuePending)
+        {
+            this.continuePending = false;
+
+            var refused = max is { } limit && request.ContentLength > limit;
+
+            // Once the response has started a 100 would land in the middle of it, and a client that
+            // already has a final response has stopped waiting for one anyway.
+            if (!refused && !this.output.HasStarted)
+                await this.SendContinueAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        return max;
+    }
+
+    async ValueTask SendContinueAsync(CancellationToken cancellationToken)
+    {
         var writer = this.connection.Output;
         var span = writer.GetSpan(25);
         "HTTP/1.1 100 Continue\r\n\r\n"u8.CopyTo(span);

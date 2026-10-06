@@ -308,7 +308,15 @@ public sealed class HttpServerLimits
     /// <summary>Maximum number of headers on a single request.</summary>
     public int MaxRequestHeaderCount { get; set; } = 100;
 
-    /// <summary>Maximum request body size. Null removes the limit.</summary>
+    /// <summary>
+    /// The default maximum request body size, 30 MB. Null removes the limit.
+    /// <para>
+    /// Every request starts with this as its <see cref="HttpRequest.MaxBodySize"/>. An endpoint can
+    /// raise, lower or remove it for itself — <c>WithRequestSizeLimit</c>, <c>DisableRequestSizeLimit</c>,
+    /// <c>[RequestSizeLimit]</c> — and a body over the limit that applies is refused with a 413 when
+    /// it is read. HTTP/3 receives the whole body before routing, so it is always held to this value.
+    /// </para>
+    /// </summary>
     public long? MaxRequestBodySize { get; set; } = 30 * 1024 * 1024;
 
     /// <summary>How long a connection may stay idle between requests before it is closed.</summary>

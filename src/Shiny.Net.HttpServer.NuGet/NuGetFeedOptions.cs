@@ -61,7 +61,8 @@ public sealed class NuGetFeedOptions
     /// <summary>
     /// Largest <c>.nupkg</c> a push accepts. Default 250 MB, nuget.org's limit. The server's own
     /// <see cref="HttpServerLimits.MaxRequestBodySize"/> (30 MB by default) applies first, so raise
-    /// that too if packages are bigger.
+    /// it for the feed's write routes if packages are bigger -
+    /// <c>.ForWrites(r =&gt; r.WithRequestSizeLimit(...))</c> on what <c>MapNuGetFeed</c> returns.
     /// </summary>
     public long MaxPackageSize { get; set; } = 250L * 1024 * 1024;
 

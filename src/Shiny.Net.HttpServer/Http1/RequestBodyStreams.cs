@@ -3,6 +3,17 @@ using System.IO.Pipelines;
 
 namespace Shiny.Net.HttpServer.Http1;
 
+/// <summary>
+/// What a body stream calls once, just before it reads the first byte. The connection uses it to fix
+/// the request's size limit — which routing may have changed since the request arrived — and to send
+/// a deferred <c>100 Continue</c>.
+/// </summary>
+interface IRequestBodyStart
+{
+    /// <summary>Returns the size limit that applies to the body about to be read.</summary>
+    ValueTask<long?> StartAsync(CancellationToken cancellationToken);
+}
+
 /// <summary>Base for read-only, forward-only request body streams.</summary>
 abstract class ReadOnlyRequestStream : Stream
 {
@@ -63,12 +74,18 @@ sealed class EmptyReadStream : ReadOnlyRequestStream
 sealed class ContentLengthReadStream : ReadOnlyRequestStream
 {
     readonly PipeReader reader;
+    readonly long length;
+    readonly IRequestBodyStart? start;
     long remaining;
+    bool started;
 
-    public ContentLengthReadStream(PipeReader reader, long length)
+    public ContentLengthReadStream(PipeReader reader, long length, IRequestBodyStart? start = null)
     {
         this.reader = reader;
+        this.length = length;
         this.remaining = length;
+        this.start = start;
+        this.started = start is null;
     }
 
     public override async ValueTask<int> ReadAsync(
@@ -78,6 +95,19 @@ sealed class ContentLengthReadStream : ReadOnlyRequestStream
     {
         if (this.remaining == 0 || buffer.IsEmpty)
             return 0;
+
+        if (!this.started)
+        {
+            // The declared length is known up front, so an oversized body is refused before a byte
+            // of it is read — which, with a deferred 100 Continue, means before it is even sent.
+            this.started = true;
+
+            if (await this.start!.StartAsync(cancellationToken).ConfigureAwait(false) is { } max && this.length > max)
+                throw new BadHttpRequestException(
+                    $"Request body of {this.length} bytes exceeds the {max} byte limit.",
+                    StatusCodes.Status413PayloadTooLarge
+                );
+        }
 
         while (true)
         {
@@ -107,6 +137,16 @@ sealed class ContentLengthReadStream : ReadOnlyRequestStream
 
     public override async ValueTask<bool> TryDrainAsync(CancellationToken cancellationToken)
     {
+        if (!this.started && this.remaining > 0)
+        {
+            // Nobody read the body. Draining one larger than the limit would mean accepting exactly
+            // what the limit exists to refuse, so give up on the connection instead.
+            this.started = true;
+
+            if (await this.start!.StartAsync(cancellationToken).ConfigureAwait(false) is { } max && this.length > max)
+                return false;
+        }
+
         while (this.remaining > 0)
         {
             var result = await this.reader.ReadAsync(cancellationToken).ConfigureAwait(false);
@@ -142,15 +182,22 @@ sealed class ChunkedReadStream : ReadOnlyRequestStream
     }
 
     readonly PipeReader reader;
-    readonly long? maxBodySize;
+    readonly IRequestBodyStart? start;
+    long? maxBodySize;
+    bool started;
     ChunkState state = ChunkState.Size;
     long chunkRemaining;
     long totalRead;
 
-    public ChunkedReadStream(PipeReader reader, long? maxBodySize)
+    /// <param name="reader">The connection's input.</param>
+    /// <param name="maxBodySize">A fixed limit, used when there is no <paramref name="start"/>.</param>
+    /// <param name="start">Settles the limit when the body is first read, replacing <paramref name="maxBodySize"/>.</param>
+    public ChunkedReadStream(PipeReader reader, long? maxBodySize, IRequestBodyStart? start = null)
     {
         this.reader = reader;
         this.maxBodySize = maxBodySize;
+        this.start = start;
+        this.started = start is null;
     }
 
     public override async ValueTask<int> ReadAsync(
@@ -160,6 +207,12 @@ sealed class ChunkedReadStream : ReadOnlyRequestStream
     {
         if (buffer.IsEmpty)
             return 0;
+
+        if (!this.started)
+        {
+            this.started = true;
+            this.maxBodySize = await this.start!.StartAsync(cancellationToken).ConfigureAwait(false);
+        }
 
         while (true)
         {

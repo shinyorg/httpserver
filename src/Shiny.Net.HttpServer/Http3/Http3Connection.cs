@@ -228,6 +228,10 @@ sealed class Http3Connection(
                 return;
             }
 
+            // The whole body was received, under the server-wide limit, before the request could be
+            // dispatched — so the limit is reported, but an endpoint can no longer change it.
+            context.Request.InitializeMaxBodySize(serverOptions.Limits.MaxRequestBodySize, readOnly: true);
+
             var output = new Http3ResponseBodyControl(stream, context.Response, this.encoder);
             context.Response.Bind(output);
 

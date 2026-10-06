@@ -15,7 +15,8 @@ public sealed class TusOptions
     /// <para>
     /// This is the whole file. Each <c>PATCH</c> is separately bounded by the server's
     /// <see cref="HttpServerLimits.MaxRequestBodySize"/>, so a client that sends a big file in one
-    /// request needs a chunk size below that - tus-js-client's <c>chunkSize</c>, for example.
+    /// request needs a chunk size below that - tus-js-client's <c>chunkSize</c>, for example - or
+    /// the tus routes need a higher limit of their own, set with <c>WithRequestSizeLimit</c>.
     /// </para>
     /// </summary>
     public long? MaxSize { get; set; }

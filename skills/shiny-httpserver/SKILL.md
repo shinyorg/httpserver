@@ -89,6 +89,12 @@ triggers:
 - UseRequestTimeouts
 - RequestTimeout
 - DisableRequestTimeout
+- MaxRequestBodySize
+- MaxBodySize
+- RequestSizeLimit
+- DisableRequestSizeLimit
+- WithRequestSizeLimit
+- 413 Payload Too Large
 - UseOutputCache
 - CacheOutput
 - OutputCache
@@ -693,7 +699,9 @@ the OS pick; read it back from `server.ListenUrl`.
 ### Defaults worth knowing
 
 - Binds **loopback** by default. Set `Address = IPAddress.Any` for LAN access — deliberately.
-- `Limits.MaxRequestBodySize` is 30 MB; raise it for uploads.
+- `Limits.MaxRequestBodySize` is 30 MB, the default for every route. For uploads, raise it **on the
+  upload route** (`.WithRequestSizeLimit(bytes)` / `[RequestSizeLimit(bytes)]`), not server-wide —
+  see Content. HTTP/3 is always held to the server-wide value.
 - `HideExceptionDetails` is on; turn it off in development only.
 
 ### Behind a TCP load balancer: PROXY protocol
@@ -1317,6 +1325,22 @@ new ZipFileSource("./site.zip", "wwwroot");         // zipped with its parent fo
 - Uploads: `await foreach (var part in ctx.Request.ReadMultipartAsync(ct))` and
   `part.SafeFileName()` (never `part.FileName` — traversal). `ReadFormAsync` buffers; use it only for
   small fields.
+- Body size: keep the server-wide `Limits.MaxRequestBodySize` small and give the upload route its own
+  limit. This is route metadata, so it belongs to tier 1 (route builder) and tier 3 (attributes):
+
+  ```csharp
+  app.MapPost("/images", Upload).WithRequestSizeLimit(500 * 1024 * 1024);   // tier 1
+  app.MapPut("/backups/{name}", Restore).DisableRequestSizeLimit();         // no limit
+
+  [Post("/images")] [RequestSizeLimit(500 * 1024 * 1024)]                   // tier 3
+  public Task<IActionResult> Upload(HttpContext ctx) => ...;
+  ```
+
+  Routing applies it before authorization and the handler run. Middleware ahead of routing can set
+  `ctx.Request.MaxBodySize` instead. It can't change once the body has started to be read
+  (`IsMaxBodySizeReadOnly`; setting it then throws). Over the limit is a 413 when the body is read,
+  never a truncated read. HTTP/1.1 sends `100 Continue` only when the body is first read. The
+  per-route limit has no effect on HTTP/3, which is held to the server-wide value.
 - Downloads: `FileDownloadResult.FromFile(...)` gives ranges, ETags and conditional GETs.
 
 ### WebDAV — a directory as a mountable drive
@@ -1420,7 +1444,7 @@ app.UseCors(p => p.WithOrigins("https://app.example.com").WithTusHeaders()); // 
 
 - Do not hand-roll chunked or resumable uploads with `MapPost`. Use this.
 - Each PATCH is bounded by `Limits.MaxRequestBodySize` (30 MB). Tell the client to use a smaller
-  chunk size (tus-js-client `chunkSize`), or raise the limit.
+  chunk size (tus-js-client `chunkSize`), or give the tus routes their own `WithRequestSizeLimit`.
 - Metadata values are client input: `ctx.Metadata["filename"]` is text, never a path to write to.
 - A custom `ITusStore.AppendAsync` must keep the bytes when the stream ends early and roll back
   when the stream throws. Throw `TusException(409)` for a wrong offset and `TusException(404)` for a
@@ -1461,8 +1485,8 @@ app.MapNuGetFeed("/nuget", o =>
   adds authorization.
 - NuGet refuses plain-HTTP sources unless `allowInsecureConnections="true"` is set on the source. On a
   public host, serve it with TLS or ACME.
-- Push size: `MaxPackageSize` (250 MB) **and** `Limits.MaxRequestBodySize` (30 MB) both apply. Raise
-  the server limit for big packages.
+- Push size: `MaxPackageSize` (250 MB) **and** `Limits.MaxRequestBodySize` (30 MB) both apply. For big
+  packages raise it on the write routes only: `.ForWrites(r => r.WithRequestSizeLimit(250 * 1024 * 1024))`.
 - Behind a proxy that rewrites the host, set `PublicBaseUrl`. Every link in the protocol is absolute.
 - `DiskNuGetPackageStore` uses NuGet's own folder-feed layout (`{id}/{version}/{id}.{version}.nupkg`),
   so the directory is also a local source and can be seeded by copying files in (call `Reload()`).
@@ -1502,7 +1526,8 @@ app.MapNpmRegistry("/npm", o =>
   not cached. Tarball requests for public packages come back here (npm's replace-registry-host)
   and are passed on as well.
 - Publish bodies are base64 JSON, a third larger than the tarball. `Limits.MaxRequestBodySize`
-  (30 MB) applies before `MaxTarballSize` (100 MB).
+  (30 MB) applies before `MaxTarballSize` (100 MB). Raise it on the write routes only:
+  `.ForWrites(r => r.WithRequestSizeLimit(150 * 1024 * 1024))`.
 - Errors are npm-style `{"error": "..."}` bodies, not problem details. Do not wrap them.
 - Not supported: upstream caching, web login, 2FA/OTP, orgs/teams, provenance. Do not promise them.
 
@@ -1548,7 +1573,7 @@ await sync.RunAsync(ct);                 // continuous: long-poll + FileSystemWa
 - Every client should use the same chunk sizes, or their uploads will not deduplicate.
   `AverageChunkSize` must be a power of two.
 - Pack uploads through `PUT chunks/pack` (non-tus) are bounded by `Limits.MaxRequestBodySize`
-  (30 MB). Client packs default to 8 MB.
+  (30 MB) unless the route raises it with `WithRequestSizeLimit`. Client packs default to 8 MB.
 - Not supported: version history/restore, empty-folder sync, sharing between accounts, selective
   sync, a browser client. Do not promise them.
 - The routes are excluded from OpenAPI. Do not describe them.
@@ -2459,7 +2484,8 @@ anything about how the OS frames bytes.
 
 The generator also emits metadata for `[RequestTimeout]`, `[DisableRequestTimeout]`, `[OutputCache]`,
 `[NoOutputCache]`, `[ValidateAntiforgery]`, `[DisableAntiforgery]`, `[Idempotent]`, `[DisableIdempotency]`,
-`[ContentDigest]`, `[DisableContentDigest]`, `[RequireWebhookSignature]` and `[ApiVersion]`/`[MapToApiVersion]`/
+`[ContentDigest]`, `[DisableContentDigest]`, `[RequireWebhookSignature]`, `[RequestSizeLimit]`,
+`[DisableRequestSizeLimit]` and `[ApiVersion]`/`[MapToApiVersion]`/
 `[ApiVersionNeutral]`, exactly as it does for
 `[Authorize]`, `[EnableCors]`, `[EnableRateLimiting]` and `[RequireIpFilter]` — a method's attribute
 replaces the class's, and a `Disable` anywhere wins.
@@ -2490,8 +2516,10 @@ replaces the class's, and a `Disable` anywhere wins.
 12. **A request timeout is cancellation, not a kill.** Pass `ctx.RequestAborted` into the slow work
     or the timeout only changes what the client sees.
 13. **Never cache a response for an authenticated caller** without adding the identity to the key.
-14. **Prefer the in-memory harness for endpoint tests**, and a real socket for anything about the
+14. **Raise the body limit on the route that needs it**, not server-wide: `WithRequestSizeLimit` /
+    `[RequestSizeLimit]` on the upload, a small `Limits.MaxRequestBodySize` everywhere else.
+15. **Prefer the in-memory harness for endpoint tests**, and a real socket for anything about the
     socket.
-15. **Subscribe to `StateTransitioned`, not `StateChanged`, when the app has to report why the server
+16. **Subscribe to `StateTransitioned`, not `StateChanged`, when the app has to report why the server
     stopped.** `StateChanged` cannot tell "the user switched it off" from "the listener died", and on
     a device that distinction is the whole bug report. Treat `Reason == Restarting` as *not* down.

@@ -555,6 +555,7 @@ sealed class Http2Connection
     async Task RunStreamAsync(Http2Stream stream, List<HeaderField> fields)
     {
         var context = new HttpContext();
+        Http2ResponseBodyControl? output = null;
 
         try
         {
@@ -571,14 +572,31 @@ sealed class Http2Connection
                 return;
             }
 
-            var output = new Http2ResponseBodyControl(this, stream, context.Response);
+            context.Request.InitializeMaxBodySize(this.options.Limits.MaxRequestBodySize);
+
+            output = new Http2ResponseBodyControl(this, stream, context.Response);
             context.Response.Bind(output);
 
             await this.RunPipelineAsync(context).ConfigureAwait(false);
             await output.CompleteAsync(context.RequestAborted).ConfigureAwait(false);
+            await this.StopUnreadBodyAsync(stream).ConfigureAwait(false);
         }
         catch (Exception ex) when (IsDisconnect(ex))
         {
+        }
+        catch (BadHttpRequestException ex) when (output is { HasStarted: false })
+        {
+            // The client's fault, not the server's — a body over its limit, today. It gets a real
+            // status rather than the INTERNAL_ERROR reset below.
+            this.logger.LogDebug("Rejected HTTP/2 stream {StreamId}: {Message}", stream.Id, ex.Message);
+
+            try
+            {
+                await this.WriteErrorResponseAsync(stream, context, ex).ConfigureAwait(false);
+            }
+            catch
+            {
+            }
         }
         catch (Exception ex)
         {
@@ -595,9 +613,38 @@ sealed class Http2Connection
         finally
         {
             this.streams.TryRemove(stream.Id, out _);
+
+            // Nothing will read the rest of the body now. Completing the reader lets a read loop
+            // parked on this stream's full pipe carry on; DATA still in flight is dropped.
+            stream.RequestBodyReader.Complete();
             stream.Dispose();
         }
     }
+
+    async ValueTask WriteErrorResponseAsync(Http2Stream stream, HttpContext context, BadHttpRequestException exception)
+    {
+        var response = context.Response;
+        response.Reset();
+
+        var output = new Http2ResponseBodyControl(this, stream, response);
+        response.Bind(output);
+        response.StatusCode = exception.StatusCode;
+
+        await response.WriteTextAsync(exception.Message, cancellationToken: CancellationToken.None).ConfigureAwait(false);
+        await output.CompleteAsync(CancellationToken.None).ConfigureAwait(false);
+        await this.StopUnreadBodyAsync(stream).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// The response is complete but the client is still sending a body nobody will read. Without
+    /// this it waits for flow-control credit that never comes, since a finished stream's DATA no
+    /// longer earns any. NO_ERROR after a complete response tells it to stop without failing the
+    /// request (RFC 9113 §8.1).
+    /// </summary>
+    ValueTask StopUnreadBodyAsync(Http2Stream stream)
+        => stream.State == Http2StreamState.Open
+            ? this.SendRstStreamAsync(stream.Id, Http2ErrorCode.NoError, CancellationToken.None)
+            : ValueTask.CompletedTask;
 
     async Task RunPipelineAsync(HttpContext context)
     {

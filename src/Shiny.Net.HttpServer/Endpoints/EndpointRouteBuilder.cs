@@ -89,6 +89,17 @@ public sealed class RouteEndpointBuilder(RouteEndpoint endpoint)
         return this;
     }
 
+    /// <summary>
+    /// Overrides <see cref="HttpServerLimits.MaxRequestBodySize"/> for this route. HTTP/3 stays bound
+    /// by the server-wide limit.
+    /// </summary>
+    public RouteEndpointBuilder WithRequestSizeLimit(long bytes)
+        => this.WithMetadata(new RequestSizeLimitAttribute(bytes));
+
+    /// <summary>Removes the request body limit from this route. HTTP/3 stays bound by the server-wide limit.</summary>
+    public RouteEndpointBuilder DisableRequestSizeLimit()
+        => this.WithMetadata(new DisableRequestSizeLimitAttribute());
+
     /// <summary>Describes the route for the OpenAPI document.</summary>
     public RouteEndpointBuilder Describe(Action<ApiOperation> configure)
     {

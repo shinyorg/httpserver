@@ -156,6 +156,17 @@ static class TypeAnalysis
             ? value
             : null;
 
+    /// <summary>Reads a constructor argument that is a long, e.g. <c>[RequestSizeLimit(500_000_000)]</c>.</summary>
+    public static long? GetConstructorLong(this AttributeData attribute, int index)
+        => attribute.ConstructorArguments.Length > index
+            ? attribute.ConstructorArguments[index].Value switch
+            {
+                long value => value,
+                int value => value,
+                _ => null
+            }
+            : null;
+
     /// <summary>Reads a named argument that is a number, e.g. <c>[OutputCache(Seconds = 30)]</c>.</summary>
     public static int? GetNamedInt(this AttributeData attribute, string name)
         => attribute.NamedArguments.FirstOrDefault(a => a.Key == name).Value.Value is int value ? value : null;

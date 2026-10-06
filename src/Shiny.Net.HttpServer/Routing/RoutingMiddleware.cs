@@ -47,6 +47,13 @@ sealed class RoutingMiddleware(Router router, RequestDelegate fallback, RequestD
             }
 
             context.Endpoint = endpoint;
+
+            // Applied before anything after routing can read the body. Already read-only means a
+            // middleware ahead of routing read it (or HTTP/3 had to), and the limit that applied
+            // then is the one that held.
+            if (endpoint.GetMetadata<IRequestSizeLimitMetadata>() is { } sizeLimit && !request.IsMaxBodySizeReadOnly)
+                request.MaxBodySize = sizeLimit.MaxBodySize;
+
             await endpointPipeline(context).ConfigureAwait(false);
             return;
         }

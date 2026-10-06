@@ -43,6 +43,8 @@ public sealed class EndpointGenerator : IIncrementalGenerator
     const string AllowAnyIpAttributeName = "Shiny.Net.HttpServer.AllowAnyIpAttribute";
     const string RequestTimeoutAttributeName = "Shiny.Net.HttpServer.RequestTimeoutAttribute";
     const string DisableRequestTimeoutAttributeName = "Shiny.Net.HttpServer.DisableRequestTimeoutAttribute";
+    const string RequestSizeLimitAttributeName = "Shiny.Net.HttpServer.RequestSizeLimitAttribute";
+    const string DisableRequestSizeLimitAttributeName = "Shiny.Net.HttpServer.DisableRequestSizeLimitAttribute";
     const string OutputCacheAttributeName = "Shiny.Net.HttpServer.OutputCacheAttribute";
     const string NoOutputCacheAttributeName = "Shiny.Net.HttpServer.NoOutputCacheAttribute";
     const string ValidateAntiforgeryAttributeName = "Shiny.Net.HttpServer.ValidateAntiforgeryAttribute";
@@ -433,11 +435,13 @@ public sealed class EndpointGenerator : IIncrementalGenerator
 
         var idempotencyDisabled = HasAttribute(DisableIdempotencyAttributeName);
         var digestDisabled = HasAttribute(DisableContentDigestAttributeName);
+        var sizeLimitDisabled = HasAttribute(DisableRequestSizeLimitAttributeName);
 
         var timeout = timeoutDisabled ? null : Nearest(RequestTimeoutAttributeName);
         var cache = cacheDisabled ? null : Nearest(OutputCacheAttributeName);
         var idempotent = idempotencyDisabled ? null : Nearest(IdempotentAttributeName);
         var digest = digestDisabled ? null : Nearest(ContentDigestAttributeName);
+        var sizeLimit = sizeLimitDisabled ? null : Nearest(RequestSizeLimitAttributeName);
 
         var model = new EndpointPolicyModel(
             corsDisabled ? null : PolicyName(EnableCorsAttributeName),
@@ -468,7 +472,9 @@ public sealed class EndpointGenerator : IIncrementalGenerator
             digest?.GetNamedBool("RequireRequestDigest") ?? false,
             digest?.GetNamedBool("AlwaysEmitResponseDigest") ?? true,
             digestDisabled,
-            WebhookVerifierName()
+            WebhookVerifierName(),
+            sizeLimit?.GetConstructorLong(0),
+            sizeLimitDisabled
         );
 
         return model.HasAny ? model : EndpointPolicyModel.None;

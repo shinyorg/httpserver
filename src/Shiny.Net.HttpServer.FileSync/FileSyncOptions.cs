@@ -29,8 +29,8 @@ public sealed class FileSyncOptions
 
     /// <summary>
     /// Largest pack accepted, through tus or a plain <c>PUT</c>. Default 64 MB. A plain <c>PUT</c> is
-    /// also bounded by <see cref="HttpServerLimits.MaxRequestBodySize"/> (30 MB by default); tus
-    /// splits a pack into requests below it.
+    /// also bounded by <see cref="HttpServerLimits.MaxRequestBodySize"/> (30 MB by default), unless
+    /// the route raises it with <c>WithRequestSizeLimit</c>; tus splits a pack into requests below it.
     /// </summary>
     public long MaxPackSize { get; set; } = 64L * 1024 * 1024;
 

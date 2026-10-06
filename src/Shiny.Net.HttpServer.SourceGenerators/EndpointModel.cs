@@ -115,7 +115,9 @@ sealed record EndpointPolicyModel(
     bool ContentDigestRequireRequest,
     bool ContentDigestAlwaysEmit,
     bool ContentDigestDisabled,
-    string? WebhookVerifier = null
+    string? WebhookVerifier = null,
+    long? RequestSizeLimit = null,
+    bool RequestSizeLimitDisabled = false
 ) : IEquatable<EndpointPolicyModel>
 {
     public static readonly EndpointPolicyModel None = new(
@@ -143,6 +145,8 @@ sealed record EndpointPolicyModel(
 
     public bool HasContentDigest => this.ContentDigest || this.ContentDigestDisabled;
 
+    public bool HasRequestSizeLimit => this.RequestSizeLimitDisabled || this.RequestSizeLimit is not null;
+
     public bool HasAny
         => this.HasCors
             || this.HasRateLimit
@@ -152,7 +156,8 @@ sealed record EndpointPolicyModel(
             || this.HasAntiforgery
             || this.HasWebhook
             || this.HasIdempotency
-            || this.HasContentDigest;
+            || this.HasContentDigest
+            || this.HasRequestSizeLimit;
 }
 
 /// <summary>What <c>[Authorize]</c> and <c>[AllowAnonymous]</c> on a class and method add up to.</summary>

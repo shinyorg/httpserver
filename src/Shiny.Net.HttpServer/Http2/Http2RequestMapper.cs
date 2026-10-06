@@ -137,7 +137,7 @@ static class Http2RequestMapper
         }
 
         request.Cookies.SetRaw(JoinCookies(request));
-        request.Body = new Http2RequestBodyStream(stream.RequestBodyReader);
+        request.Body = new Http2RequestBodyStream(stream.RequestBodyReader, request);
         request.BodyWithoutLength = stream.HasRequestBody && request.ContentLength is null;
 
         error = null;
@@ -164,9 +164,16 @@ static class Http2RequestMapper
         or "keep-alive" or "upgrade" or "proxy-connection" or "te";
 }
 
-/// <summary>The request body, read from the pipe the connection's read loop fills.</summary>
-sealed class Http2RequestBodyStream(PipeReader reader) : Stream
+/// <summary>
+/// The request body, read from the pipe the connection's read loop fills. Enforces the request's
+/// size limit as it reads — fixed at the first read, so routing can still change it.
+/// </summary>
+sealed class Http2RequestBodyStream(PipeReader reader, HttpRequest request) : Stream
 {
+    bool started;
+    long? maxBodySize;
+    long totalRead;
+
     public override bool CanRead => true;
     public override bool CanSeek => false;
     public override bool CanWrite => false;
@@ -183,6 +190,17 @@ sealed class Http2RequestBodyStream(PipeReader reader) : Stream
         if (buffer.IsEmpty)
             return 0;
 
+        if (!this.started)
+        {
+            this.started = true;
+            this.maxBodySize = request.LockMaxBodySize();
+
+            // Content-Length is optional in HTTP/2, but when it is there an oversized body can be
+            // refused before any of it is read.
+            if (this.maxBodySize is { } max && request.ContentLength > max)
+                throw TooLarge(max);
+        }
+
         while (true)
         {
             var result = await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
@@ -193,6 +211,10 @@ sealed class Http2RequestBodyStream(PipeReader reader) : Stream
                 var take = (int)Math.Min(available.Length, buffer.Length);
                 available.Slice(0, take).CopyTo(buffer.Span);
                 reader.AdvanceTo(available.GetPosition(take));
+
+                this.totalRead += take;
+                if (this.maxBodySize is { } max && this.totalRead > max)
+                    throw TooLarge(max);
 
                 return take;
             }
@@ -206,6 +228,11 @@ sealed class Http2RequestBodyStream(PipeReader reader) : Stream
 
     public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
         => this.ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+
+    static BadHttpRequestException TooLarge(long max) => new(
+        $"Request body exceeds the {max} byte limit.",
+        StatusCodes.Status413PayloadTooLarge
+    );
 
     public override int Read(byte[] buffer, int offset, int count)
         => this.ReadAsync(buffer.AsMemory(offset, count)).AsTask().GetAwaiter().GetResult();

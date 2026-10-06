@@ -185,6 +185,14 @@ static class EndpointEmitter
         if (policies.HasContentDigest)
             metadata.Add($"new {ContentDigestMetadata} {{ {DigestAssignments(policies)} }}");
 
+        // The attributes are the metadata routing reads, so they are emitted as they were written.
+        if (policies.HasRequestSizeLimit)
+        {
+            metadata.Add(policies.RequestSizeLimitDisabled
+                ? "new global::Shiny.Net.HttpServer.DisableRequestSizeLimitAttribute()"
+                : $"new global::Shiny.Net.HttpServer.RequestSizeLimitAttribute({policies.RequestSizeLimit!.Value}L)");
+        }
+
         return metadata;
 
         static string IdempotencyAssignments(EndpointPolicyModel policies)
