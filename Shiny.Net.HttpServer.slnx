@@ -37,6 +37,7 @@
     <Project Path="src/Shiny.Net.HttpServer.Mediator/Shiny.Net.HttpServer.Mediator.csproj" />
     <Project Path="src/Shiny.Net.HttpServer.Mediator.SourceGenerators/Shiny.Net.HttpServer.Mediator.SourceGenerators.csproj" />
     <Project Path="src/Shiny.Net.HttpServer.Mobile/Shiny.Net.HttpServer.Mobile.csproj" />
+    <Project Path="src/Shiny.Net.HttpServer.NuGet/Shiny.Net.HttpServer.NuGet.csproj" />
     <Project Path="src/Shiny.Net.HttpServer.OAuthLoopback/Shiny.Net.HttpServer.OAuthLoopback.csproj" />
     <Project Path="src/Shiny.Net.HttpServer.Proxy/Shiny.Net.HttpServer.Proxy.csproj" />
     <Project Path="src/Shiny.Net.HttpServer.SourceGenerators/Shiny.Net.HttpServer.SourceGenerators.csproj" />

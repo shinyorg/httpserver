@@ -40,6 +40,11 @@
              released independently. -->
         <PackageVersion Include="Shiny.Mediator" Version="6.10.0"/>
         <PackageVersion Include="ModelContextProtocol" Version="2.1.0"/>
+
+        <!-- The NuGet feed's version rules. Deliberately only this one of NuGet's client packages:
+             NuGet.Packaging would bring Newtonsoft.Json and the signing stack with it, which is the
+             end of being trim- and AOT-clean; the nuspec is read by hand instead. -->
+        <PackageVersion Include="NuGet.Versioning" Version="7.9.0"/>
         
         <PackageVersion Include="Shiny.Core" Version="5.8.0"/>
         <PackageVersion Include="Shiny.Net.Discovery" Version="5.8.0"/>
@@ -50,6 +55,10 @@
              hand-rolled one, because "our framing agrees with itself" is not the claim being
              tested. Nothing that ships depends on it. -->
         <PackageVersion Include="Grpc.Net.Client" Version="2.83.0"/>
+
+        <!-- Test-only, for the same reason: the NuGet feed tests push, restore-download, search and
+             read metadata through NuGet's own client stack. -->
+        <PackageVersion Include="NuGet.Protocol" Version="7.9.0"/>
     </ItemGroup>
     <ItemGroup>
         <PackageVersion Include="xunit.v3" Version="3.2.2"/>

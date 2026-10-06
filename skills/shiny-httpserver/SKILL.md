@@ -1,6 +1,6 @@
 ---
 name: shiny-httpserver
-description: Generate code using Shiny.Net.HttpServer — a dependency-light, AOT/trim-clean HTTP/1.1, HTTP/2 & HTTP/3 server that runs anywhere .NET runs, including .NET MAUI and native tvOS, where ASP.NET Core cannot. Covers routing, middleware, source-generated typed endpoints, results and JSON, content negotiation with XML/MessagePack/protobuf formatters in both directions, static files and Blazor WASM, uploads/downloads, WebSockets, SSE, SignalR-style switchboards (real-time two-way calls over SSE with groups, an operator, client results, resumable lines, and a generated typed .NET client), sessions, OpenAPI, authentication (Basic/API key/cookie/JWT), authorization, CORS, rate limiting, IP filtering, TLS and self-signed certificates, tunnelling (relay, SSH, quick tunnels, Azure Relay, and supervised cloudflared/ngrok/tailscale agents), serving a directory over WebDAV, serving gRPC and gRPC-Web, hosting an MCP server with RFC 9728 OAuth discovery, receiving the OAuth/OIDC loopback redirect so a desktop app or CLI can sign in through the system browser (RFC 8252), health checks, OpenTelemetry-shaped metrics and tracing, W3C access logs, request timeouts, output caching and conditional requests, request decompression, antiforgery and browser security headers, a reverse proxy with destination clusters, load balancing, health checks, session affinity, transforms, WebSocket forwarding and IConfiguration-driven routes, mDNS/Bonjour advertising and discovery, MAUI lifecycle (background/foreground, Android foreground service, network rebinding), host filtering against DNS rebinding, request localization, webhook signature verification (GitHub/Stripe/Slack/Standard Webhooks), idempotency keys, RFC 9530 content digests, 103 Early Hints, the PROXY protocol, RFC 6902 JSON Patch, API versioning with per-version OpenAPI, a Scalar API reference page, tus resumable uploads, CalDAV/CardDAV, automatic HTTPS via ACME (Let's Encrypt/ZeroSSL), and an in-memory test harness.
+description: Generate code using Shiny.Net.HttpServer — a dependency-light, AOT/trim-clean HTTP/1.1, HTTP/2 & HTTP/3 server that runs anywhere .NET runs, including .NET MAUI and native tvOS, where ASP.NET Core cannot. Covers routing, middleware, source-generated typed endpoints, results and JSON, content negotiation with XML/MessagePack/protobuf formatters in both directions, static files and Blazor WASM, uploads/downloads, WebSockets, SSE, SignalR-style switchboards (real-time two-way calls over SSE with groups, an operator, client results, resumable lines, and a generated typed .NET client), sessions, OpenAPI, authentication (Basic/API key/cookie/JWT), authorization, CORS, rate limiting, IP filtering, TLS and self-signed certificates, tunnelling (relay, SSH, quick tunnels, Azure Relay, and supervised cloudflared/ngrok/tailscale agents), serving a directory over WebDAV, serving gRPC and gRPC-Web, hosting an MCP server with RFC 9728 OAuth discovery, receiving the OAuth/OIDC loopback redirect so a desktop app or CLI can sign in through the system browser (RFC 8252), health checks, OpenTelemetry-shaped metrics and tracing, W3C access logs, request timeouts, output caching and conditional requests, request decompression, antiforgery and browser security headers, a reverse proxy with destination clusters, load balancing, health checks, session affinity, transforms, WebSocket forwarding and IConfiguration-driven routes, mDNS/Bonjour advertising and discovery, MAUI lifecycle (background/foreground, Android foreground service, network rebinding), host filtering against DNS rebinding, request localization, webhook signature verification (GitHub/Stripe/Slack/Standard Webhooks), idempotency keys, RFC 9530 content digests, 103 Early Hints, the PROXY protocol, RFC 6902 JSON Patch, API versioning with per-version OpenAPI, a Scalar API reference page, tus resumable uploads, CalDAV/CardDAV, a private NuGet feed (V3 protocol with push), automatic HTTPS via ACME (Let's Encrypt/ZeroSSL), and an in-memory test harness.
 auto_invoke: true
 triggers:
 - Shiny.Net.HttpServer
@@ -374,6 +374,23 @@ triggers:
 - tus-js-client
 - Uppy
 - TusDotNetClient
+- Shiny.Net.HttpServer.NuGet
+- MapNuGetFeed
+- NuGetFeedOptions
+- NuGetFeedMountBuilder
+- INuGetPackageStore
+- DiskNuGetPackageStore
+- NuGetPackage
+- NuGetDeleteBehavior
+- NuGetPushContext
+- NuGetApiKeyContext
+- nuget feed
+- nuget server
+- private nuget feed
+- package feed
+- host nuget packages
+- dotnet nuget push
+- X-NuGet-ApiKey
 - Idempotency-Key
 - AddIdempotency
 - UseIdempotency
@@ -488,6 +505,7 @@ Invoke this skill when the user wants to:
 - Cache responses, honour conditional requests, bound how long a handler may take, or forward a
   route to another server
 - Test endpoints without binding a port
+- Host a private NuGet feed that `dotnet nuget push` and `dotnet restore` talk to
 - Sign a desktop app or CLI in through the system browser (the OAuth/OIDC loopback redirect,
   what VS Code and `gh auth login` do) without `HttpListener`
 
@@ -525,6 +543,7 @@ dotnet add package Shiny.Net.HttpServer.Testing          # in-memory HttpClient 
 dotnet add package Shiny.Net.HttpServer.Tunnels          # cloudflared / ngrok / tailscale agents (desktop + CLI only)
 dotnet add package Shiny.Net.HttpServer.OAuthLoopback    # OAuth/OIDC loopback redirect receiver (desktop + CLI only)
 dotnet add package Shiny.Net.HttpServer.Tus              # tus 1.0.0 resumable uploads
+dotnet add package Shiny.Net.HttpServer.NuGet            # a private NuGet V3 feed (push, restore, search)
 dotnet add package Shiny.Net.HttpServer.CalDav           # calendars & contacts over CalDAV/CardDAV
 dotnet add package Shiny.Net.HttpServer.Acme             # automatic HTTPS via Let's Encrypt/ZeroSSL (public hosts, not phones)
 
@@ -1365,6 +1384,47 @@ app.UseCors(p => p.WithOrigins("https://app.example.com").WithTusHeaders()); // 
   missing upload. The endpoint already serialises requests per upload, so the store needs no lock.
 - `LockReleaseTimeout = TimeSpan.Zero` answers 423 instead of taking over a stalled request.
 - `RemoveExpiredUploadsAsync()` on the returned builder runs cleanup from a platform background job.
+- The routes are excluded from OpenAPI. Do not describe them.
+
+### A private NuGet feed
+
+`MapNuGetFeed` serves the NuGet V3 server API, so `dotnet restore`, `dotnet nuget push`,
+`dotnet package search`, Visual Studio and Rider work against it as a plain package source. Reach for it
+when the user says *NuGet server*, *private feed*, *package feed*, or *host our packages*. Tier 1:
+nine raw routes mapped in one call (package `Shiny.Net.HttpServer.NuGet`; versions via the official
+`NuGet.Versioning`).
+
+```csharp
+app.MapNuGetFeed("/nuget", o =>
+{
+    o.Store = new DiskNuGetPackageStore(Path.Combine(dataDir, "packages")); // required
+    o.ApiKeys.Add(config["NuGet:ApiKey"]!);          // X-NuGet-ApiKey, compared in constant time
+    o.DeleteBehavior = NuGetDeleteBehavior.Unlist;    // default; .Delete removes files
+    o.OnBeforePushAsync = ctx =>
+    {
+        if (!ctx.Package.Id.StartsWith("Contoso.")) ctx.Reject(403, "Only Contoso.* packages.");
+        return ValueTask.CompletedTask;
+    };
+})
+.ForReads(r => r.RequireAuthorization());           // optional: a private feed (Basic creds in nuget.config)
+
+// client: dotnet nuget add source http://host:5000/nuget/v3/index.json -n team --allow-insecure-connections
+//         dotnet nuget push My.Pkg.1.0.0.nupkg -s team -k <key>
+```
+
+- The package source URL is always `{prefix}/v3/index.json`. Give users that URL, not the prefix.
+- A writable feed with no `ApiKeys` and no `ValidateApiKeyAsync` throws when mapped. Use
+  `ReadOnly = true` for a feed nobody pushes to, or `RequireApiKey = false` only when `ForWrites(...)`
+  adds authorization.
+- NuGet refuses plain-HTTP sources unless `allowInsecureConnections="true"` is set on the source. On a
+  public host, serve it with TLS or ACME.
+- Push size: `MaxPackageSize` (250 MB) **and** `Limits.MaxRequestBodySize` (30 MB) both apply. Raise
+  the server limit for big packages.
+- Behind a proxy that rewrites the host, set `PublicBaseUrl`. Every link in the protocol is absolute.
+- `DiskNuGetPackageStore` uses NuGet's own folder-feed layout (`{id}/{version}/{id}.{version}.nupkg`),
+  so the directory is also a local source and can be seeded by copying files in (call `Reload()`).
+- Not supported: `.snupkg` symbol packages, the catalog, download counts, the V2/OData API. Do not
+  promise them.
 - The routes are excluded from OpenAPI. Do not describe them.
 
 ## Realtime

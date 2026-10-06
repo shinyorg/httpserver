@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Shiny.Net.HttpServer.NuGet</RootNamespace>
+    <Description>A private NuGet feed for Shiny.Net.HttpServer — the NuGet V3 protocol (service index, package content, registrations, search, autocomplete) plus push, unlist, relist and delete, so `dotnet nuget push`, `dotnet restore`, Visual Studio and Rider all work against it unchanged. Packages live in the same folder layout NuGet itself uses, the version rules are NuGet's own (NuGet.Versioning), and the whole path is trim- and AOT-clean.</Description>
+    <PackageTags>$(PackageTags) nuget feed package-source private-feed</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Shiny.Net.HttpServer/Shiny.Net.HttpServer.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The official version parser and comparer: what counts as the same version, what sorts
+         before what, and what a range admits has to agree with the client exactly, and the only
+         way to be sure of that is to use the client's own code. It has no dependencies. -->
+    <PackageReference Include="NuGet.Versioning" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Shiny.Net.HttpServer.Tests" />
+  </ItemGroup>
+
+</Project>
