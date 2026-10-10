@@ -34,7 +34,11 @@ public sealed record DiscoveredHttpServer(
     }
 }
 
-/// <summary>Finds servers other devices are advertising.</summary>
+/// <summary>
+/// Finds servers other devices are advertising. This app's own advertisements — anything an
+/// <see cref="HttpServerAdvertiser"/> has live on the same <see cref="IMdnsManager"/> — are left out, so an app that
+/// both hosts and browses doesn't find itself.
+/// </summary>
 public interface IHttpServerLocator
 {
     /// <summary>
@@ -83,9 +87,15 @@ public sealed class HttpServerLocator(IMdnsManager mdns) : IHttpServerLocator
         ArgumentException.ThrowIfNullOrWhiteSpace(serviceType);
 
         var config = new MdnsBrowseConfig(serviceType);
+        var local = LocalPublications.For(this.mdns);
 
         await foreach (var result in this.mdns.Browse(config, cancellationToken).ConfigureAwait(false))
         {
+            // This app's own advertisement, heard back through its own responder. A goodbye that arrives after the
+            // advertiser has withdrawn gets through, and drops a server the caller never saw - which is harmless.
+            if (local.Contains(result.Service))
+                continue;
+
             // An unresolved result has no address and no port, so there is no URL to hand anyone.
             // Reported only on the way out, where the name is all a caller needs to drop it.
             if (result.Status == MdnsBrowseStatus.Lost)

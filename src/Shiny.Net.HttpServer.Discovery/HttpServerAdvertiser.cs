@@ -109,6 +109,7 @@ public sealed class HttpServerAdvertiser : IHttpServerAdvertiser
     readonly HttpServer server;
     readonly HttpServerAdvertisementOptions options;
     readonly ILogger logger;
+    readonly LocalPublications local;
     readonly SemaphoreSlim gate = new(1, 1);
 
     int advertisedPort;
@@ -134,6 +135,7 @@ public sealed class HttpServerAdvertiser : IHttpServerAdvertiser
         this.server = server;
         this.options = options;
         this.logger = logger ?? NullLogger<HttpServerAdvertiser>.Instance;
+        this.local = LocalPublications.For(mdns);
     }
 
     public IMdnsPublication? Publication { get; private set; }
@@ -323,6 +325,9 @@ public sealed class HttpServerAdvertiser : IHttpServerAdvertiser
                 this.Publication = await this.mdns.Publish(registration, cancellationToken).ConfigureAwait(false);
                 this.advertisedPort = port;
 
+                // a locator on the same responder leaves this app's own advertisement out of what it finds
+                this.local.Add(this.Publication);
+
                 this.logger.LogInformation(
                     "Advertising {Instance} as {ServiceType} on port {Port}",
                     this.Publication.InstanceName,
@@ -403,6 +408,7 @@ public sealed class HttpServerAdvertiser : IHttpServerAdvertiser
 
         this.Publication = null;
         this.advertisedPort = 0;
+        this.local.Remove(publication);
 
         try
         {

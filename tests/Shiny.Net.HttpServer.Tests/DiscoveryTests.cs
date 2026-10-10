@@ -325,6 +325,82 @@ public class HttpServerLocatorTests
         Assert.Null(found);
     }
 
+    /// <summary>
+    /// An app that hosts and browses at once — every peer-to-peer app — hears its own advertisement back through its
+    /// own responder. Listing itself as a peer is wrong, and connecting to it is worse.
+    /// </summary>
+    [Fact]
+    public async Task Leaves_out_the_apps_own_advertisement()
+    {
+        var mdns = new FakeMdns { RenameTo = "Me (2)" };
+        await using var test = await TestServer.StartAsync(server => { });
+        await using var advertiser = await test.Server.AdvertiseAsync(mdns, o =>
+        {
+            o.ServiceType = "_myapp._tcp";
+            o.InstanceName = "Me";
+        }, Token);
+
+        // what the responder hears back: this app under the name it settled on, a peer, and a same-named service of another type
+        mdns.Announce(Resolved("Me (2)", "_myapp._tcp."));
+        mdns.Announce(Resolved("Peer", "_myapp._tcp"));
+        mdns.Announce(Resolved("Me (2)", "_other._tcp"));
+
+        var found = await new HttpServerLocator(mdns).FindAllAsync("_myapp._tcp", TimeSpan.FromMilliseconds(300), Token);
+        Assert.Equal(["Peer"], found.Select(x => x.InstanceName));
+
+        var other = await new HttpServerLocator(mdns).FindAllAsync("_other._tcp", TimeSpan.FromMilliseconds(300), Token);
+        Assert.Equal(["Me (2)"], other.Select(x => x.InstanceName));
+    }
+
+
+    [Fact]
+    public async Task Finds_the_name_again_once_the_app_stops_advertising_it()
+    {
+        var mdns = new FakeMdns();
+        await using var test = await TestServer.StartAsync(server => { });
+        var advertiser = await test.Server.AdvertiseAsync(mdns, o =>
+        {
+            o.ServiceType = "_myapp._tcp";
+            o.InstanceName = "Shared";
+        }, Token);
+        mdns.Announce(Resolved("Shared", "_myapp._tcp"));
+
+        Assert.Null(await new HttpServerLocator(mdns).FindFirstAsync("_myapp._tcp", TimeSpan.FromMilliseconds(300), cancellationToken: Token));
+
+        // gone from here - a device that took the name since is a peer like any other
+        await advertiser.StopAsync(Token);
+        var found = await new HttpServerLocator(mdns).FindFirstAsync("_myapp._tcp", TimeSpan.FromSeconds(2), cancellationToken: Token);
+        Assert.Equal("Shared", found?.InstanceName);
+    }
+
+
+    [Fact]
+    public async Task Another_responder_still_sees_the_advertisement()
+    {
+        var mine = new FakeMdns();
+        var theirs = new FakeMdns();
+        await using var test = await TestServer.StartAsync(server => { });
+        await using var advertiser = await test.Server.AdvertiseAsync(mine, o =>
+        {
+            o.ServiceType = "_myapp._tcp";
+            o.InstanceName = "Host";
+        }, Token);
+        theirs.Announce(Resolved("Host", "_myapp._tcp"));
+
+        var found = await new HttpServerLocator(theirs).FindFirstAsync("_myapp._tcp", TimeSpan.FromSeconds(2), cancellationToken: Token);
+        Assert.Equal("Host", found?.InstanceName);
+    }
+
+
+    static MdnsService Resolved(string instanceName, string serviceType) => new()
+    {
+        InstanceName = instanceName,
+        ServiceType = serviceType,
+        Port = 5000,
+        Addresses = [IPAddress.Parse("192.168.1.40")]
+    };
+
+
     [Fact]
     public async Task An_unresolved_instance_is_skipped()
     {
@@ -381,7 +457,8 @@ sealed class FakeMdns : IMdnsManager
     {
         foreach (var announcement in this.announcements)
         {
-            if (announcement.Service.ServiceType == config.ServiceType)
+            // platforms differ on the trailing dot of a fully qualified type
+            if (announcement.Service.ServiceType.TrimEnd('.') == config.ServiceType.TrimEnd('.'))
                 yield return announcement;
         }
 

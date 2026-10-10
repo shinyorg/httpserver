@@ -2421,6 +2421,10 @@ The advertisement follows the server — published when it starts, withdrawn (wi
 when it stops, re-announced when the device changes network. Read the final instance name back from
 `IHttpServerAdvertiser.Publication`: the responder renames a service whose name is already taken.
 
+The locator leaves out the app's own advertisement (anything an advertiser has live on the same
+`IMdnsManager`), so a peer-to-peer app that both hosts and browses never lists itself. Don't generate a
+"skip my own instance name" filter — it's already done, and exactly.
+
 It follows the **reason** as well as the state, which is the pattern to copy for any handler that
 tears something down on `Stopped`: it subscribes to `StateTransitioned`, and a `Stopped` carrying
 `Restarting` or `NetworkChanged` leaves the record standing rather than sending a goodbye and a fresh
