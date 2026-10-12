@@ -580,16 +580,19 @@ sealed class TusHandler
     {
         var method = context.Request.Headers.GetFirst(TusHeaderNames.XHttpMethodOverride)?.Trim().ToUpperInvariant();
 
-        return method switch
+        RequestDelegate verb = method switch
         {
-            HttpMethods.Patch => this.PatchAsync(context),
-            HttpMethods.Delete => this.DeleteAsync(context),
-            HttpMethods.Head => this.HeadAsync(context),
+            HttpMethods.Patch => this.PatchAsync,
+            HttpMethods.Delete => this.DeleteAsync,
+            HttpMethods.Head => this.HeadAsync,
             _ => throw new TusException(
                 StatusCodes.Status405MethodNotAllowed,
                 "POST to an upload needs X-HTTP-Method-Override: PATCH, DELETE or HEAD."
             )
         };
+
+        context.Request.Method = method;
+        return verb(context);
     }
 
     // ---- completion ----

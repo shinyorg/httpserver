@@ -572,6 +572,13 @@ static class DocumentEndpointHandlers<T> where T : class
     /// response from another thread — two things writing to one response is a data race that shows up as a
     /// corrupted event stream under load, and only under load.
     /// </para>
+    /// <para>
+    /// The pending <c>MoveNextAsync</c> survives a heartbeat: the loop keeps racing the <i>same</i> one until it
+    /// completes. Starting a fresh one each time the store went quiet puts two moves in flight on one async
+    /// iterator, which corrupts its state machine and surfaces as an unhandled exception on the thread pool —
+    /// taking the process down with it. For the same reason the enumerator is only disposed once no move is
+    /// pending, and the feed has its own token so that move can always be told to stop.
+    /// </para>
     /// </summary>
     static async Task Pump(
         Sse.ServerSentEventStream stream,
@@ -584,22 +591,30 @@ static class DocumentEndpointHandlers<T> where T : class
     {
         var token = stream.Aborted;
 
+        // Linked rather than the stream's own token: a write can fail before the client's abort is noticed,
+        // and the move still in flight has to be stopped either way before the feed can be disposed.
+        using var feed = CancellationTokenSource.CreateLinkedTokenSource(token);
+        var changes = store.NotifyOnChange<T>(feed.Token).GetAsyncEnumerator(feed.Token);
+        Task<bool>? next = null;
+
         try
         {
-            await using var changes = store.NotifyOnChange<T>(token).GetAsyncEnumerator(token);
-
             while (true)
             {
-                var next = changes.MoveNextAsync().AsTask();
+                next ??= changes.MoveNextAsync().AsTask();
                 var completed = await Task.WhenAny(next, Task.Delay(heartbeat, token)).ConfigureAwait(false);
 
                 if (completed != next)
                 {
+                    token.ThrowIfCancellationRequested();
                     await stream.SendHeartbeatAsync(token).ConfigureAwait(false);
                     continue;
                 }
 
-                if (!await next.ConfigureAwait(false))
+                var more = await next.ConfigureAwait(false);
+                next = null;
+
+                if (!more)
                     break;
 
                 var change = changes.Current;
@@ -629,7 +644,27 @@ static class DocumentEndpointHandlers<T> where T : class
         }
         catch (OperationCanceledException)
         {
-            // The client went away. The enumeration's disposal releases the store subscription.
+            // The client went away.
+        }
+        finally
+        {
+            // Stop the move still in flight and let it finish before disposing — disposing an async iterator
+            // with a MoveNextAsync pending is the same overlap as starting a second one.
+            if (next != null)
+            {
+                await feed.CancelAsync().ConfigureAwait(false);
+
+                try
+                {
+                    await next.ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                }
+            }
+
+            // Releases the store subscription.
+            await changes.DisposeAsync().ConfigureAwait(false);
         }
     }
 

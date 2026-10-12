@@ -58,6 +58,14 @@
              off the public surface - two answers to "did the addresses move" that can disagree is
              worse than the visibility. -->
         <InternalsVisibleTo Include="Shiny.Net.HttpServer.Mobile"/>
+
+        <!-- tus tunnels PATCH, DELETE and HEAD through POST (X-HTTP-Method-Override) for clients and
+             proxies that cannot send them. The handler rewrites Request.Method so everything after it
+             - logging, metrics, its own HEAD handling - sees the verb the client meant. The setter
+             stays internal: rewriting the method is safe there only because the wire's framing (body
+             suppression for a real HEAD) was settled before the pipeline ran, which is not a promise
+             to make to arbitrary middleware. -->
+        <InternalsVisibleTo Include="Shiny.Net.HttpServer.Tus"/>
     </ItemGroup>
 
 </Project>

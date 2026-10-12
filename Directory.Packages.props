@@ -46,12 +46,12 @@
              end of being trim- and AOT-clean; the nuspec is read by hand instead. -->
         <PackageVersion Include="NuGet.Versioning" Version="7.9.0"/>
         
-        <PackageVersion Include="Shiny.Core" Version="5.9.0"/>
+        <PackageVersion Include="Shiny.Core" Version="6.0.0"/>
         <!-- The file-sync client's transfers: background on iOS/Android, resumable, tus for uploads. -->
-        <PackageVersion Include="Shiny.Net.Http" Version="5.9.0"/>
-        <PackageVersion Include="Shiny.Net.Discovery" Version="5.9.0"/>
-        <PackageVersion Include="Shiny.DocumentDb" Version="14.0.0"/>
-        <PackageVersion Include="Shiny.DocumentDb.Sqlite" Version="14.0.0"/>
+        <PackageVersion Include="Shiny.Net.Http" Version="6.0.0"/>
+        <PackageVersion Include="Shiny.Net.Discovery" Version="6.0.0"/>
+        <PackageVersion Include="Shiny.DocumentDb" Version="14.1.0"/>
+        <PackageVersion Include="Shiny.DocumentDb.Sqlite" Version="14.1.0"/>
 
         <!-- Test-only. The gRPC tests call the server with the real gRPC client rather than a
              hand-rolled one, because "our framing agrees with itself" is not the claim being

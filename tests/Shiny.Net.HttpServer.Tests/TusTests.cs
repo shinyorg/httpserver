@@ -584,6 +584,55 @@ public class TusTests
         Assert.Equal(HttpStatusCode.NotFound, (await HeadAsync(server.Client, url)).StatusCode);
     }
 
+    /// <summary>
+    /// The override rewrites the method rather than only picking a handler, so anything that runs
+    /// after the endpoint - request logging, metrics - records the verb the client meant.
+    /// </summary>
+    [Fact]
+    public async Task A_method_override_is_visible_to_middleware_after_the_endpoint()
+    {
+        using var dir = new UploadDirectory();
+        string? seen = null;
+
+        await using var server = await TestServer.StartAsync(
+            app =>
+            {
+                app.Use(async (ctx, next) =>
+                {
+                    await next(ctx);
+                    seen = ctx.Request.Method;
+                });
+                app.MapTus("/files", o => o.Store = dir.Store());
+            }
+        );
+
+        var url = await CreateAsync(server.Client, 10);
+
+        using var patch = Tus(HttpMethod.Post, url);
+        patch.Headers.Add(TusHeaderNames.XHttpMethodOverride, "patch");
+        patch.Headers.Add(TusHeaderNames.UploadOffset, "0");
+        patch.Content = Chunk(Bytes(4));
+
+        Assert.Equal(HttpStatusCode.NoContent, (await Send(server.Client, patch, Token)).StatusCode);
+        Assert.Equal("PATCH", seen);
+    }
+
+    /// <summary>A tunnelled HEAD is answered like a real one: the status, and no problem body.</summary>
+    [Fact]
+    public async Task A_tunnelled_head_for_a_missing_upload_gets_the_status_alone()
+    {
+        using var dir = new UploadDirectory();
+        await using var server = await StartAsync(dir);
+
+        using var head = Tus(HttpMethod.Post, "/files/does-not-exist");
+        head.Headers.Add(TusHeaderNames.XHttpMethodOverride, "HEAD");
+
+        var response = await Send(server.Client, head, Token);
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        Assert.Empty(await response.Content.ReadAsByteArrayAsync(Token));
+    }
+
     [Fact]
     public async Task A_post_to_an_upload_without_an_override_is_a_405()
     {

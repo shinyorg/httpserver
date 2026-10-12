@@ -474,3 +474,60 @@ public class DocumentResourceBuilderTests
         Assert.Equal(8, builder!.Routes.Count);
     }
 }
+
+/// <summary>
+/// The live tail, end to end. The case that matters most is the idle one: the store goes quiet across
+/// several heartbeats before the first change arrives, which is exactly when the pump used to put a second
+/// <c>MoveNextAsync</c> in flight on the same change feed.
+/// </summary>
+public class DocumentStreamTests
+{
+    static CancellationToken Token => TestContext.Current.CancellationToken;
+
+    static async Task<string> ReadUntilAsync(StreamReader reader, string marker, CancellationToken token)
+    {
+        var seen = new StringBuilder();
+        while (!seen.ToString().Contains(marker, StringComparison.Ordinal))
+        {
+            var line = await reader.ReadLineAsync(token) ?? throw new EndOfStreamException(seen.ToString());
+            seen.AppendLine(line);
+        }
+        return seen.ToString();
+    }
+
+    [Fact]
+    public async Task Streams_changes_that_pass_the_filter_after_idle_heartbeats()
+    {
+        await using var server = await DocumentServer.StartAsync(o => o.StreamHeartbeat = TimeSpan.FromMilliseconds(100));
+
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(Token);
+        timeout.CancelAfter(TimeSpan.FromSeconds(15));
+
+        using var response = await server.Client.GetAsync(
+            "/orders/stream?filter=status == 'open'",
+            HttpCompletionOption.ResponseHeadersRead,
+            timeout.Token
+        );
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("text/event-stream", response.Content.Headers.ContentType!.MediaType);
+
+        using var reader = new StreamReader(await response.Content.ReadAsStreamAsync(timeout.Token));
+
+        // Several heartbeats with nothing happening — each one used to start another read on the feed.
+        for (var i = 0; i < 3; i++)
+            await ReadUntilAsync(reader, ":ping", timeout.Token);
+
+        await server.SeedAsync(new Order { Id = "closed-1", CustomerId = "c1", Status = "closed" });
+        await server.SeedAsync(new Order { Id = "open-1", CustomerId = "c1", Status = "open" });
+
+        var events = await ReadUntilAsync(reader, "open-1", timeout.Token);
+
+        Assert.Contains("event:insert", events);
+        Assert.DoesNotContain("closed-1", events);
+
+        // And the feed keeps working after the first change, rather than having been knocked over by it.
+        await server.SeedAsync(new Order { Id = "open-2", CustomerId = "c1", Status = "open" });
+        await ReadUntilAsync(reader, "open-2", timeout.Token);
+    }
+}

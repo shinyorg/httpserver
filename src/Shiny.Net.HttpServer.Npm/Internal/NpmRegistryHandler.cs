@@ -351,7 +351,9 @@ sealed class NpmRegistryHandler
         {
             Name = name,
             Created = now,
-            Maintainers = [new JsonObject { ["name"] = user }]
+            // The constructor, not a collection expression: [..] on a JsonArray binds to the generic
+            // Add<T>, which is RequiresDynamicCode/RequiresUnreferencedCode and fails a Native AOT publish.
+            Maintainers = new JsonArray(new JsonObject { ["name"] = user })
         };
 
         // Everything is checked, and every hook has had its say, before anything is stored.
