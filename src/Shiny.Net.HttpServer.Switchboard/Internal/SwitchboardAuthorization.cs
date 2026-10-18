@@ -133,6 +133,9 @@ static class SwitchboardResponses
             return;
 
         context.Response.StatusCode = statusCode;
+        // A 410 is cacheable by default, and every new line asks the same connect URL: a browser
+        // that kept one "line is closed" answer would replay it for every later connect.
+        context.Response.Headers.Set(HeaderNames.CacheControl, "no-store");
 
         var json = JsonSerializer.SerializeToUtf8Bytes(new ErrorPayload(message), SwitchboardProtocolJson.Default.ErrorPayload);
         await context.Response.WriteBytesAsync(json, "application/json", context.RequestAborted).ConfigureAwait(false);

@@ -441,6 +441,8 @@ public class SwitchboardTests
         using var request = new HttpRequestMessage(HttpMethod.Get, $"/board/connect?token={line.LineToken}");
         using var response = await server.Client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, Token);
         Assert.Equal(HttpStatusCode.Gone, response.StatusCode);
+        // Browsers may cache a 410; a kept one would answer every later connect to the same URL.
+        Assert.True(response.Headers.CacheControl?.NoStore);
     }
 
     [Fact]
