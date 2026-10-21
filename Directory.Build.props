@@ -10,6 +10,7 @@
     <Product>Shiny.Net.HttpServer</Product>
 
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <Copyright>Copyright (c) $([System.DateTime]::Now.Year) Allan Ritchie</Copyright>
     <RepositoryUrl>https://github.com/shinyorg/httpserver</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
 
