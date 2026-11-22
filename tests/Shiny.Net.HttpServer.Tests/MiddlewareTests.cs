@@ -63,6 +63,7 @@ public class HttpMiddlewareTests
         });
 
         await server.Client.GetStringAsync("/x", Token);
+        await Wait.UntilAsync(() => log.Count == 5, Token);
 
         Assert.Equal(["outer-in", "inner-in", "handler", "inner-out", "outer-out"], log);
     }
@@ -80,6 +81,7 @@ public class HttpMiddlewareTests
         });
 
         await server.Client.GetStringAsync("/x", Token);
+        await Wait.UntilAsync(() => log.Count == 5, Token);
 
         Assert.Equal(["class-in", "lambda-in", "handler", "lambda-out", "class-out"], log);
     }

@@ -223,6 +223,7 @@ public class EndToEndTests
         });
 
         await server.Client.GetStringAsync("/x", Token);
+        await Wait.UntilAsync(() => order.Count == 5, Token);
 
         Assert.Equal(["outer-in", "inner-in", "handler", "inner-out", "outer-out"], order);
     }
@@ -396,11 +397,7 @@ public class DependencyInjectionTests
         await server.Client.GetStringAsync("/x", Token);
         await server.Client.GetStringAsync("/x", Token);
 
-        // The scope ends as the request unwinds, after the response is on the wire - so the client
-        // can have its second answer before the second scope is disposed.
-        var deadline = DateTime.UtcNow.AddSeconds(5);
-        while (Volatile.Read(ref TrackedDisposable.DisposeCount) < 2 && DateTime.UtcNow < deadline)
-            await Task.Delay(10, Token);
+        await Wait.UntilAsync(() => Volatile.Read(ref TrackedDisposable.DisposeCount) >= 2, Token);
 
         Assert.Equal(2, Volatile.Read(ref TrackedDisposable.DisposeCount));
     }
