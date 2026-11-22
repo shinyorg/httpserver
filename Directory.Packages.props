@@ -32,6 +32,18 @@
         <PackageVersion Include="Microsoft.Extensions.Configuration.EnvironmentVariables" Version="11.0.0"/>
         <PackageVersion Include="Microsoft.Extensions.Options" Version="11.0.0"/>
         <PackageVersion Include="Microsoft.Extensions.Primitives" Version="11.0.0"/>
+        <PackageVersion Include="System.Security.Cryptography.Pkcs" Version="11.0.0"/>
+    </ItemGroup>
+    <!-- Transitive pins, test-only today. NuGet.Protocol (the NuGet feed tests' client) brings
+         System.Security.Cryptography.Pkcs 8.0.1, which has known vulnerabilities; it follows the runtime
+         split like Microsoft.Extensions.*. Microsoft.Data.Sqlite 10.x (under Shiny.DocumentDb.Sqlite)
+         brings SQLitePCLRaw 2.1.11, whose bundled SQLite has a known vulnerability with no 2.x fix;
+         11.0 moves to SQLitePCLRaw 3 and targets net10.0, so both slices take it. -->
+    <ItemGroup Condition="!$(TargetFramework.StartsWith('net11.0'))">
+        <PackageVersion Include="System.Security.Cryptography.Pkcs" Version="10.0.15"/>
+    </ItemGroup>
+    <ItemGroup>
+        <PackageVersion Include="Microsoft.Data.Sqlite" Version="11.0.0"/>
     </ItemGroup>
     <!-- Shiny 7 is net11.0-only, so the Shiny packages follow the same split: net11.0 slices take
          7.x, net10.0 slices stay on 6.x. Shiny.Net.Http carries the file-sync client's transfers

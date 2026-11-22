@@ -28,6 +28,8 @@ public static class SshServiceCollectionExtensions
     /// });
     /// </code>
     /// </summary>
+    /// <param name="builder">The server builder.</param>
+    /// <param name="configureOptions">The SSH server, credentials and remote forward.</param>
     /// <param name="autoStart">
     /// Start the tunnel with the host. Off, the tunnel is registered but idle — resolve
     /// <see cref="SshTunnel"/> and call <see cref="SshTunnel.StartAsync"/> when the user asks for it.

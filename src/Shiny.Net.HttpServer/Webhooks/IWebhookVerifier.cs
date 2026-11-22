@@ -12,7 +12,7 @@ namespace Shiny.Net.HttpServer.Webhooks;
 /// </para>
 /// <para>
 /// Built-in verifiers come from <see cref="WebhookSignature"/>. Implement this for a provider it
-/// does not cover; compare with <see cref="System.Security.Cryptography.CryptographicOperations.FixedTimeEquals"/>,
+/// does not cover; compare with <see cref="System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(ReadOnlySpan{byte}, ReadOnlySpan{byte})"/>,
 /// never <c>==</c> or <c>SequenceEqual</c>, which return as soon as a byte differs and so tell an
 /// attacker how much of a forged signature was right.
 /// </para>

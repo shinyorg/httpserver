@@ -23,6 +23,8 @@ sealed class WebDavLockManager(WebDavOptions options)
     /// way. Neither is one that has lapsed.
     /// </para>
     /// </summary>
+    /// <param name="path">The resource about to be written.</param>
+    /// <param name="submittedTokens">The lock tokens the request's <c>If</c> header carried.</param>
     /// <param name="includeDescendants">
     /// True when the operation reaches into the subtree, as <c>DELETE</c> and <c>MOVE</c> of a
     /// collection do. A lock on something inside blocks those even though it does not cover the

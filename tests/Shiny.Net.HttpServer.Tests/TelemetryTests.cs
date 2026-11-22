@@ -84,7 +84,7 @@ public class TelemetryTests
 
         await test.Client.GetAsync("/orders/7", Token);
 
-        var span = spans.Single();
+        var span = spans.Single(test);
         Assert.Equal("GET /orders/{id}", span.DisplayName);
         Assert.Equal(ActivityKind.Server, span.Kind);
         Assert.Equal(200, span.GetTagItem("http.response.status_code"));
@@ -105,7 +105,7 @@ public class TelemetryTests
         request.Headers.Add("traceparent", "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01");
         await test.Client.SendAsync(request, Token);
 
-        var span = spans.Single();
+        var span = spans.Single(test);
         Assert.Equal("0af7651916cd43dd8448eb211c80319c", span.TraceId.ToHexString());
         Assert.Equal("b7ad6b7169203331", span.ParentSpanId.ToHexString());
     }
@@ -126,7 +126,7 @@ public class TelemetryTests
         request.Headers.Add("traceparent", "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01");
         await test.Client.SendAsync(request, Token);
 
-        Assert.NotEqual("0af7651916cd43dd8448eb211c80319c", spans.Single().TraceId.ToHexString());
+        Assert.NotEqual("0af7651916cd43dd8448eb211c80319c", spans.Single(test).TraceId.ToHexString());
     }
 
     [Fact]
@@ -189,26 +189,37 @@ public class TelemetryTests
         }
 
         /// <summary>
+        /// The one request span <paramref name="test"/>'s server recorded.
+        /// <para>
+        /// The listener is process-wide, so it also hears every other test running in parallel - the
+        /// switchboard's spans come from the same source whether or not telemetry is on. Only the
+        /// telemetry middleware starts <see cref="ActivityKind.Server"/> spans, and it tags them with
+        /// the Host the request was sent to, which carries this server's port.
+        /// </para>
+        /// <para>
         /// Polls rather than reading once: the span is recorded when the middleware unwinds, which
         /// can be after the client already has its response.
+        /// </para>
         /// </summary>
-        public Activity Single()
+        public Activity Single(TestServer test)
         {
+            var host = $"127.0.0.1:{test.Port}";
             var deadline = DateTime.UtcNow.AddSeconds(5);
 
-            while (DateTime.UtcNow < deadline)
-            {
-                lock (this.spans)
-                {
-                    if (this.spans.Count > 0)
-                        return Assert.Single(this.spans);
-                }
-
+            while (DateTime.UtcNow < deadline && this.From(host).Count == 0)
                 Thread.Sleep(10);
-            }
 
+            return Assert.Single(this.From(host));
+        }
+
+        List<Activity> From(string host)
+        {
             lock (this.spans)
-                return Assert.Single(this.spans);
+            {
+                return this.spans
+                    .Where(x => x.Kind == ActivityKind.Server && Equals(x.GetTagItem("server.address"), host))
+                    .ToList();
+            }
         }
 
         public void Dispose() => this.listener.Dispose();

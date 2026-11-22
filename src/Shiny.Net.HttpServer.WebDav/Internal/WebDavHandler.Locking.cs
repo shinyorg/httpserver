@@ -20,6 +20,8 @@ partial class WebDavHandler
     /// Null means the response has already been written and the caller is finished.
     /// </para>
     /// </summary>
+    /// <param name="context">The request.</param>
+    /// <param name="path">The resource the request writes to.</param>
     /// <param name="subtree">
     /// True when the operation reaches into the collection's members, as <c>DELETE</c> and
     /// <c>MOVE</c> do. A lock on anything inside blocks those.

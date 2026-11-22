@@ -396,7 +396,13 @@ public class DependencyInjectionTests
         await server.Client.GetStringAsync("/x", Token);
         await server.Client.GetStringAsync("/x", Token);
 
-        Assert.Equal(2, TrackedDisposable.DisposeCount);
+        // The scope ends as the request unwinds, after the response is on the wire - so the client
+        // can have its second answer before the second scope is disposed.
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (Volatile.Read(ref TrackedDisposable.DisposeCount) < 2 && DateTime.UtcNow < deadline)
+            await Task.Delay(10, Token);
+
+        Assert.Equal(2, Volatile.Read(ref TrackedDisposable.DisposeCount));
     }
 
     [Fact]

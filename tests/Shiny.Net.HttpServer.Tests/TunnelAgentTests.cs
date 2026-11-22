@@ -202,6 +202,7 @@ public class TunnelAgentTests
         Assert.Contains("did not announce a URL", error.Message);
     }
 
+    [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
     static StubbedScript StubScript(string contents)
     {
         var path = Path.Combine(Path.GetTempPath(), "shiny-stub-agent-" + Guid.NewGuid().ToString("n") + ".sh");

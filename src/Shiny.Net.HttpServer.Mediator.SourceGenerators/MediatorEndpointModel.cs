@@ -45,19 +45,17 @@ sealed record MediatorEndpointModel(
     string ContractDisplay,
     string? ResultFullyQualified,
 
-    /// <summary>True for POST/PUT/PATCH, where the contract is deserialized from the request body.</summary>
+    // True for POST/PUT/PATCH, where the contract is deserialized from the request body.
     bool BindsFromBody,
 
-    /// <summary>
-    /// Route tokens applied over a body-bound contract, e.g. the <c>{id}</c> in
-    /// <c>PUT /widgets/{id}</c>. Empty for everything else.
-    /// </summary>
+    // Route tokens applied over a body-bound contract, e.g. the {id} in PUT /widgets/{id}.
+    // Empty for everything else.
     EquatableArray<MediatorMemberModel> RouteOverrides,
 
-    /// <summary>True when <see cref="RouteOverrides"/> are applied with a <c>with</c> expression.</summary>
+    // True when RouteOverrides are applied with a with expression.
     bool ContractIsRecord,
 
-    /// <summary>Members bound from the route and query string. Empty when body-bound.</summary>
+    // Members bound from the route and query string. Empty when body-bound.
     EquatableArray<MediatorMemberModel> Members,
 
     string? OperationId,

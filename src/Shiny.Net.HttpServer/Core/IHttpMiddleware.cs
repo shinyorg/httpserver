@@ -6,7 +6,7 @@ namespace Shiny.Net.HttpServer;
 /// The delegate form (<see cref="HttpServer.Use(Func{HttpContext, RequestDelegate, ValueTask})"/>)
 /// is fine for a stopwatch or a header check. Once middleware needs dependencies, its own tests, or
 /// more than a screenful of code, it wants to be a type — which is what this is. Same contract
-/// either way: do work, call <paramref name="next"/> or don't, do more work.
+/// either way: do work, call <c>next</c> or don't, do more work.
 /// </para>
 /// <code>
 /// public sealed class ApiKeyMiddleware(IKeyStore keys) : IHttpMiddleware

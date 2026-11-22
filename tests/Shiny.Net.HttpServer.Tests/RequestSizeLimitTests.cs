@@ -160,7 +160,7 @@ public class RequestSizeLimitTests
         await using var test = await StartAsync(app => app.MapPost("/fixed", async ctx =>
         {
             var before = ctx.Request.IsMaxBodySizeReadOnly;
-            await ctx.Request.Body.ReadAsync(new byte[1], ctx.RequestAborted);
+            await ctx.Request.Body.ReadExactlyAsync(new byte[1], ctx.RequestAborted);
 
             var threw = false;
             try

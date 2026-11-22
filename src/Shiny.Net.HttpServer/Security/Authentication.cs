@@ -65,6 +65,7 @@ public interface IAuthenticationChallenge
     /// <summary>
     /// Writes a response and returns true, or returns false to let the default 401/403 stand.
     /// </summary>
+    /// <param name="context">The request that was refused.</param>
     /// <param name="forbidden">
     /// True when the caller is known and still not allowed — a login page will not help them.
     /// </param>

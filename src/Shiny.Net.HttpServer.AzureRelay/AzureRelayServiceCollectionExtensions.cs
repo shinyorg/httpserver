@@ -24,6 +24,8 @@ public static class AzureRelayServiceCollectionExtensions
     /// });
     /// </code>
     /// </summary>
+    /// <param name="builder">The server builder.</param>
+    /// <param name="configureOptions">The relay namespace, hybrid connection and credentials.</param>
     /// <param name="autoStart">
     /// Start the tunnel with the host. Off, the tunnel is registered but idle — resolve
     /// <see cref="AzureRelayTunnel"/> and call <see cref="AzureRelayTunnel.StartAsync"/> when the

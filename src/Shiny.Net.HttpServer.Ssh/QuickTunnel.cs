@@ -111,11 +111,15 @@ public sealed partial class QuickTunnel : IAsyncDisposable, INotifyPropertyChang
     }
 
     /// <summary>Builds a tunnel against one of the public hosts.</summary>
+    /// <param name="server">The server to expose.</param>
+    /// <param name="host">The public host to tunnel through.</param>
     /// <param name="subdomain">
     /// Requested name, where the host supports one. sish and Serveo read it as the subdomain;
     /// Pinggy has no notion of one and reads it as an access token instead, which is what buys a
     /// tunnel that outlives the 60-minute anonymous cap; localhost.run ignores it entirely.
     /// </param>
+    /// <param name="configure">Changes to the SSH options the host preset starts from.</param>
+    /// <param name="loggerFactory">Where the tunnel logs; null logs nowhere.</param>
     public static QuickTunnel For(
         HttpServer server,
         QuickTunnelHost host = QuickTunnelHost.Pinggy,
@@ -448,6 +452,12 @@ public static class QuickTunnelExtensions
     /// var url = await tunnel.StartAsync();
     /// </code>
     /// </summary>
+    /// <param name="builder">The server builder.</param>
+    /// <param name="host">The public host to tunnel through.</param>
+    /// <param name="subdomain">
+    /// Requested name, where the host supports one - see <see cref="QuickTunnel.For"/>.
+    /// </param>
+    /// <param name="configure">Changes to the SSH options the host preset starts from.</param>
     /// <param name="autoStart">
     /// Start with the host. Off by default, which is almost always right here: putting the server on
     /// the public internet is a decision a person makes by tapping something, not a side effect of

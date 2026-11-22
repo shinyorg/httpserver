@@ -29,6 +29,9 @@ sealed class JsonResult<T>(T value, JsonTypeInfo<T> typeInfo, string contentType
 /// The registry-backed sibling of <see cref="JsonResult{T}"/>: the static type is known, so the
 /// lookup happens once per closed generic rather than once per response.
 /// </summary>
+/// <param name="value">The value to serialize.</param>
+/// <param name="contentType">The <c>Content-Type</c> to write.</param>
+/// <param name="statusCode">The status code to write.</param>
 /// <param name="negotiable">
 /// Whether this result may hand off to content negotiation when the app turned
 /// <see cref="ContentNegotiationOptions.NegotiateByDefault"/> on. True for <c>Results.Ok(value)</c>,

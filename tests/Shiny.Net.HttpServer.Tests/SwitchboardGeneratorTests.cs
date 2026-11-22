@@ -252,12 +252,12 @@ public class SwitchboardGeneratorTests
 
         var client = CSharpCompilation.Create(
             "Client",
-            [CSharpSyntaxTree.ParseText(withoutContext)],
+            [CSharpSyntaxTree.ParseText(withoutContext, cancellationToken: TestContext.Current.CancellationToken)],
             bcl,
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary)
         );
 
-        Assert.Empty(client.GetDiagnostics().Where(d => d.Severity >= DiagnosticSeverity.Warning));
+        Assert.Empty(client.GetDiagnostics(TestContext.Current.CancellationToken).Where(d => d.Severity >= DiagnosticSeverity.Warning));
     }
 
     [Fact]

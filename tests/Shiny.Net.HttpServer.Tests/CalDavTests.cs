@@ -44,7 +44,10 @@ public class CalDavTests
 
         public string Path { get; }
 
+        /// <param name="http2">Talk HTTP/2 instead of HTTP/1.1.</param>
+        /// <param name="configure">Changes to the CalDAV options.</param>
         /// <param name="directory">An existing directory to serve, which the caller owns; null makes a fresh one.</param>
+        /// <param name="user">The user the client signs in as.</param>
         public static async Task<Dav> StartAsync(bool http2 = false, Action<CalDavOptions>? configure = null, string? directory = null, string user = "ada")
         {
             var owned = directory is null ? new ContentRoot() : null;

@@ -82,10 +82,13 @@ public interface IWebDavFileSystem
     /// <summary>
     /// Copies a file or collection, on the same terms as <see cref="MoveAsync"/>.
     /// </summary>
+    /// <param name="source">The file or collection to copy.</param>
+    /// <param name="destination">Where the copy goes.</param>
     /// <param name="recursive">
     /// False only for a collection copied with <c>Depth: 0</c>, which RFC 4918 §9.8.3 defines as
     /// the collection without its members.
     /// </param>
+    /// <param name="cancellationToken">Cancels the copy.</param>
     ValueTask CopyAsync(string source, string destination, bool recursive, CancellationToken cancellationToken);
 
     /// <summary>

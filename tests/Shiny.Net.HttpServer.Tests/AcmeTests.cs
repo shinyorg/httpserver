@@ -266,6 +266,7 @@ public class AcmeTests
     }
 
     [Fact]
+    [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
     public async Task Writes_keys_owner_only()
     {
         Assert.SkipWhen(OperatingSystem.IsWindows(), "Unix file modes do not apply on Windows.");
@@ -306,7 +307,11 @@ public class AcmeTests
         Assert.Equal(ca.Issued[0].Thumbprint, (await Handshake(host.HttpsPort, Domain)).Certificate.Thumbprint);
     }
 
+    // QUIC's server options exist only where msquic does; IsSupported below decides whether to bind.
     [Fact]
+    [System.Runtime.Versioning.SupportedOSPlatform("linux")]
+    [System.Runtime.Versioning.SupportedOSPlatform("macos")]
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
     public async Task Serves_the_acme_certificate_on_the_http3_listener_and_follows_renewals()
     {
         await using var ca = await FakeAcmeCa.StartAsync();

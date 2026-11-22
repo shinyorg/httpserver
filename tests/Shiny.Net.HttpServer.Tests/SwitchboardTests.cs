@@ -246,7 +246,7 @@ public class SwitchboardTests
 
         var @operator = server.Server.Services!.GetRequiredService<IOperator<TestBoard>>();
         Assert.Equal([member.LineId], @operator.Groups.GetLines("kitchen"));
-        Assert.Equal(1, await @operator.Groups.RemoveGroupAsync("kitchen"));
+        Assert.Equal(1, await @operator.Groups.RemoveGroupAsync("kitchen", Token));
         Assert.Empty(@operator.Groups.GetLines("kitchen"));
     }
 
