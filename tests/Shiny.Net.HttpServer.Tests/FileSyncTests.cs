@@ -533,6 +533,13 @@ public class FileSyncTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton<Shiny.Net.IConnectivity>(new AlwaysOnline());
+
+        // The transfer queue in this test's own folder. Left to itself, AddHttpClientTransfers keeps it
+        // in {LocalApplicationData}/Shiny, shared by every run on the machine - and with seeded data the
+        // pack, and so the transfer identifier, is the same every time. The net10.0 and net11.0 runs then
+        // collide on one queue entry, and an entry a killed run left behind is found by every later run,
+        // which waits on it forever.
+        Shiny.RepositoryExtensions.AddDefaultRepository(services, new DirectoryInfo(scratch.Dir("transfers")));
         Shiny.HttpTransferServiceCollectionExtensions.AddHttpClientTransfers<FileSyncTestDelegate>(services);
         await using var provider = services.BuildServiceProvider();
         var transfers = provider.GetRequiredService<IHttpTransferManager>();

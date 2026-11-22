@@ -3,8 +3,16 @@
   <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
 
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <!-- Every library ships for both the current LTS and the current STS runtime. The mobile package
+         replaces this with its platform slices. -->
+    <TargetFrameworks>net10.0;net11.0</TargetFrameworks>
     <IsPackable>true</IsPackable>
+  </PropertyGroup>
+
+  <!-- The source generators are netstandard2.0 analyzers and set their own single TargetFramework.
+       Restore reads TargetFrameworks before TargetFramework, so the pair above must never reach them. -->
+  <PropertyGroup Condition="$(MSBuildProjectName.EndsWith('.SourceGenerators'))">
+    <TargetFrameworks></TargetFrameworks>
   </PropertyGroup>
 
   <!-- Trim/AOT analyzers on for every shipping library. These are the guardrails

@@ -45,6 +45,17 @@ sealed class TunnelSession(
     public bool TryMarkEnded()
         => Volatile.Read(ref this.announced) == 1 && Interlocked.Exchange(ref this.ended, 1) == 0;
 
+    readonly TaskCompletionSource closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    int closing;
+
+    /// <summary>True exactly once: whoever gets it tears the session down and then calls <see cref="MarkClosed"/>.</summary>
+    public bool TryBeginClose() => Interlocked.Exchange(ref this.closing, 1) == 0;
+
+    /// <summary>Completes once the session is torn down and its close has been reported.</summary>
+    public Task Closed => this.closed.Task;
+
+    public void MarkClosed() => this.closed.TrySetResult();
+
     public EndPoint? RemoteEndPoint => control.RemoteEndPoint;
 
     /// <summary>Pumps the control connection until the client disconnects.</summary>

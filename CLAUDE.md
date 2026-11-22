@@ -47,9 +47,14 @@ change unless there's a reason not to.
 Release notes live in the documentation repo at
 `~/Desktop/dev/documentation/src/content/docs/httpserver/release-notes.mdx`.
 
-**Which version does a note go against?** Use the `version` field in `version.json` (this repo uses
-Nerdbank.GitVersioning) — **the raw version portion only** (strip any prerelease/build-metadata
-suffix, e.g. the current `1.0.0-beta.{height}` → `1.0.0`).
+**Which version does a note go against?** Releases come from git tags on `main` (`v2.3.0`, or
+`v2.3.0-beta.1` for a prerelease; a tag on a commit that is not on `main` fails the release): `.github/workflows/release.yml` builds, tests and publishes at the tag's version,
+and there is nothing to bump in the repo (local and CI builds are `0.0.0-dev`). So a note goes against
+the **next version to be tagged** — the version of the `## <version> TBD` section at the top of the
+release notes if one exists; otherwise the next version after the newest tag (`git tag --sort=-v:refname`), or
+after the newest dated section in the release notes when that is newer (releases before 2.3 were
+versioned by Nerdbank.GitVersioning and never tagged), minor for a feature, patch for a fix-only release. Never put a note under a dated section that has
+already shipped.
 
 **Heading style — match the existing file.** Feature/minor releases are headed by `major.minor`
 (`## 1.1 - June 13, 2026`); patch releases use the full `major.minor.patch` (`## 1.0.2 - May 30,
@@ -62,9 +67,8 @@ suffix, e.g. the current `1.0.0-beta.{height}` → `1.0.0`).
 - If no section exists for that version yet, **create a new `## <version> TBD` heading** at the top
   and add the note there.
 
-**If the version is a final release**, the section is dated (`## 1.1 - June 13, 2026`); add the note
-under the matching dated section (or promote the `TBD` section to a dated one when cutting the
-release).
+**When cutting a release**, promote the `TBD` section to a dated one (`## 2.3 - November 21, 2026`)
+in the same change that precedes the tag.
 
 Each note is a single `<RN>` line. Use `type="breaking"` for breaking changes (it's its own note
 type here, not a flag). Newest version section stays at the top of the file.

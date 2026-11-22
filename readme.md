@@ -169,7 +169,8 @@ is built on the one below and they compose in the same app.
 | **Discovery** | The other half of hosting on a phone. mDNS advertises the server as the device moves and withdraws it when the server stops — telling a restart apart from a stop, so peers are not made to re-resolve a service that never went away — and a publication the responder refuses is retried rather than leaving an app that runs perfectly and is found by nobody; the locator turns what is on the link into a base address a client can call |
 | **Testing** | An in-memory transport, so an endpoint test costs no port and leaks no listener while still going through the real parser, router, middleware and framing |
 
-Everything shipping targets `net10.0` with the trim, AOT and single-file analyzers enabled, so
+Everything shipping targets `net10.0` and `net11.0` (the mobile package adds the Android, iOS
+and Mac Catalyst slices of both) with the trim, AOT and single-file analyzers enabled, so
 "AOT-clean" is enforced by the build rather than claimed in a readme.
 
 ## Documentation

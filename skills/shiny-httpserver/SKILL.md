@@ -563,8 +563,10 @@ with similar-looking names.
 **Documentation**: https://shinylib.net/httpserver
 
 Only `Microsoft.Extensions.*` abstractions are taken as dependencies. Everything else — JSON, crypto,
-JWT, OpenAPI, HPACK, QPACK — is in the box. Everything targets `net10.0` with the trim, AOT and
-single-file analyzers on.
+JWT, OpenAPI, HPACK, QPACK — is in the box. Everything targets `net10.0` and `net11.0` with the trim,
+AOT and single-file analyzers on; `Shiny.Net.HttpServer.Mobile` adds `-android`, `-ios` and
+`-maccatalyst` for both. On `net11.0-android` the floor is API 24 (the .NET 11 Android SDK's minimum);
+`net10.0-android` stays at 21.
 
 **The single hard rule: nothing is discovered by reflection.** Routes and binders are generated at
 compile time; JSON goes through `JsonTypeInfo` from a `JsonSerializerContext`. Any code you generate
@@ -2282,8 +2284,8 @@ app.MapDocuments<Order>("/orders", o =>
 ## tvOS
 
 tvOS is **not** MAUI — MAUI does not target the platform. A tvOS app is a native app on
-`net10.0-tvos` with a `UIApplicationDelegate`, and it references `Shiny.Net.HttpServer` the way any
-other project does; the core is plain `net10.0` and needs nothing special.
+`net10.0-tvos` or `net11.0-tvos` with a `UIApplicationDelegate`, and it references `Shiny.Net.HttpServer`
+the way any other project does; the core is plain `net10.0`/`net11.0` and needs nothing special.
 
 Rules that matter when generating a tvOS app:
 

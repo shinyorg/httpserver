@@ -104,8 +104,25 @@ public sealed class RelayServer : IAsyncDisposable
 
         // Only this session's entry: the host may already belong to a client that registered again.
         this.sessions.TryRemove(KeyValuePair.Create(session.Host, session));
-        await session.DisposeAsync().ConfigureAwait(false);
-        this.RaiseDisconnected(session);
+
+        // A session can be closed from two sides at once - StopAsync and the session's own loop
+        // seeing the shutdown token. The loser waits for the winner, so neither returns before the
+        // close has been reported.
+        if (!session.TryBeginClose())
+        {
+            await session.Closed.ConfigureAwait(false);
+            return;
+        }
+
+        try
+        {
+            await session.DisposeAsync().ConfigureAwait(false);
+            this.RaiseDisconnected(session);
+        }
+        finally
+        {
+            session.MarkClosed();
+        }
     }
 
     void RaiseDisconnected(TunnelSession session)
@@ -195,6 +212,9 @@ public sealed class RelayServer : IAsyncDisposable
         if (this.controlLoop is null)
             return;
 
+        // Taken before cancelling: once the token fires, a session's own loop can remove it from
+        // the dictionary while it is still closing, and StopAsync must wait for that close too.
+        var open = this.sessions.Values.ToArray();
         await this.shutdown.CancelAsync().ConfigureAwait(false);
 
         if (this.controlListener is not null)
@@ -203,7 +223,7 @@ public sealed class RelayServer : IAsyncDisposable
         if (this.publicListener is not null)
             await this.publicListener.UnbindAsync(cancellationToken).ConfigureAwait(false);
 
-        foreach (var session in this.sessions.Values)
+        foreach (var session in open.Concat(this.sessions.Values).Distinct())
             await this.CloseAsync(session, RelayTunnelCloseReason.RelayStopped).ConfigureAwait(false);
 
         this.controlLoop = null;

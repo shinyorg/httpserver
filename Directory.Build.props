@@ -19,6 +19,9 @@
     <PackageReleaseNotes>https://shinylib.net/release-notes</PackageReleaseNotes>
     <PackageProjectUrl>https://shinylib.net</PackageProjectUrl>
     <PackageTags>http httpserver webserver maui aot mcp ssh azure-relay jwt oauth shiny</PackageTags>
+
+    <!-- local / CI builds only - release.yml stamps the real version from the v* tag with -p:Version -->
+    <Version Condition="'$(Version)' == ''">0.0.0-dev</Version>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">
@@ -34,13 +37,6 @@
     <None Include="$(MSBuildThisFileDirectory)nuget.png" Pack="true" PackagePath="icon.png" Visible="false" />
     <None Include="$(MSBuildThisFileDirectory)nuget.txt" Pack="true" PackagePath="readme.txt" Visible="false" />
     <None Include="$(MSBuildThisFileDirectory)readme.md" Pack="true" PackagePath="\" Visible="false" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <PackageReference Include="Nerdbank.GitVersioning">
-      <PrivateAssets>all</PrivateAssets>
-      <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
-    </PackageReference>
   </ItemGroup>
 
 </Project>

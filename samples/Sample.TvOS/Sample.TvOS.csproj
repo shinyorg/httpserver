@@ -3,8 +3,9 @@
     <PropertyGroup>
         <!-- samples/Directory.Build.props sets a single net10.0 TargetFramework for the console
              samples. This one is an app bundle for a single Apple platform, so that is replaced
-             rather than added to. -->
-        <TargetFramework>net10.0-tvos</TargetFramework>
+             rather than added to. net11.0 because the net10.0 Apple SDKs require Xcode 26, and this
+             repo builds with Xcode 27. -->
+        <TargetFramework>net11.0-tvos</TargetFramework>
         <SupportedOSPlatformVersion>17.0</SupportedOSPlatformVersion>
 
         <OutputType>Exe</OutputType>

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
+using System.Reflection;
 
 namespace Shiny.Net.HttpServer.Telemetry;
 
@@ -20,9 +21,15 @@ public static class HttpServerTelemetry
 
     public const string MeterName = "Shiny.Net.HttpServer";
 
+    // The package version, as the build stamped it. Read once, and before the source and meter below,
+    // which take it: static initializers run in declaration order.
+    static readonly string? Version = typeof(HttpServerTelemetry).Assembly
+        .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
+        .InformationalVersion;
+
     /// <summary>The source every server span is started from.</summary>
-    public static ActivitySource ActivitySource { get; } = new(ActivitySourceName, ThisAssembly.AssemblyInformationalVersion);
+    public static ActivitySource ActivitySource { get; } = new(ActivitySourceName, Version);
 
     /// <summary>The meter every server instrument is created on.</summary>
-    public static Meter Meter { get; } = new(MeterName, ThisAssembly.AssemblyInformationalVersion);
+    public static Meter Meter { get; } = new(MeterName, Version);
 }

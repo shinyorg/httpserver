@@ -592,7 +592,10 @@ public class TusTests
     public async Task A_method_override_is_visible_to_middleware_after_the_endpoint()
     {
         using var dir = new UploadDirectory();
-        string? seen = null;
+
+        // A completion rather than a field: the response can reach the client before the middleware
+        // has run the line after next(), so reading a plain field straight after the send races.
+        var seen = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         await using var server = await TestServer.StartAsync(
             app =>
@@ -600,7 +603,8 @@ public class TusTests
                 app.Use(async (ctx, next) =>
                 {
                     await next(ctx);
-                    seen = ctx.Request.Method;
+                    if (ctx.Request.Headers.ContainsKey(TusHeaderNames.XHttpMethodOverride))
+                        seen.TrySetResult(ctx.Request.Method);
                 });
                 app.MapTus("/files", o => o.Store = dir.Store());
             }
@@ -614,7 +618,7 @@ public class TusTests
         patch.Content = Chunk(Bytes(4));
 
         Assert.Equal(HttpStatusCode.NoContent, (await Send(server.Client, patch, Token)).StatusCode);
-        Assert.Equal("PATCH", seen);
+        Assert.Equal("PATCH", await seen.Task.WaitAsync(TimeSpan.FromSeconds(10), Token));
     }
 
     /// <summary>A tunnelled HEAD is answered like a real one: the status, and no problem body.</summary>
