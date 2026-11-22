@@ -65,7 +65,7 @@ it on a screen is the wrong trade.
 
 **`ViewModels/ServerViewModel.cs`** — the threading. `QuickTunnel` raises its changes **on a
 background thread**, because a reconnect happens whenever the network does, and MAUI will not marshal
-that for you. Every `IMainThread` hop in that file is for that reason.
+that for you. Every `MainThread.BeginInvokeOnMainThread` hop in that file is for that reason.
 
 The other half of the same point: the view binds to `PublicUrl` rather than reading it once. A free
 tunnel hands out a **different address on every reconnect**, so an app that captured the first URL

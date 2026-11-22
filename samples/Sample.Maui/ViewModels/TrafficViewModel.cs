@@ -16,8 +16,7 @@ public partial class TrafficViewModel(
     RequestLog log,
     TrafficBadge badge,
     INavigator navigator,
-    IDialogs dialogs,
-    IMainThread mainThread
+    IDialogs dialogs
 ) : ObservableObject, IPageLifecycleAware
 {
     /// <summary>How many entries the list holds. The log keeps more; a list view shows less.</summary>
@@ -69,7 +68,7 @@ public partial class TrafficViewModel(
         this.OnPropertyChanged(nameof(this.IsEmpty));
     }
 
-    void OnRequest(object? sender, RequestLogEntry entry) => mainThread.BeginInvokeOnMainThread(() =>
+    void OnRequest(object? sender, RequestLogEntry entry) => MainThread.BeginInvokeOnMainThread(() =>
     {
         this.Requests.Insert(0, entry);
 
@@ -83,5 +82,5 @@ public partial class TrafficViewModel(
         badge.Clear();
     });
 
-    void OnCleared(object? sender, EventArgs e) => mainThread.BeginInvokeOnMainThread(this.Reload);
+    void OnCleared(object? sender, EventArgs e) => MainThread.BeginInvokeOnMainThread(this.Reload);
 }

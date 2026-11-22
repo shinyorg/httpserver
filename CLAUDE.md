@@ -47,12 +47,12 @@ change unless there's a reason not to.
 Release notes live in the documentation repo at
 `~/Desktop/dev/documentation/src/content/docs/httpserver/release-notes.mdx`.
 
-**Which version does a note go against?** Releases come from git tags on `main` (`v2.3.0`, or
-`v2.3.0-beta.1` for a prerelease; a tag on a commit that is not on `main` fails the release): `.github/workflows/release.yml` builds, tests and publishes at the tag's version,
+**Which version does a note go against?** Releases come from git tags on `main` (`v3.0.0`, or
+`v3.0.0-beta.1` for a prerelease; a tag on a commit that is not on `main` fails the release): `.github/workflows/release.yml` builds, tests and publishes at the tag's version,
 and there is nothing to bump in the repo (local and CI builds are `0.0.0-dev`). So a note goes against
 the **next version to be tagged** — the version of the `## <version> TBD` section at the top of the
 release notes if one exists; otherwise the next version after the newest tag (`git tag --sort=-v:refname`), or
-after the newest dated section in the release notes when that is newer (releases before 2.3 were
+after the newest dated section in the release notes when that is newer (releases before 3.0 were
 versioned by Nerdbank.GitVersioning and never tagged), minor for a feature, patch for a fix-only release. Never put a note under a dated section that has
 already shipped.
 
@@ -67,7 +67,7 @@ already shipped.
 - If no section exists for that version yet, **create a new `## <version> TBD` heading** at the top
   and add the note there.
 
-**When cutting a release**, promote the `TBD` section to a dated one (`## 2.3 - November 21, 2026`)
+**When cutting a release**, promote the `TBD` section to a dated one (`## 3.0 - November 22, 2026`)
 in the same change that precedes the tag.
 
 Each note is a single `<RN>` line. Use `type="breaking"` for breaking changes (it's its own note

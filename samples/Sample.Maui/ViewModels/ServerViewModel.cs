@@ -14,8 +14,7 @@ namespace Sample.Maui.ViewModels;
 /// <para>
 /// The only interesting part is the threading. <see cref="QuickTunnel"/> raises its changes from the
 /// background — a reconnect happens whenever the network does — and MAUI will not marshal that for
-/// you. <see cref="IMainThread"/> is Shiny's abstraction over that hop; it exists because MAUI's own
-/// <c>MainThread.InvokeOnMainThreadAsync</c> misbehaves on some desktop targets.
+/// you, so every handler hops back with <see cref="MainThread.BeginInvokeOnMainThread"/>.
 /// </para>
 /// </summary>
 [ShellMap<ServerPage>("Server", registerRoute: false)]
@@ -24,8 +23,7 @@ public partial class ServerViewModel(
     QuickTunnel tunnel,
     RequestLog log,
     CredentialStore credentials,
-    IDialogs dialogs,
-    IMainThread mainThread
+    IDialogs dialogs
 ) : ObservableObject, IPageLifecycleAware
 {
     /// <summary>Live while a share is being opened, so the user can call it off.</summary>
@@ -450,9 +448,9 @@ public partial class ServerViewModel(
         : "The keychain was unavailable, so this is stored unencrypted.";
 
     void OnCredentialsChanged(object? sender, EventArgs e)
-        => mainThread.BeginInvokeOnMainThread(this.ShowCredentials);
+        => MainThread.BeginInvokeOnMainThread(this.ShowCredentials);
 
-    void OnTunnelChanged(object? sender, PropertyChangedEventArgs e) => mainThread.BeginInvokeOnMainThread(() =>
+    void OnTunnelChanged(object? sender, PropertyChangedEventArgs e) => MainThread.BeginInvokeOnMainThread(() =>
     {
         this.PublicUrl = tunnel.PublicUrl;
         this.Status = Describe(tunnel.State);
@@ -460,7 +458,7 @@ public partial class ServerViewModel(
     });
 
     void OnRequest(object? sender, RequestLogEntry entry)
-        => mainThread.BeginInvokeOnMainThread(() => this.RequestCount = log.Total);
+        => MainThread.BeginInvokeOnMainThread(() => this.RequestCount = log.Total);
 
     static string Describe(QuickTunnelState state) => state switch
     {

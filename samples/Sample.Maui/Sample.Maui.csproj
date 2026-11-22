@@ -89,7 +89,7 @@
 		<!-- The UI half of the sample: tabs, routes and dialogs from Shiny.Maui.Shell, observable
 		     properties and commands from the MVVM toolkit. Neither is needed to host the server —
 		     they are here because a sample that shows live traffic needs more than one screen. -->
-		<PackageReference Include="Shiny.Maui.Shell" Version="6.3.2" />
+		<PackageReference Include="Shiny.Maui.Shell" Version="8.0.0" />
 		<PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
 	</ItemGroup>
 

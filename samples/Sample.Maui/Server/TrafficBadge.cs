@@ -14,7 +14,6 @@ namespace Sample.Maui.Server;
 public sealed class TrafficBadge(
     RequestLog log,
     INavigator navigator,
-    IMainThread mainThread,
     ILogger<TrafficBadge> logger
 ) : IMauiInitializeService
 {
@@ -37,7 +36,7 @@ public sealed class TrafficBadge(
     {
         var count = Volatile.Read(ref this.unseen);
 
-        mainThread.BeginInvokeOnMainThread(async () =>
+        MainThread.BeginInvokeOnMainThread(async () =>
         {
             try
             {
