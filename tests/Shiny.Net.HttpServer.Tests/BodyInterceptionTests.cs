@@ -243,6 +243,10 @@ public class BodyInterceptionTests
 
         Assert.Equal("hello from the handler", await response.Content.ReadAsStringAsync(Token));
         Assert.Equal("hello from the handler", log.ResponseText);
+
+        // WriteAsync can put the whole response on the wire before the handler returns, so the
+        // client may have it before the middleware's finally has recorded the status.
+        await Wait.UntilAsync(() => log.StatusCode != 0, Token);
         Assert.Equal(StatusCodes.Status200OK, log.StatusCode);
     }
 

@@ -154,9 +154,11 @@ public class Http2VanishedClientTests
                     total += read;
                 received.TrySetResult(total);
             }),
-            builder => builder.Options.Limits.RequestBodyTimeout = TimeSpan.FromMilliseconds(400)
+            builder => builder.Options.Limits.RequestBodyTimeout = TimeSpan.FromSeconds(1)
         );
 
+        // A chunk every quarter of the timeout, for well over the timeout in total. The gap leaves a
+        // loaded CI runner room to be late without the read timing out.
         await using var client = await Http2RawClient.ConnectAsync(server.Port);
         await client.HeadersAsync(1, "POST", "/upload", endStream: false);
         for (var i = 0; i < 8; i++)
