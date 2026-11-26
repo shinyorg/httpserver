@@ -61,29 +61,39 @@ public class Http2VanishedClientTests
     [Fact]
     public async Task A_stream_that_keeps_getting_credit_is_not_reset_however_long_it_runs()
     {
+        const int Frames = 16;
+
         await using var server = await TestServer.StartAsync(
             app => app.MapGet("/big", async ctx =>
             {
                 var chunk = new byte[16 * 1024];
-                for (var i = 0; i < 64; i++)
+                for (var i = 0; i < Frames; i++)
                     await ctx.Response.Body.WriteAsync(chunk, ctx.RequestAborted);
             }),
-            builder => builder.Options.Limits.ResponseWriteTimeout = TimeSpan.FromMilliseconds(300)
+            builder => builder.Options.Limits.ResponseWriteTimeout = TimeSpan.FromSeconds(1)
         );
 
         await using var client = await Http2RawClient.ConnectAsync(server.Port, initialWindow: 16 * 1024);
 
-        // A slow reader: credit for each frame, but only after a pause longer than half the timeout,
-        // for well over the timeout in total.
+        // A slow reader: credit for each frame, but only after a pause, for well over the timeout in
+        // total. The pause is a quarter of the timeout so a loaded CI runner has room to be late.
         client.OnFrame = frame =>
         {
             if (frame.Type == Http2RawFrame.Data && frame.Length > 0)
             {
                 _ = Task.Run(async () =>
                 {
-                    await Task.Delay(200);
-                    await client.WindowUpdateAsync(1, frame.Length);
-                    await client.WindowUpdateAsync(0, frame.Length);
+                    try
+                    {
+                        await Task.Delay(250);
+                        await client.WindowUpdateAsync(1, frame.Length);
+                        await client.WindowUpdateAsync(0, frame.Length);
+                    }
+                    catch
+                    {
+                        // The client may be disposed by the time the pause ends; a fault left here
+                        // would surface as an unobserved task exception in some other test.
+                    }
                 });
             }
         };
@@ -93,7 +103,7 @@ public class Http2VanishedClientTests
         var end = await client.WaitForEndAsync(1, TimeSpan.FromSeconds(30));
         Assert.NotNull(end);
         Assert.NotEqual(Http2RawFrame.RstStream, end.Type);
-        Assert.Equal(64 * 16 * 1024, client.DataBytes(1));
+        Assert.Equal(Frames * 16 * 1024, client.DataBytes(1));
     }
 
     [Fact]

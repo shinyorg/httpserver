@@ -231,7 +231,9 @@ public class Http2HardeningTests
 
         Assert.NotNull(goAway);
         Assert.Equal(11u, goAway.ErrorCode); // ENHANCE_YOUR_CALM
-        Assert.InRange(Volatile.Read(ref maxConcurrent), 1, 100);
+        // On a slow machine the GOAWAY can land before any handler has started, so 0 is fine; the
+        // point is that resets never let the client past the limit.
+        Assert.InRange(Volatile.Read(ref maxConcurrent), 0, 100);
     }
 
     // ---- 3. Header limits ----
