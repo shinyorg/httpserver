@@ -171,6 +171,14 @@ public class ProxyTrailerTests
         var good = $"127.0.0.1:{upstream.Port}";
         var bad = $"127.0.0.1:{dead}";
 
+        // The proxy records its metrics as the exchange unwinds, which can be after the client has
+        // its answer - so wait for the last of them rather than racing it.
+        await Wait.UntilAsync(
+            () => measurements.Any(x => x.Instrument == "shiny.proxy.upstream.errors" && Equals(x.Tags.GetValueOrDefault("server.address"), bad))
+                && measurements.Count(x => x.Instrument == "shiny.proxy.upstream.request.duration") >= 2,
+            Token
+        );
+
         var duration = Assert.Single(measurements, x => x.Instrument == "shiny.proxy.upstream.request.duration" && Equals(x.Tags["server.address"], good));
         Assert.Equal(200, duration.Tags["http.response.status_code"]);
         Assert.Equal("GET", duration.Tags["http.request.method"]);
