@@ -39,7 +39,11 @@ sealed class TunnelSession(
         => Interlocked.CompareExchange(ref this.closeReason, (int)reason, -1);
 
     /// <summary>Marks the tunnel as reported connected. Only an announced tunnel is reported closed.</summary>
-    public void MarkAnnounced() => Volatile.Write(ref this.announced, 1);
+    /// <remarks>
+    /// A full fence, paired with the one in <see cref="TryBeginClose"/>: an announcer that then checks
+    /// <see cref="IsClosing"/> and a closer that then checks the announcement cannot both miss.
+    /// </remarks>
+    public void MarkAnnounced() => Interlocked.Exchange(ref this.announced, 1);
 
     /// <summary>True exactly once, for an announced tunnel: whoever gets it reports the close.</summary>
     public bool TryMarkEnded()
@@ -50,6 +54,9 @@ sealed class TunnelSession(
 
     /// <summary>True exactly once: whoever gets it tears the session down and then calls <see cref="MarkClosed"/>.</summary>
     public bool TryBeginClose() => Interlocked.Exchange(ref this.closing, 1) == 0;
+
+    /// <summary>True once a close has begun.</summary>
+    public bool IsClosing => Volatile.Read(ref this.closing) == 1;
 
     /// <summary>Completes once the session is torn down and its close has been reported.</summary>
     public Task Closed => this.closed.Task;

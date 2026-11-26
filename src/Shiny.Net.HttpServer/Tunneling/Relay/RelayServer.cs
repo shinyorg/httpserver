@@ -154,6 +154,12 @@ public sealed class RelayServer : IAsyncDisposable
         {
             this.logger.LogError(ex, "A TunnelConnected handler threw for {Host}", session.Host);
         }
+
+        // The session is visible to DisconnectAsync before it is announced. A close that began first
+        // saw no announcement and reported nothing, so it is reported here; TryMarkEnded keeps it to
+        // one report whichever side gets there.
+        if (session.IsClosing)
+            this.RaiseDisconnected(session);
     }
 
     /// <summary>Where tunnel clients should connect. Reflects the real port when 0 was requested.</summary>
@@ -366,10 +372,13 @@ public sealed class RelayServer : IAsyncDisposable
 
         try
         {
-            // Inside the try: a client gone before the acknowledgement must not leave its host claimed.
-            await channel.SendAsync(TunnelFrameType.HelloAck, 0, tunnel.PublicUrl, token).ConfigureAwait(false);
+            // Announced before the acknowledgement, so a client that has its ack - and may disconnect
+            // or be disconnected straight away - is never ahead of TunnelConnected. Inside the try: a
+            // client gone before the acknowledgement must not leave its host claimed, and the close
+            // that follows reports TunnelDisconnected for the tunnel just announced.
             this.logger.LogInformation("Tunnel registered for {Host} from {Remote}", host, connection.RemoteEndPoint);
             this.RaiseConnected(session);
+            await channel.SendAsync(TunnelFrameType.HelloAck, 0, tunnel.PublicUrl, token).ConfigureAwait(false);
 
             await session.RunAsync(token).ConfigureAwait(false);
         }
