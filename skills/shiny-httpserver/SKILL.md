@@ -119,6 +119,11 @@ triggers:
 - KnownProxies
 - BeginRegistration
 - AllowedOrigins
+- WebSocketAcceptOptions
+- ForwardLimit
+- TicketProtector
+- MaxHeaderListSize
+- OwnerSelector
 - MapProxy
 - ProxyOptions
 - MapReverseProxy
@@ -762,6 +767,11 @@ runs out; then the remaining connections are cancelled and aborted. A long-lived
 WebSocket) therefore holds a stop for the full timeout — lower `ShutdownTimeout` in an app that stops
 often. HTTP/2 follows the same rules: `GOAWAY` at once, then open streams finish within the timeout.
 
+HTTP/2 limits live on `Options.Http2`: `MaxConcurrentStreams` counts a stream until its handler finishes
+(a reset doesn't free the slot, so Rapid Reset clients get `ENHANCE_YOUR_CALM`), and `MaxHeaderListSize`
+(32 KiB, decoded) answers oversized headers with 431 before any handler runs. Raise it rather than
+working around a 431 for large cookies or tokens.
+
 `StateChanged` gives a UI its transitions. **`StateTransitioned` is what to generate whenever the app
 needs to diagnose a server that went down** — it carries an `HttpServerStateChange` with the reason
 and the exception:
@@ -1187,7 +1197,9 @@ builder.AddAuthorization(o =>
 - Cookie auth: `SignInAsync(user, persistent: false)` stays a browser-session cookie across sliding
   renewals. Use `o.OnValidatePrincipal = ctx => { … ctx.ReplacePrincipal(fresh) / ctx.RejectPrincipal() /
   ctx.ShouldRenew = true; }` to refresh claims (a renewal otherwise copies the old ones). One
-  `TicketProtector` may serve both `AddCookie` and `AddSessions` — tickets are purpose-bound.
+  `TicketProtector` may serve both `AddCookie` and `AddSessions` — tickets are purpose-bound. When
+  protecting tickets yourself, always pass a purpose (`protector.Protect(ticket, "my-feature")` /
+  `Unprotect(value, "my-feature")`) so they can't be replayed as a sign-in or session cookie.
 - **Every `Add…` registration composes.** `AddAuthorization`, `AddCors`, `AddRateLimiter` and the rest can
   be called more than once; each call's configuration applies, in order. When writing an `Add…` for a
   package built on this library, register options with `OptionsRegistration.Configure(builder.Services,
