@@ -150,17 +150,28 @@ public static class ProxyExtensions
             destination.BeginRequest();
             try
             {
-                var error = await HttpForwarder
-                    .SendAsync(context, destination, options, client, logger, context.RequestAborted)
-                    .ConfigureAwait(false);
-
+                // Reported as soon as the outcome is known - before the 502 goes out - so a caller
+                // that retries straight away is not routed back to the destination that just failed.
                 // Only the failures that say something about the *destination* count against it. A
                 // caller that hung up, or an upstream that answered 500, says nothing about whether
                 // this instance is reachable.
-                if (error is ProxyError.Request or ProxyError.RequestTimeout)
-                    destination.ReportFailure(cluster.HealthCheck.Passive);
-                else if (error is ProxyError.None)
-                    destination.ReportSuccess();
+                await HttpForwarder
+                    .SendAsync(
+                        context,
+                        destination,
+                        options,
+                        client,
+                        logger,
+                        context.RequestAborted,
+                        error =>
+                        {
+                            if (error is ProxyError.Request or ProxyError.RequestTimeout)
+                                destination.ReportFailure(cluster.HealthCheck.Passive);
+                            else if (error is ProxyError.None)
+                                destination.ReportSuccess();
+                        }
+                    )
+                    .ConfigureAwait(false);
             }
             finally
             {

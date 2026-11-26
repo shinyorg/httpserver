@@ -77,18 +77,36 @@ public static class HttpForwarder
     /// </summary>
     internal static HttpMessageInvoker SharedClient() => Default.Instance;
 
+    // onSettled is called once with the outcome as soon as it is known, and for a failure before
+    // anything is written to the caller. A caller that has its 502 can then rely on the error
+    // metric and on the destination's passive health already reflecting it - a client that
+    // retries straight away is not sent back to the destination that just failed it.
     internal static async ValueTask<ProxyError> SendAsync(
         HttpContext context,
         ProxyDestination destination,
         ProxyOptions options,
         HttpMessageInvoker client,
         ILogger? logger,
-        CancellationToken cancellationToken
+        CancellationToken cancellationToken,
+        Action<ProxyError>? onSettled = null
     )
     {
-        var error = await SendCoreAsync(context, destination, options, client, logger, cancellationToken).ConfigureAwait(false);
-        ProxyMetrics.RecordError(error, destination.Address.Authority);
+        var authority = destination.Address.Authority;
+        var settled = 0;
 
+        void Settle(ProxyError outcome)
+        {
+            if (Interlocked.Exchange(ref settled, 1) != 0)
+                return;
+
+            ProxyMetrics.RecordError(outcome, authority);
+            onSettled?.Invoke(outcome);
+        }
+
+        var error = await SendCoreAsync(context, destination, options, client, logger, Settle, cancellationToken).ConfigureAwait(false);
+
+        // Every path settles before it returns; this only covers one that was missed.
+        Settle(error);
         return error;
     }
 
@@ -98,6 +116,7 @@ public static class HttpForwarder
         ProxyOptions options,
         HttpMessageInvoker client,
         ILogger? logger,
+        Action<ProxyError> settle,
         CancellationToken cancellationToken
     )
     {
@@ -123,12 +142,14 @@ public static class HttpForwarder
         catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
         {
             ProxyMetrics.RecordDuration(context.Request.Method, authority, Stopwatch.GetElapsedTime(started).TotalSeconds, null, ProxyError.RequestCanceled);
+            settle(ProxyError.RequestCanceled);
             return ProxyError.RequestCanceled;
         }
         catch (OperationCanceledException ex)
         {
             ProxyMetrics.RecordDuration(context.Request.Method, authority, Stopwatch.GetElapsedTime(started).TotalSeconds, null, ProxyError.RequestTimeout);
             logger?.LogWarning("Proxy to {Destination} timed out", outbound.RequestUri);
+            settle(ProxyError.RequestTimeout);
             await FailAsync(context, options, ProxyError.RequestTimeout, ex).ConfigureAwait(false);
 
             return ProxyError.RequestTimeout;
@@ -139,6 +160,7 @@ public static class HttpForwarder
             // request was fine, ours was not answered.
             ProxyMetrics.RecordDuration(context.Request.Method, authority, Stopwatch.GetElapsedTime(started).TotalSeconds, null, ProxyError.Request);
             logger?.LogWarning(ex, "Proxy to {Destination} failed", outbound.RequestUri);
+            settle(ProxyError.Request);
             await FailAsync(context, options, ProxyError.Request, ex).ConfigureAwait(false);
 
             return ProxyError.Request;
@@ -151,7 +173,7 @@ public static class HttpForwarder
             options.AfterReceive?.Invoke(upstream, context);
 
             if (upgrading && upstream.StatusCode == HttpStatusCode.SwitchingProtocols)
-                return await UpgradeAsync(context, upstream, options, logger).ConfigureAwait(false);
+                return await UpgradeAsync(context, upstream, options, logger, settle).ConfigureAwait(false);
 
             context.Response.StatusCode = (int)upstream.StatusCode;
 
@@ -182,6 +204,7 @@ public static class HttpForwarder
 
             if (HttpMethods.IsHead(context.Request.Method))
             {
+                settle(ProxyError.None);
                 await context.Response.StartAsync(context.RequestAborted).ConfigureAwait(false);
                 return ProxyError.None;
             }
@@ -193,6 +216,7 @@ public static class HttpForwarder
             }
             catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
             {
+                settle(ProxyError.RequestCanceled);
                 return ProxyError.RequestCanceled;
             }
             catch (Exception ex) when (ex is HttpRequestException or IOException)
@@ -200,6 +224,7 @@ public static class HttpForwarder
                 // The head has already gone out, so there is no status code left to say this with.
                 // Aborting is the only honest signal that the body the caller is reading is truncated.
                 logger?.LogWarning(ex, "Proxy response body from {Destination} ended early", outbound.RequestUri);
+                settle(ProxyError.ResponseBody);
                 context.Abort();
 
                 return ProxyError.ResponseBody;
@@ -211,6 +236,8 @@ public static class HttpForwarder
             // trailing HEADERS frame on HTTP/2 and HTTP/3, the chunked trailer section on HTTP/1.1.
             CopyTrailers(upstream, context.Response);
 
+            // Before returning, which is what lets the server finish the response.
+            settle(ProxyError.None);
             return ProxyError.None;
         }
     }
@@ -374,12 +401,16 @@ public static class HttpForwarder
         HttpContext context,
         HttpResponseMessage upstream,
         ProxyOptions options,
-        ILogger? logger
+        ILogger? logger,
+        Action<ProxyError> settle
     )
     {
         var transport = context.Transport;
         if (transport is null)
+        {
+            settle(ProxyError.Upgrade);
             return ProxyError.Upgrade;
+        }
 
         context.Response.StatusCode = StatusCodes.Status101SwitchingProtocols;
 
@@ -405,10 +436,14 @@ public static class HttpForwarder
         catch (Exception ex) when (ex is HttpRequestException or IOException or ObjectDisposedException)
         {
             logger?.LogWarning(ex, "Upgraded connection to the upstream could not be taken over");
+            settle(ProxyError.Upgrade);
             context.Abort();
 
             return ProxyError.Upgrade;
         }
+
+        // Taken over: from here the tunnel's lifetime is the two peers', not an outcome of the proxy.
+        settle(ProxyError.None);
 
         await using (upstreamStream)
         {
