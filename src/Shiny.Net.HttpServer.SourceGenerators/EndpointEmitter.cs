@@ -65,9 +65,16 @@ static class EndpointEmitter
         writer.Line("global::System.ArgumentNullException.ThrowIfNull(server);");
         writer.Blank();
 
+        // One registration, so a convention chained after the call — MapWidgetEndpoints().RequireAuthorization()
+        // — covers every route the class declares, not only the last one mapped.
+        writer.Line("using (server.Router.BeginRegistration())");
+        writer.OpenBrace();
+
         foreach (var method in model.Methods)
             WriteRegistration(writer, model, method, "server");
 
+        writer.CloseBrace();
+        writer.Blank();
         writer.Line("return server;");
         writer.CloseBrace();
         writer.Blank();
@@ -299,8 +306,14 @@ static class EndpointEmitter
         if (authorization.Policies.Count > 0)
             writer.Line($"Policies = {{ {string.Join(", ", authorization.Policies.Select(Literal))} }},");
 
-        if (authorization.Roles.Count > 0)
-            writer.Line($"Roles = {{ {string.Join(", ", authorization.Roles.Select(Literal))} }},");
+        // One entry per attribute, so the runtime requires each of them rather than any role from any of them.
+        if (authorization.RoleRequirements.Count > 0)
+        {
+            var requirements = authorization.RoleRequirements
+                .Select(r => "new string[] { " + string.Join(", ", r.Split(',').Select(Literal)) + " }");
+
+            writer.Line($"RoleRequirements = {{ {string.Join(", ", requirements)} }},");
+        }
 
         writer.CloseBraceWith(suffix);
     }
@@ -709,8 +722,11 @@ static class EndpointEmitter
         writer.OpenBrace();
         writer.Line("global::System.ArgumentNullException.ThrowIfNull(server);");
         writer.Blank();
+        writer.Line("using (server.Router.BeginRegistration())");
+        writer.OpenBrace();
         foreach (var model in models)
             writer.Line($"server.Map{model.DisplayName}();");
+        writer.CloseBrace();
         writer.Blank();
         writer.Line("return server;");
         writer.CloseBrace();

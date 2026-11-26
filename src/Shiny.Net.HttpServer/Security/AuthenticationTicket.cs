@@ -6,13 +6,26 @@ using System.Text;
 namespace Shiny.Net.HttpServer.Security;
 
 /// <summary>A signed-in caller and when that expires.</summary>
-public sealed class AuthenticationTicket(ClaimsPrincipal principal, DateTimeOffset issued, DateTimeOffset expires)
+public sealed class AuthenticationTicket(ClaimsPrincipal principal, DateTimeOffset issued, DateTimeOffset expires, bool isPersistent)
 {
+    /// <summary>A persistent ticket — see <see cref="IsPersistent"/>.</summary>
+    public AuthenticationTicket(ClaimsPrincipal principal, DateTimeOffset issued, DateTimeOffset expires)
+        : this(principal, issued, expires, isPersistent: true)
+    {
+    }
+
     public ClaimsPrincipal Principal { get; } = principal ?? throw new ArgumentNullException(nameof(principal));
 
     public DateTimeOffset IssuedUtc { get; } = issued;
 
     public DateTimeOffset ExpiresUtc { get; } = expires;
+
+    /// <summary>
+    /// True when the cookie carrying the ticket outlives the browser session (it has an <c>Expires</c>).
+    /// Recorded in the ticket so a sliding renewal reissues the cookie the way it was first issued — a
+    /// "don't remember me" sign-in must not quietly become a 14-day cookie on the first renewal.
+    /// </summary>
+    public bool IsPersistent { get; } = isPersistent;
 
     public bool HasExpired(DateTimeOffset now) => now >= this.ExpiresUtc;
 }
@@ -28,8 +41,12 @@ public sealed class AuthenticationTicket(ClaimsPrincipal principal, DateTimeOffs
 /// </summary>
 static class TicketSerializer
 {
-    // Bumped if the layout ever changes, so an old cookie is rejected rather than misread.
-    const byte FormatVersion = 1;
+    // Bumped if the layout ever changes, so an unknown layout is rejected rather than misread.
+    // 2 added the flags byte (persistence); 1 is still read, as a persistent ticket — which is how
+    // every renewal treated it before the flag existed.
+    const byte FormatVersion = 2;
+    const byte LegacyFormatVersion = 1;
+    const byte PersistentFlag = 0x01;
 
     public static byte[] Serialize(AuthenticationTicket ticket)
     {
@@ -37,6 +54,7 @@ static class TicketSerializer
         using var writer = new BinaryWriter(buffer, Encoding.UTF8, leaveOpen: true);
 
         writer.Write(FormatVersion);
+        writer.Write(ticket.IsPersistent ? PersistentFlag : (byte)0);
         writer.Write(ticket.IssuedUtc.ToUnixTimeSeconds());
         writer.Write(ticket.ExpiresUtc.ToUnixTimeSeconds());
 
@@ -71,9 +89,11 @@ static class TicketSerializer
             using var buffer = new MemoryStream(payload.ToArray(), writable: false);
             using var reader = new BinaryReader(buffer, Encoding.UTF8, leaveOpen: true);
 
-            if (reader.ReadByte() != FormatVersion)
+            var version = reader.ReadByte();
+            if (version is not (FormatVersion or LegacyFormatVersion))
                 return null;
 
+            var persistent = version == LegacyFormatVersion || (reader.ReadByte() & PersistentFlag) != 0;
             var issued = DateTimeOffset.FromUnixTimeSeconds(reader.ReadInt64());
             var expires = DateTimeOffset.FromUnixTimeSeconds(reader.ReadInt64());
 
@@ -113,7 +133,7 @@ static class TicketSerializer
                 ));
             }
 
-            return new AuthenticationTicket(principal, issued, expires);
+            return new AuthenticationTicket(principal, issued, expires, persistent);
         }
         catch (Exception ex) when (ex is EndOfStreamException or IOException or ArgumentException or FormatException)
         {
@@ -136,10 +156,19 @@ static class TicketSerializer
 /// Keys are identified by a short id, so several can be trusted at once: a rotation adds the new key
 /// as primary and keeps the old one for decryption until the last cookie issued under it expires.
 /// </para>
+/// <para>
+/// A ticket is bound to a <b>purpose</b> — the authentication cookie's and the session cookie's are
+/// different ones — which is mixed into the authenticated data, so a ticket protected for one purpose
+/// does not decrypt for another. Without it, one protector shared by sessions and cookie authentication
+/// would accept a session cookie, renamed, as a sign-in.
+/// </para>
 /// </summary>
 public sealed class TicketProtector
 {
-    const byte FormatVersion = 1;
+    // 2 binds the purpose into the AES-GCM associated data. 1 (key id only) is still read, so cookies
+    // issued before the upgrade keep working until they expire; nothing is issued as 1 any more.
+    const byte FormatVersion = 2;
+    const byte LegacyFormatVersion = 1;
     const int KeyIdLength = 4;
     const int NonceLength = 12;   // AES-GCM's required nonce size
     const int TagLength = 16;
@@ -175,9 +204,17 @@ public sealed class TicketProtector
     /// <summary>A fresh 32-byte key.</summary>
     public static byte[] CreateKey() => RandomNumberGenerator.GetBytes(32);
 
-    public string Protect(AuthenticationTicket ticket)
+    /// <summary>Protects a ticket with no particular purpose. Prefer <see cref="Protect(AuthenticationTicket, string)"/>.</summary>
+    public string Protect(AuthenticationTicket ticket) => this.Protect(ticket, string.Empty);
+
+    /// <summary>
+    /// Protects a ticket for one purpose — it will only <see cref="Unprotect(string, string)"/> under the
+    /// same purpose string.
+    /// </summary>
+    public string Protect(AuthenticationTicket ticket, string purpose)
     {
         ArgumentNullException.ThrowIfNull(ticket);
+        ArgumentNullException.ThrowIfNull(purpose);
 
         var plaintext = TicketSerializer.Serialize(ticket);
         var nonce = RandomNumberGenerator.GetBytes(NonceLength);
@@ -186,7 +223,7 @@ public sealed class TicketProtector
         var tag = new byte[TagLength];
 
         using (var aes = new AesGcm(this.primary.Key, TagLength))
-            aes.Encrypt(nonce, plaintext, ciphertext, tag, this.primary.Id);
+            aes.Encrypt(nonce, plaintext, ciphertext, tag, AssociatedData(this.primary.Id, purpose));
 
         // version | key id | nonce | tag | ciphertext. The key id travels in the clear because the
         // decryptor has to know which key to try, and it identifies nothing on its own.
@@ -204,17 +241,31 @@ public sealed class TicketProtector
         return Base64Url.Encode(output);
     }
 
-    /// <summary>Returns null for anything that is not a valid ticket under a key we hold.</summary>
-    public AuthenticationTicket? Unprotect(string protectedTicket)
+    /// <summary>
+    /// Returns null for anything that is not a valid ticket under a key we hold, protected with no
+    /// particular purpose.
+    /// </summary>
+    public AuthenticationTicket? Unprotect(string protectedTicket) => this.Unprotect(protectedTicket, string.Empty);
+
+    /// <summary>
+    /// Returns null for anything that is not a valid ticket under a key we hold and protected for
+    /// <paramref name="purpose"/>. A ticket from before purposes existed is still accepted, so an upgrade
+    /// does not sign everyone out — such tickets age out with their own expiry.
+    /// </summary>
+    public AuthenticationTicket? Unprotect(string protectedTicket, string purpose)
     {
+        ArgumentNullException.ThrowIfNull(purpose);
+
         if (string.IsNullOrEmpty(protectedTicket))
             return null;
 
         if (!Base64Url.TryDecode(protectedTicket, out var payload))
             return null;
 
-        if (payload.Length < 1 + KeyIdLength + NonceLength + TagLength || payload[0] != FormatVersion)
+        if (payload.Length < 1 + KeyIdLength + NonceLength + TagLength || payload[0] is not (FormatVersion or LegacyFormatVersion))
             return null;
+
+        var legacy = payload[0] == LegacyFormatVersion;
 
         var keyId = payload.AsSpan(1, KeyIdLength);
         var nonce = payload.AsSpan(1 + KeyIdLength, NonceLength);
@@ -231,7 +282,7 @@ public sealed class TicketProtector
             try
             {
                 using var aes = new AesGcm(key, TagLength);
-                aes.Decrypt(nonce, ciphertext, tag, plaintext, id);
+                aes.Decrypt(nonce, ciphertext, tag, plaintext, legacy ? id : AssociatedData(id, purpose));
 
                 return TicketSerializer.Deserialize(plaintext);
             }
@@ -248,6 +299,19 @@ public sealed class TicketProtector
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// The key id followed by the purpose: authenticated but not encrypted, so a ticket only opens
+    /// under the key and the purpose it was sealed with. The purpose never travels in the envelope.
+    /// </summary>
+    static byte[] AssociatedData(byte[] keyId, string purpose)
+    {
+        var data = new byte[keyId.Length + Encoding.UTF8.GetByteCount(purpose)];
+        keyId.CopyTo(data, 0);
+        Encoding.UTF8.GetBytes(purpose, 0, purpose.Length, data, keyId.Length);
+
+        return data;
     }
 
     /// <summary>

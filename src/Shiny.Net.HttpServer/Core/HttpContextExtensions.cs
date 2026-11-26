@@ -1,5 +1,4 @@
 using System.Buffers;
-using System.Diagnostics.CodeAnalysis;
 using System.Net;
 using System.Text;
 using Microsoft.Extensions.DependencyInjection;
@@ -96,37 +95,23 @@ public static class HttpContextExtensions
     }
 
     /// <summary>
-    /// The client IP, preferring the left-most X-Forwarded-For entry when the request came through a
-    /// trusted proxy or tunnel. Only trust this when the server is genuinely behind one.
+    /// The client IP. With <paramref name="useForwardedHeaders"/>, the <em>right-most</em>
+    /// <c>X-Forwarded-For</c> entry — the address the nearest proxy saw — when there is one. Only trust this
+    /// when the server is genuinely behind a proxy or tunnel that appends to the header.
+    /// <para>
+    /// Not the left-most: every proxy appends, so the left-hand end is whatever the client chose to send.
+    /// Taking it let any caller pick their own address through an ordinary appending proxy. For a chain of
+    /// proxies, configure <see cref="HttpServerOptions.ForwardedHeaders"/> and read
+    /// <see cref="ConnectionInfo.RemoteIpAddress"/> instead.
+    /// </para>
     /// </summary>
     public static IPAddress? GetClientIpAddress(this HttpContext context, bool useForwardedHeaders = false)
     {
         ArgumentNullException.ThrowIfNull(context);
 
-        if (useForwardedHeaders && TryGetForwardedFor(context, out var forwarded))
+        if (useForwardedHeaders && ForwardedHeaders.RightMostForwardedFor(context) is { } forwarded)
             return forwarded;
 
         return context.Connection.RemoteIpAddress;
-    }
-
-    static bool TryGetForwardedFor(HttpContext context, [NotNullWhen(true)] out IPAddress? address)
-    {
-        address = null;
-        var header = context.Request.Headers.GetFirst(HeaderNames.XForwardedFor);
-        if (string.IsNullOrEmpty(header))
-            return false;
-
-        // The left-most entry is the original client; the rest are intermediate proxies.
-        var span = header.AsSpan();
-        var comma = span.IndexOf(',');
-        var first = (comma < 0 ? span : span[..comma]).Trim();
-
-        // Strip an optional :port, but not from a bare IPv6 literal (which is full of colons).
-        if (first.Count(':') == 1)
-        {
-            var colon = first.IndexOf(':');
-            first = first[..colon];
-        }
-        return IPAddress.TryParse(first, out address);
     }
 }

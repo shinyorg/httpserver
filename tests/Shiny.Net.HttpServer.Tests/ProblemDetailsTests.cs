@@ -248,10 +248,10 @@ public class ProblemDetailsEndToEndTests
 
     /// <summary>
     /// A malformed argument is the caller's mistake, and a 500 would send them looking for a server
-    /// fault that is not there.
+    /// fault that is not there. Its message, though, was written for a developer — it is not echoed.
     /// </summary>
     [Fact]
-    public async Task Maps_a_client_mistake_to_a_4xx_and_says_what_it_was()
+    public async Task Maps_a_client_mistake_to_a_4xx_without_echoing_a_framework_message()
     {
         await using var server = await TestServer.StartAsync(
             app => app.MapGet("/bad", _ => throw new ArgumentException("id must be positive")),
@@ -261,6 +261,59 @@ public class ProblemDetailsEndToEndTests
         var response = await server.Client.GetAsync("/bad", TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.False((await ReadProblemAsync(response)).TryGetProperty("detail", out _));
+    }
+
+    /// <summary>
+    /// UnauthorizedAccessException maps to 403 by default, and its message names the absolute path it
+    /// was refused — which used to be written straight into the response.
+    /// </summary>
+    [Fact]
+    public async Task Does_not_leak_a_file_path_from_an_UnauthorizedAccessException()
+    {
+        await using var server = await TestServer.StartAsync(
+            app => app.MapGet("/file", _ => throw new UnauthorizedAccessException("Access to the path '/srv/app/secrets/key.pem' is denied.")),
+            builder => builder.AddProblemDetails()
+        );
+
+        var response = await server.Client.GetAsync("/file", TestContext.Current.CancellationToken);
+        var body = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.DoesNotContain("/srv/app", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Treats_library_client_exceptions_as_client_facing()
+    {
+        var options = new ProblemDetailsOptions();
+
+        Assert.True(options.IncludesMessage(new BadHttpRequestException("bad")));
+        Assert.False(options.IncludesMessage(new UnauthorizedAccessException("/srv/secret")));
+        Assert.False(options.IncludesMessage(new ArgumentException("x")));
+    }
+
+    [Fact]
+    public async Task Says_what_was_wrong_for_an_exception_mapped_as_client_facing()
+    {
+        await using var server = await TestServer.StartAsync(
+            app => app.MapGet("/mine", _ => throw new MissingThingException()),
+            builder => builder.AddProblemDetails(o => o.MapException<MissingThingException>(StatusCodes.Status404NotFound, includeMessage: true))
+        );
+
+        var mine = await server.Client.GetAsync("/mine", TestContext.Current.CancellationToken);
+        Assert.Equal(new MissingThingException().Message, (await ReadProblemAsync(mine)).GetProperty("detail").GetString());
+    }
+
+    [Fact]
+    public async Task Echoes_any_4xx_message_when_exception_details_are_on()
+    {
+        await using var server = await TestServer.StartAsync(
+            app => app.MapGet("/bad", _ => throw new ArgumentException("id must be positive")),
+            builder => builder.AddProblemDetails(o => o.IncludeExceptionDetails = true)
+        );
+
+        var response = await server.Client.GetAsync("/bad", TestContext.Current.CancellationToken);
         Assert.Equal("id must be positive", (await ReadProblemAsync(response)).GetProperty("detail").GetString());
     }
 

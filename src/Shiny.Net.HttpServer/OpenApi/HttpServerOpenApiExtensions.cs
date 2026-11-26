@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using Shiny.Net.HttpServer.Versioning;
+using Shiny.Net.HttpServer.Routing;
 
 namespace Shiny.Net.HttpServer.OpenApi;
 
@@ -128,7 +129,7 @@ public static class HttpServerOpenApiExtensions
     }
 
     /// <summary>
-    /// Describes the most recently mapped route, which is how a raw handler gets into the document
+    /// Describes every route the preceding call mapped, which is how a raw handler gets into the document
     /// with something more useful than its path.
     /// <code>
     /// app.MapGet("/ping", ctx => ctx.Response.WriteAsync("pong"))
@@ -146,21 +147,7 @@ public static class HttpServerOpenApiExtensions
         ArgumentNullException.ThrowIfNull(server);
         ArgumentNullException.ThrowIfNull(configure);
 
-        if (server.Router.Endpoints.Count == 0)
-            throw new InvalidOperationException(
-                $"{nameof(Describe)} applies to the most recently mapped route, and no route has been mapped yet."
-            );
-
-        var endpoint = server.Router.Endpoints[^1];
-        var operation = endpoint.GetMetadata<ApiOperation>();
-
-        if (operation is null)
-        {
-            operation = new ApiOperation();
-            endpoint.WithMetadata(operation);
-        }
-
-        configure(operation);
+        LastMappedConventions.Apply(server, nameof(Describe), configure);
         return server;
     }
 }

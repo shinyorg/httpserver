@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Shiny.Net.HttpServer.Routing;
 
 namespace Shiny.Net.HttpServer.Security;
 
@@ -129,42 +130,23 @@ public static class HttpServerAntiforgeryExtensions
     }
 
     /// <summary>
-    /// Requires a token on the most recently mapped route even when the default would not have —
+    /// Requires a token on every route the preceding call mapped even when the default would not have —
     /// an endpoint reachable by a bearer token that you want checked anyway.
     /// </summary>
     public static HttpServer ValidateAntiforgery(this HttpServer server)
     {
         ArgumentNullException.ThrowIfNull(server);
 
-        LastEndpointMetadata(server).Required = true;
+        LastMappedConventions.Apply<AntiforgeryMetadata>(server, "ValidateAntiforgery", m => m.Required = true);
         return server;
     }
 
-    /// <summary>Exempts the most recently mapped route — a webhook, a device callback, an upload from a native client.</summary>
+    /// <summary>Exempts every route the preceding call mapped — a webhook, a device callback, an upload from a native client.</summary>
     public static HttpServer DisableAntiforgery(this HttpServer server)
     {
         ArgumentNullException.ThrowIfNull(server);
 
-        LastEndpointMetadata(server).Disabled = true;
+        LastMappedConventions.Apply<AntiforgeryMetadata>(server, "ValidateAntiforgery", m => m.Disabled = true);
         return server;
-    }
-
-    static AntiforgeryMetadata LastEndpointMetadata(HttpServer server)
-    {
-        if (server.Router.Endpoints.Count == 0)
-            throw new InvalidOperationException(
-                "ValidateAntiforgery applies to the most recently mapped route, and no route has been mapped yet."
-            );
-
-        var endpoint = server.Router.Endpoints[^1];
-        var metadata = endpoint.GetMetadata<AntiforgeryMetadata>();
-
-        if (metadata is null)
-        {
-            metadata = new AntiforgeryMetadata();
-            endpoint.WithMetadata(metadata);
-        }
-
-        return metadata;
     }
 }

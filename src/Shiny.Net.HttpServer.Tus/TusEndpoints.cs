@@ -183,6 +183,21 @@ public static class TusExtensions
             group.Map(HttpMethods.Post, "/{id}", handler.Guard(handler.OverrideAsync))
         };
 
+        // The routes that carry upload bytes are bounded by the upload, not by the server-wide body
+        // limit. Left at the server's 30 MB default, a client sending a bigger file in one PATCH -
+        // which tus allows and tus-js-client does unless told otherwise - is cut off mid-body, keeps
+        // the bytes that made it, resumes, and is cut off again, never seeing why. The handler
+        // already refuses a body that runs past the upload's length or MaxSize, so that is the limit
+        // that means something here. Set before the builder is returned, so a ForEach that sets a
+        // limit of its own still wins.
+        foreach (var route in (RouteEndpointBuilder[])[routes[1], routes[4], routes[6]])
+        {
+            if (options.MaxSize is { } max)
+                route.WithRequestSizeLimit(max);
+            else
+                route.DisableRequestSizeLimit();
+        }
+
         var builder = new TusMountBuilder(routes, handler);
 
         // One protocol behind seven routes, documented by tus.io rather than by an OpenAPI schema

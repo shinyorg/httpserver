@@ -203,6 +203,13 @@ sealed class Session(string id, ISessionStore store, TimeSpan idleTimeout) : ISe
 /// </summary>
 public sealed class SessionMiddleware(SessionOptions options, ISessionStore store) : IHttpMiddleware
 {
+    /// <summary>The authentication type of the identity inside a session cookie's ticket.</summary>
+    internal const string SessionIdentityType = "Session";
+
+    // Bound into the ticket's encryption, so a session cookie and an authentication cookie protected by
+    // the same TicketProtector cannot stand in for each other.
+    const string Purpose = "Shiny.Net.HttpServer.Session";
+
     readonly SessionOptions options = Validate(options);
 
     public async ValueTask InvokeAsync(HttpContext context, RequestDelegate next)
@@ -210,7 +217,7 @@ public sealed class SessionMiddleware(SessionOptions options, ISessionStore stor
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(next);
 
-        var (id, isNew) = this.ResolveSessionId(context);
+        var (id, isNew, renew) = this.ResolveSessionId(context);
         var session = new Session(id, store, this.options.IdleTimeout) { IsNew = isNew };
 
         context.Session = session;
@@ -232,7 +239,10 @@ public sealed class SessionMiddleware(SessionOptions options, ISessionStore stor
         {
             await session.CommitAsync(context.RequestAborted).ConfigureAwait(false);
 
-            if (session.WasWritten && isNew)
+            // A new session gets its cookie once it holds something; an existing one gets a fresh
+            // cookie as its ticket passes the halfway mark, so a visitor active more often than the idle
+            // timeout keeps their session instead of losing it when the first ticket runs out.
+            if ((session.WasWritten && isNew) || renew)
                 this.IssueCookie(context, id);
         });
 
@@ -250,17 +260,23 @@ public sealed class SessionMiddleware(SessionOptions options, ISessionStore stor
         }
     }
 
-    (string Id, bool IsNew) ResolveSessionId(HttpContext context)
+    (string Id, bool IsNew, bool Renew) ResolveSessionId(HttpContext context)
     {
+        var now = DateTimeOffset.UtcNow;
+
+        // The identity type is checked as well as the purpose: a ticket from before purposes existed
+        // still decrypts, and an authentication cookie whose principal happens to carry a "sid" claim
+        // (OpenID Connect issues one) must not become a session id.
         if (context.Request.Cookies[this.options.CookieName] is { Length: > 0 } cookie
-            && this.options.Protector.Unprotect(cookie) is { } ticket
-            && ticket.Principal.FindFirst("sid")?.Value is { Length: > 0 } id
-            && !ticket.HasExpired(DateTimeOffset.UtcNow))
-            return (id, false);
+            && this.options.Protector.Unprotect(cookie, Purpose) is { } ticket
+            && ticket.Principal.Identities.FirstOrDefault(i => i.AuthenticationType == SessionIdentityType) is { } identity
+            && identity.FindFirst("sid")?.Value is { Length: > 0 } id
+            && !ticket.HasExpired(now))
+            return (id, false, now - ticket.IssuedUtc >= (ticket.ExpiresUtc - ticket.IssuedUtc) / 2);
 
         // 256 bits from a cryptographic source. A guessable session id is the same failure as a
         // guessable password, with none of the warning signs.
-        return (Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant(), true);
+        return (Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant(), true, false);
     }
 
     void IssueCookie(HttpContext context, string id)
@@ -275,15 +291,16 @@ public sealed class SessionMiddleware(SessionOptions options, ISessionStore stor
         var ticket = new AuthenticationTicket(
             new System.Security.Claims.ClaimsPrincipal(new System.Security.Claims.ClaimsIdentity(
                 [new System.Security.Claims.Claim("sid", id)],
-                "Session"
+                SessionIdentityType
             )),
             now,
-            now + this.options.IdleTimeout
+            now + this.options.IdleTimeout,
+            isPersistent: false
         );
 
         context.Response.Cookies.Append(
             this.options.CookieName,
-            this.options.Protector.Protect(ticket),
+            this.options.Protector.Protect(ticket, Purpose),
             this.options.BuildCookieOptions(context)
         );
     }

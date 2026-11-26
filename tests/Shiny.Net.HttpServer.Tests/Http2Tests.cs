@@ -297,19 +297,27 @@ public class Http2InteropTests
     [Fact]
     public async Task Carries_a_body_larger_than_the_initial_flow_control_window()
     {
-        // Comfortably past 65535, so this only passes if WINDOW_UPDATE is being sent and honoured
-        // in both directions.
+        // Comfortably past 65535 and past the server's own windows, which are shrunk here because
+        // the defaults are larger than any body worth sending in a test. This only passes if
+        // WINDOW_UPDATE is being sent and honoured in both directions.
         var payload = new string('x', 512 * 1024);
 
-        await using var server = await TestServer.StartAsync(app => app.MapPost("/big", async ctx =>
-        {
-            var body = await ctx.Request.ReadBodyAsStringAsync(
-                maxLength: 4 * 1024 * 1024,
-                cancellationToken: ctx.RequestAborted
-            );
+        await using var server = await TestServer.StartAsync(
+            app => app.MapPost("/big", async ctx =>
+            {
+                var body = await ctx.Request.ReadBodyAsStringAsync(
+                    maxLength: 4 * 1024 * 1024,
+                    cancellationToken: ctx.RequestAborted
+                );
 
-            await ctx.Response.WriteAsync(body);
-        }));
+                await ctx.Response.WriteAsync(body);
+            }),
+            builder =>
+            {
+                builder.Options.Http2.InitialStreamWindowSize = 96 * 1024;
+                builder.Options.Http2.InitialConnectionWindowSize = 256 * 1024;
+            }
+        );
 
         using var client = CreateClient(server.Port);
         var response = await client.PostAsync("/big", new StringContent(payload), Token);
@@ -395,6 +403,45 @@ public class Http2InteropTests
         );
 
         Assert.Equal("HTTP/1.1", await server.Client.GetStringAsync("/ping", Token));
+    }
+
+    [Fact]
+    public async Task Large_downloads_never_stall_waiting_for_flow_control_credit()
+    {
+        // The send window is spent by the response writer and refilled by WINDOW_UPDATEs on the
+        // frame reader, on two threads at once. A refill lost to that race leaves the window empty
+        // for good and the download hangs part way, which took about one large download in four.
+        // Several big downloads in a row give the race plenty of chances to show.
+        const int Size = 128 * 1024 * 1024;
+        var chunk = new byte[64 * 1024];
+
+        await using var server = await TestServer.StartAsync(app => app.MapGet("/big", async ctx =>
+        {
+            ctx.Response.ContentType = "application/octet-stream";
+            ctx.Response.ContentLength = Size;
+
+            for (var sent = 0; sent < Size; sent += chunk.Length)
+                await ctx.Response.Body.WriteAsync(chunk, ctx.RequestAborted);
+        }));
+
+        using var client = CreateClient(server.Port);
+
+        for (var i = 0; i < 10; i++)
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(Token);
+            timeout.CancelAfter(TimeSpan.FromSeconds(20));
+
+            using var response = await client.GetAsync("/big", HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+            await using var body = await response.Content.ReadAsStreamAsync(timeout.Token);
+
+            var buffer = new byte[1024 * 1024];
+            long received = 0;
+            int read;
+            while ((read = await body.ReadAsync(buffer, timeout.Token)) > 0)
+                received += read;
+
+            Assert.Equal(Size, received);
+        }
     }
 
     [Fact]

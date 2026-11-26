@@ -16,7 +16,16 @@ sealed class Http2ResponseBodyControl(Http2Connection connection, Http2Stream st
     : IResponseBodyControl, IInformationalResponseWriter
 {
     readonly ArrayBufferWriter<byte> staged = new(4096);
+    readonly ResponseLengthTracker length = new();
+
+    // A HEAD response describes the body a GET would get without sending it. The handler still
+    // writes as if it were a GET - that is what keeps the headers identical - so the writes are
+    // counted and dropped here rather than failed.
+    readonly bool suppressBody = HttpMethods.IsHead(response.HttpContext.Request.Method);
+
     Http2ResponseStream? bodyStream;
+    PipeWriter? bodyWriter;
+    bool completed;
 
     /// <summary>
     /// An interim response is its own HEADERS frame on the stream, with a 1xx <c>:status</c> and
@@ -27,8 +36,6 @@ sealed class Http2ResponseBodyControl(Http2Connection connection, Http2Stream st
         await connection.WriteInformationalAsync(stream, statusCode, headers, cancellationToken).ConfigureAwait(false);
         return true;
     }
-    PipeWriter? bodyWriter;
-    bool completed;
 
     public bool HasStarted { get; private set; }
 
@@ -43,10 +50,13 @@ sealed class Http2ResponseBodyControl(Http2Connection connection, Http2Stream st
 
         await response.InvokeOnStartingAsync().ConfigureAwait(false);
         this.HasStarted = true;
+        this.length.Begin(response);
 
         // Content-Length is advisory in HTTP/2 — END_STREAM is what actually ends the body — but it
         // is still sent, because clients use it for progress and for validating what they received.
-        await connection.WriteHeadersAsync(stream, response, endStream: false, cancellationToken).ConfigureAwait(false);
+        // A HEAD response ends right here: there is no body to follow, and a DATA frame after it
+        // is a protocol error the client resets the stream over.
+        await connection.WriteHeadersAsync(stream, response, endStream: this.suppressBody, cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask CompleteAsync(CancellationToken cancellationToken)
@@ -56,7 +66,8 @@ sealed class Http2ResponseBodyControl(Http2Connection connection, Http2Stream st
 
         this.completed = true;
 
-        if (!this.HasStarted)
+        var nothingWritten = !this.HasStarted && this.staged.WrittenCount == 0;
+        if (nothingWritten && (this.suppressBody || !ResponseLengthTracker.DeclaresBody(response)))
         {
             // Nothing was written. One HEADERS frame with END_STREAM is the whole response, which
             // saves an empty DATA frame on every 204 and 304.
@@ -65,6 +76,24 @@ sealed class Http2ResponseBodyControl(Http2Connection connection, Http2Stream st
 
             await connection.WriteHeadersAsync(stream, response, endStream: true, cancellationToken).ConfigureAwait(false);
             return;
+        }
+
+        if (this.suppressBody)
+        {
+            // The HEADERS frame already ended the stream; this only counts what was staged.
+            await this.FlushAsync(endStream: false, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        if (!this.HasStarted)
+            await this.StartAsync(cancellationToken).ConfigureAwait(false);
+
+        if (this.length.IsShort(this.staged.WrittenCount))
+        {
+            // Sent what there is, then fail instead of ending the stream: the reset that follows
+            // tells the client the body is incomplete, where END_STREAM would claim it was whole.
+            await this.FlushAsync(endStream: false, cancellationToken).ConfigureAwait(false);
+            throw this.length.Shortfall();
         }
 
         if (response.HasTrailers)
@@ -93,6 +122,16 @@ sealed class Http2ResponseBodyControl(Http2Connection connection, Http2Stream st
         await this.StartAsync(cancellationToken).ConfigureAwait(false);
 
         var payload = this.staged.WrittenMemory;
+
+        // Counted before anything is sent, so an overrun fails without its extra bytes going out.
+        if (!payload.IsEmpty)
+            this.length.Track(payload.Length);
+
+        if (this.suppressBody)
+        {
+            this.staged.Clear();
+            return;
+        }
 
         if (payload.IsEmpty && !endStream)
             return;

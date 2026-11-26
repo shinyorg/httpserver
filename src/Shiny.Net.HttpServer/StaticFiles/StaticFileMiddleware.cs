@@ -97,23 +97,41 @@ public sealed class StaticFileMiddleware(StaticFileOptions options) : IHttpMiddl
         {
             var entry = part.AsSpan().Trim();
             var semicolon = entry.IndexOf(';');
+            var coding = (semicolon >= 0 ? entry[..semicolon] : entry).Trim();
 
-            // "br;q=0" is a refusal, and treating it as acceptance would send bytes the client
+            // "br;q=0" is a refusal - and so are "q=0.0" and "q=0.000", which are the same number
+            // written differently. Treating any of them as acceptance would send bytes the client
             // has told us it will not decode.
-            if (semicolon >= 0)
-            {
-                if (entry[(semicolon + 1)..].Trim().StartsWith("q=0", StringComparison.OrdinalIgnoreCase)
-                    && !entry[(semicolon + 1)..].Contains("q=0.", StringComparison.OrdinalIgnoreCase))
-                    continue;
-
-                entry = entry[..semicolon].Trim();
-            }
-
-            if (!entry.IsEmpty)
-                accepted.Add(entry.ToString());
+            if (!coding.IsEmpty && (semicolon < 0 || IsAcceptable(entry[(semicolon + 1)..])))
+                accepted.Add(coding.ToString());
         }
 
         return accepted.Count == 0 ? null : accepted;
+    }
+
+    /// <summary>
+    /// Whether a coding's parameters leave it acceptable: no <c>q</c>, or a <c>q</c> above zero. A
+    /// <c>q</c> that does not parse is read as a refusal, since the cost of being wrong that way is
+    /// an uncompressed response and the cost of being wrong the other way is an unreadable one.
+    /// </summary>
+    static bool IsAcceptable(ReadOnlySpan<char> parameters)
+    {
+        foreach (var range in parameters.Split(';'))
+        {
+            var parameter = parameters[range].Trim();
+
+            if (parameter.Length >= 2 && (parameter[0] is 'q' or 'Q') && parameter[1] == '=')
+            {
+                return decimal.TryParse(
+                    parameter[2..].Trim(),
+                    System.Globalization.NumberStyles.AllowDecimalPoint,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    out var quality
+                ) && quality > 0m;
+            }
+        }
+
+        return true;
     }
 
     bool TryResolve(string relativePath, IReadOnlyList<string>? accepted, out StaticFile file, out string contentType)
@@ -269,7 +287,18 @@ public static class StaticFileExtensions
         ArgumentNullException.ThrowIfNull(server);
         ArgumentException.ThrowIfNullOrWhiteSpace(rootPath);
 
-        return server.UseStaticFiles(new PhysicalFileSource(rootPath), configure);
+        var options = new StaticFileOptions();
+        configure?.Invoke(options);
+
+        // Built after configure has run, because the source is what knows to look for sidecars:
+        // ServePrecompressedFiles alone only makes the middleware ask, and a source with no
+        // encodings to look for always answers with the original.
+        options.Source ??= new PhysicalFileSource(rootPath)
+        {
+            PrecompressedEncodings = options.ServePrecompressedFiles ? ["br", "gzip"] : []
+        };
+
+        return server.Use(new StaticFileMiddleware(options));
     }
 
     /// <summary>

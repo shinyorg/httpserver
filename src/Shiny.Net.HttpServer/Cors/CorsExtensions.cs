@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Shiny.Net.HttpServer.Routing;
 
 namespace Shiny.Net.HttpServer.Cors;
 
@@ -77,7 +78,7 @@ public static class HttpServerCorsExtensions
     }
 
     /// <summary>
-    /// Applies a named CORS policy to the most recently mapped route.
+    /// Applies a named CORS policy to every route the preceding call mapped.
     /// <code>
     /// app.MapGet("/status", Handler).RequireCors("public");
     /// </code>
@@ -87,16 +88,16 @@ public static class HttpServerCorsExtensions
         ArgumentNullException.ThrowIfNull(server);
         ArgumentException.ThrowIfNullOrEmpty(policyName);
 
-        LastEndpointMetadata(server).PolicyName = policyName;
+        LastMappedConventions.Apply<CorsMetadata>(server, "RequireCors", m => m.PolicyName = policyName);
         return server;
     }
 
-    /// <summary>Exempts the most recently mapped route from CORS, including from the default policy.</summary>
+    /// <summary>Exempts every route the preceding call mapped from CORS, including from the default policy.</summary>
     public static HttpServer DisableCors(this HttpServer server)
     {
         ArgumentNullException.ThrowIfNull(server);
 
-        LastEndpointMetadata(server).Disabled = true;
+        LastMappedConventions.Apply<CorsMetadata>(server, "RequireCors", m => m.Disabled = true);
         return server;
     }
 
@@ -107,23 +108,4 @@ public static class HttpServerCorsExtensions
                 "builder.AddCors(o => o.AddPolicy(\"name\", p => ...)), or pass a policy inline " +
                 "with app.UseCors(p => ...)."
             );
-
-    static CorsMetadata LastEndpointMetadata(HttpServer server)
-    {
-        if (server.Router.Endpoints.Count == 0)
-            throw new InvalidOperationException(
-                "RequireCors applies to the most recently mapped route, and no route has been mapped yet."
-            );
-
-        var endpoint = server.Router.Endpoints[^1];
-        var metadata = endpoint.GetMetadata<CorsMetadata>();
-
-        if (metadata is null)
-        {
-            metadata = new CorsMetadata();
-            endpoint.WithMetadata(metadata);
-        }
-
-        return metadata;
-    }
 }

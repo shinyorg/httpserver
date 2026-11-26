@@ -16,6 +16,7 @@ public readonly record struct ProblemDetailsContext(
 public sealed class ProblemDetailsOptions
 {
     readonly Dictionary<Type, int> exceptionStatusCodes = new();
+    readonly HashSet<Type> clientFacingExceptions = [];
 
     /// <summary>
     /// Includes the exception type, message and stack trace in the response.
@@ -52,12 +53,54 @@ public sealed class ProblemDetailsOptions
 
     /// <summary>
     /// Maps an exception type to the status code it should produce. Exact type first, then base
-    /// types, so mapping a base covers everything under it.
+    /// types, so mapping a base covers everything under it. The exception's message is not sent to the
+    /// client — see <see cref="MapException{TException}(int, bool)"/>.
     /// </summary>
     public ProblemDetailsOptions MapException<TException>(int statusCode) where TException : Exception
+        => this.MapException<TException>(statusCode, includeMessage: false);
+
+    /// <summary>
+    /// Maps an exception type to a status code and says whether its message is written to the
+    /// problem's <c>detail</c> on a 4xx.
+    /// <para>
+    /// Pass <c>true</c> only for exceptions written to be read by the caller — a validation exception of
+    /// your own whose message says what to fix. A framework exception's message routinely carries a file
+    /// path or the shape of a query: <see cref="UnauthorizedAccessException"/>, mapped to 403 by default,
+    /// names the absolute path it was refused.
+    /// </para>
+    /// </summary>
+    public ProblemDetailsOptions MapException<TException>(int statusCode, bool includeMessage) where TException : Exception
     {
         this.exceptionStatusCodes[typeof(TException)] = statusCode;
+
+        if (includeMessage)
+            this.clientFacingExceptions.Add(typeof(TException));
+        else
+            this.clientFacingExceptions.Remove(typeof(TException));
+
         return this;
+    }
+
+    /// <summary>
+    /// Whether an exception's message may be written to a 4xx problem's <c>detail</c>: always with
+    /// <see cref="IncludeExceptionDetails"/>; otherwise only for exceptions written for the client —
+    /// <see cref="BadHttpRequestException"/>, <see cref="JsonPatch.JsonPatchException"/> and types mapped
+    /// with <c>includeMessage: true</c>.
+    /// </summary>
+    public bool IncludesMessage(Exception exception)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+
+        if (this.IncludeExceptionDetails || exception is BadHttpRequestException or JsonPatch.JsonPatchException)
+            return true;
+
+        for (var type = exception.GetType(); type is not null; type = type.BaseType)
+        {
+            if (this.exceptionStatusCodes.ContainsKey(type))
+                return this.clientFacingExceptions.Contains(type);
+        }
+
+        return false;
     }
 
     /// <summary>

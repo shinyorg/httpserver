@@ -559,8 +559,11 @@ public sealed class MediatorEndpointGenerator : IIncrementalGenerator
             .Distinct(StringComparer.Ordinal)
             .ToArray();
 
-        var roles = GetNamedStrings(attribute, "Roles")
-            .Concat(GetNamedStrings(group, "Roles"))
+        // The group's roles and the endpoint's are separate requirements that must both pass: an
+        // endpoint narrows its group, it cannot let in a role the group would have refused.
+        var roles = new[] { GetNamedStrings(attribute, "Roles"), GetNamedStrings(group, "Roles") }
+            .Select(list => string.Join(",", list.Select(r => r.Trim()).Where(r => r.Length > 0).Distinct(StringComparer.Ordinal)))
+            .Where(list => list.Length > 0)
             .Distinct(StringComparer.Ordinal)
             .ToArray();
 

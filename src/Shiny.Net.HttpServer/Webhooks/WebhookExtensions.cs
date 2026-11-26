@@ -185,7 +185,7 @@ public static class HttpServerWebhookExtensions
     }
 
     /// <summary>
-    /// Requires a verified signature on the most recently mapped route.
+    /// Requires a verified signature on every route the preceding call mapped.
     /// <code>
     /// app.MapPost("/hooks/stripe", Handler).RequireWebhookSignature("stripe");
     /// </code>
@@ -195,17 +195,17 @@ public static class HttpServerWebhookExtensions
         ArgumentNullException.ThrowIfNull(server);
         ArgumentException.ThrowIfNullOrEmpty(verifierName);
 
-        LastEndpoint(server).WithMetadata(new WebhookMetadata { VerifierName = verifierName });
+        LastMappedConventions.Attach(server, nameof(RequireWebhookSignature), () => new WebhookMetadata { VerifierName = verifierName });
         return server;
     }
 
-    /// <summary>Requires a verified signature, from the given verifier, on the most recently mapped route.</summary>
+    /// <summary>Requires a verified signature, from the given verifier, on every route the preceding call mapped.</summary>
     public static HttpServer RequireWebhookSignature(this HttpServer server, IWebhookVerifier verifier)
     {
         ArgumentNullException.ThrowIfNull(server);
         ArgumentNullException.ThrowIfNull(verifier);
 
-        LastEndpoint(server).WithMetadata(new WebhookMetadata { Verifier = verifier });
+        LastMappedConventions.Attach(server, nameof(RequireWebhookSignature), () => new WebhookMetadata { Verifier = verifier });
         return server;
     }
 
@@ -272,14 +272,4 @@ public static class HttpServerWebhookExtensions
 
     static WebhookOptions SharedOptions(IServiceProvider? services)
         => services?.GetService<WebhookOptions>() ?? new WebhookOptions();
-
-    static RouteEndpoint LastEndpoint(HttpServer server)
-    {
-        if (server.Router.Endpoints.Count == 0)
-            throw new InvalidOperationException(
-                "RequireWebhookSignature applies to the most recently mapped route, and no route has been mapped yet."
-            );
-
-        return server.Router.Endpoints[^1];
-    }
 }

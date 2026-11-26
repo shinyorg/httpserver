@@ -160,12 +160,19 @@ sealed record EndpointPolicyModel(
             || this.HasRequestSizeLimit;
 }
 
-/// <summary>What <c>[Authorize]</c> and <c>[AllowAnonymous]</c> on a class and method add up to.</summary>
+/// <summary>
+/// What <c>[Authorize]</c> and <c>[AllowAnonymous]</c> on a class and method add up to.
+/// <para>
+/// <see cref="RoleRequirements"/> holds one entry per attribute that names roles, each a comma-separated
+/// list any one of which satisfies it; every entry must pass. Kept as joined strings because the model has
+/// to stay equatable for incremental generation.
+/// </para>
+/// </summary>
 sealed record AuthorizationModel(
     bool Required,
     bool AllowAnonymous,
     EquatableArray<string> Policies,
-    EquatableArray<string> Roles
+    EquatableArray<string> RoleRequirements
 ) : IEquatable<AuthorizationModel>
 {
     public static readonly AuthorizationModel None = new(

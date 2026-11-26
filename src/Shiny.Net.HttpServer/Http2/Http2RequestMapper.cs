@@ -137,7 +137,7 @@ static class Http2RequestMapper
         }
 
         request.Cookies.SetRaw(JoinCookies(request));
-        request.Body = new Http2RequestBodyStream(stream.RequestBodyReader, request);
+        request.Body = new Http2RequestBodyStream(stream, request);
         request.BodyWithoutLength = stream.HasRequestBody && request.ContentLength is null;
 
         error = null;
@@ -167,9 +167,16 @@ static class Http2RequestMapper
 /// <summary>
 /// The request body, read from the pipe the connection's read loop fills. Enforces the request's
 /// size limit as it reads — fixed at the first read, so routing can still change it.
+/// <para>
+/// Every read hands flow-control credit back to the connection. That is what paces the client: it
+/// can only send as much as has been read here, so a handler that never reads holds the client to
+/// one window of body rather than stopping the connection for everyone.
+/// </para>
 /// </summary>
-sealed class Http2RequestBodyStream(PipeReader reader, HttpRequest request) : Stream
+sealed class Http2RequestBodyStream(Http2Stream stream, HttpRequest request) : Stream
 {
+    readonly PipeReader reader = stream.RequestBodyReader;
+
     bool started;
     long? maxBodySize;
     long totalRead;
@@ -203,14 +210,18 @@ sealed class Http2RequestBodyStream(PipeReader reader, HttpRequest request) : St
 
         while (true)
         {
-            var result = await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+            var result = await this.reader.ReadAsync(cancellationToken).ConfigureAwait(false);
             var available = result.Buffer;
 
             if (!available.IsEmpty)
             {
                 var take = (int)Math.Min(available.Length, buffer.Length);
                 available.Slice(0, take).CopyTo(buffer.Span);
-                reader.AdvanceTo(available.GetPosition(take));
+                this.reader.AdvanceTo(available.GetPosition(take));
+
+                stream.MarkRead(take);
+                if (stream.BodyConsumed is { } consumed)
+                    await consumed(take).ConfigureAwait(false);
 
                 this.totalRead += take;
                 if (this.maxBodySize is { } max && this.totalRead > max)
@@ -219,7 +230,7 @@ sealed class Http2RequestBodyStream(PipeReader reader, HttpRequest request) : St
                 return take;
             }
 
-            reader.AdvanceTo(available.Start, available.End);
+            this.reader.AdvanceTo(available.Start, available.End);
 
             if (result.IsCompleted || result.IsCanceled)
                 return 0;

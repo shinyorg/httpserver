@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
+using Shiny.Net.HttpServer.Routing;
 
 namespace Shiny.Net.HttpServer.Security;
 
@@ -89,7 +90,7 @@ public static class HttpServerIpFilterExtensions
     }
 
     /// <summary>
-    /// Applies a named policy to the most recently mapped route.
+    /// Applies a named policy to every route the preceding call mapped.
     /// <code>
     /// app.MapGet("/admin/keys", Handler).RequireIpFilter("admin");
     /// </code>
@@ -99,19 +100,19 @@ public static class HttpServerIpFilterExtensions
         ArgumentNullException.ThrowIfNull(server);
         ArgumentException.ThrowIfNullOrEmpty(policyName);
 
-        LastEndpointMetadata(server).PolicyName = policyName;
+        LastMappedConventions.Apply<IpFilterMetadata>(server, "RequireIpFilter", m => m.PolicyName = policyName);
         return server;
     }
 
     /// <summary>
-    /// Exempts the most recently mapped route from the filter, including from the default policy —
+    /// Exempts every route the preceding call mapped from the filter, including from the default policy —
     /// a health check a load balancer has to reach, say.
     /// </summary>
     public static HttpServer AllowAnyIp(this HttpServer server)
     {
         ArgumentNullException.ThrowIfNull(server);
 
-        LastEndpointMetadata(server).Disabled = true;
+        LastMappedConventions.Apply<IpFilterMetadata>(server, "RequireIpFilter", m => m.Disabled = true);
         return server;
     }
 
@@ -122,23 +123,4 @@ public static class HttpServerIpFilterExtensions
                 "builder.AddIpFilter(o => o.AddPolicy(\"name\", p => ...)), or pass a policy " +
                 "inline with app.UseIpFilter(p => ...)."
             );
-
-    static IpFilterMetadata LastEndpointMetadata(HttpServer server)
-    {
-        if (server.Router.Endpoints.Count == 0)
-            throw new InvalidOperationException(
-                "RequireIpFilter applies to the most recently mapped route, and no route has been mapped yet."
-            );
-
-        var endpoint = server.Router.Endpoints[^1];
-        var metadata = endpoint.GetMetadata<IpFilterMetadata>();
-
-        if (metadata is null)
-        {
-            metadata = new IpFilterMetadata();
-            endpoint.WithMetadata(metadata);
-        }
-
-        return metadata;
-    }
 }

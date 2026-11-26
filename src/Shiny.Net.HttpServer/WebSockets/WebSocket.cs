@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Buffers.Binary;
 using System.IO.Pipelines;
 using System.Text;
+using System.Text.Unicode;
 using Shiny.Net.HttpServer.Transports;
 
 namespace Shiny.Net.HttpServer.WebSockets;
@@ -86,8 +87,27 @@ public sealed class WebSocket : IAsyncDisposable
     /// <summary>
     /// Reads the next message, returning null when the socket closes. Pings and pongs are handled
     /// internally and never surface here.
+    /// <para>
+    /// A peer that breaks the protocol — an unmasked frame, a text message that is not UTF-8, a
+    /// compressed payload that does not inflate — is sent a close frame with the matching status
+    /// (1002, 1007, 1009) and the <see cref="WebSocketProtocolException"/> is rethrown to the handler.
+    /// </para>
     /// </summary>
     public async ValueTask<WebSocketMessage?> ReceiveAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            return await this.ReceiveCoreAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (WebSocketProtocolException ex)
+        {
+            // RFC 6455 §7.1.7: fail the connection — tell the peer why, then stop.
+            await this.CloseAsync(ex.Status, cancellationToken: CancellationToken.None).ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    async ValueTask<WebSocketMessage?> ReceiveCoreAsync(CancellationToken cancellationToken)
     {
         var payload = new ArrayBufferWriter<byte>();
         var messageType = WebSocketOpcode.Continuation;
@@ -146,8 +166,14 @@ public sealed class WebSocket : IAsyncDisposable
             if (frame.Fin)
             {
                 var body = compressed
-                    ? Shiny.Net.HttpServer.WebSockets.PerMessageDeflate.Decompress(payload.WrittenSpan, this.maxMessageLength)
+                    ? Inflate(payload.WrittenSpan, this.maxMessageLength)
                     : payload.WrittenSpan.ToArray();
+
+                // RFC 6455 §8.1: a text message that is not valid UTF-8 fails the connection with
+                // 1007. Handing it on would surface as replacement characters, or as a decoder
+                // exception, a long way from the peer that sent it.
+                if (messageType == WebSocketOpcode.Text && !Utf8.IsValid(body))
+                    throw new WebSocketProtocolException(WebSocketCloseStatus.InvalidPayloadData, "A text message was not valid UTF-8.");
 
                 return new WebSocketMessage(messageType, body);
             }
@@ -311,15 +337,27 @@ public sealed class WebSocket : IAsyncDisposable
 
             case WebSocketOpcode.Close:
                 this.closeReceived = true;
-                this.CloseResult = ParseClose(payload.WrittenSpan);
 
-                // Echo the close back so the peer can shut down cleanly, then stop.
-                await this.CloseAsync(
-                    this.CloseResult.Status == WebSocketCloseStatus.NoStatusReceived
-                        ? WebSocketCloseStatus.NormalClosure
-                        : this.CloseResult.Status,
-                    cancellationToken: cancellationToken
-                ).ConfigureAwait(false);
+                if (ParseClose(payload.WrittenSpan) is { } result)
+                {
+                    this.CloseResult = result;
+
+                    // Echo the close back so the peer can shut down cleanly, then stop.
+                    await this.CloseAsync(
+                        result.Status == WebSocketCloseStatus.NoStatusReceived
+                            ? WebSocketCloseStatus.NormalClosure
+                            : result.Status,
+                        cancellationToken: cancellationToken
+                    ).ConfigureAwait(false);
+
+                    return true;
+                }
+
+                // A one-byte payload, a reserved or unassigned status (1004-1006, 1015, under 1000,
+                // 5000 and up) or a reason that is not UTF-8. Echoing it would put a code on the wire
+                // that RFC 6455 §7.4 says must never be sent; the connection fails with 1002 instead.
+                this.CloseResult = new WebSocketCloseResult(WebSocketCloseStatus.ProtocolError, "The peer sent an invalid close frame.");
+                await this.CloseAsync(WebSocketCloseStatus.ProtocolError, cancellationToken: cancellationToken).ConfigureAwait(false);
 
                 return true;
 
@@ -328,15 +366,43 @@ public sealed class WebSocket : IAsyncDisposable
         }
     }
 
-    static WebSocketCloseResult ParseClose(ReadOnlySpan<byte> payload)
+    /// <summary>Reads a close frame's payload, or returns null when it is not a valid one.</summary>
+    static WebSocketCloseResult? ParseClose(ReadOnlySpan<byte> payload)
     {
-        if (payload.Length < 2)
+        if (payload.IsEmpty)
             return new WebSocketCloseResult(WebSocketCloseStatus.NoStatusReceived, null);
 
-        var status = (WebSocketCloseStatus)BinaryPrimitives.ReadUInt16BigEndian(payload);
-        var description = payload.Length > 2 ? Encoding.UTF8.GetString(payload[2..]) : null;
+        if (payload.Length == 1)
+            return null;
 
-        return new WebSocketCloseResult(status, description);
+        var code = BinaryPrimitives.ReadUInt16BigEndian(payload);
+        var reason = payload[2..];
+
+        if (!IsSendableCloseCode(code) || !Utf8.IsValid(reason))
+            return null;
+
+        return new WebSocketCloseResult((WebSocketCloseStatus)code, reason.IsEmpty ? null : Encoding.UTF8.GetString(reason));
+    }
+
+    /// <summary>
+    /// RFC 6455 §7.4: the codes a peer may put in a close frame — the defined ones that are not
+    /// reserved for local use (1005, 1006, 1015) or unassigned (1004, 1016-2999), plus the registered
+    /// (3000-3999) and private (4000-4999) ranges.
+    /// </summary>
+    static bool IsSendableCloseCode(ushort code)
+        => code is (>= 1000 and <= 1003) or (>= 1007 and <= 1014) or (>= 3000 and <= 4999);
+
+    /// <summary>Inflates a compressed message; a payload that is not valid deflate fails the connection.</summary>
+    static byte[] Inflate(ReadOnlySpan<byte> payload, long maxLength)
+    {
+        try
+        {
+            return Shiny.Net.HttpServer.WebSockets.PerMessageDeflate.Decompress(payload, maxLength);
+        }
+        catch (InvalidDataException)
+        {
+            throw new WebSocketProtocolException(WebSocketCloseStatus.InvalidPayloadData, "A compressed message could not be inflated.");
+        }
     }
 
     async ValueTask WriteFrameAsync(

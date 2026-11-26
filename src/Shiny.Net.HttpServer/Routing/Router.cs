@@ -50,7 +50,9 @@ public readonly struct RouteMatch
 public sealed class Router
 {
     readonly object gate = new();
+    readonly Stack<List<RouteEndpoint>> registrations = new();
     volatile RouteTable table = RouteTable.Empty;
+    RouteEndpoint[]? lastMapped;
 
     /// <summary>Every endpoint registered, in registration order. A snapshot; safe to enumerate.</summary>
     public IReadOnlyList<RouteEndpoint> Endpoints => this.table.Endpoints;
@@ -65,6 +67,94 @@ public sealed class Router
     /// <summary>Raised after any change, with the new endpoint count. Useful for logging and tests.</summary>
     public event EventHandler<int>? Changed;
 
+    /// <summary>
+    /// The routes the most recent mapping call registered — one for <c>MapGet</c>, every route of the group
+    /// for <c>MapGroup</c>, <c>MapModule</c> or a generated <c>Map{Class}()</c>. Empty until something is
+    /// mapped.
+    /// <para>
+    /// This is what a convention chained onto the server applies to —
+    /// <c>app.MapGroup("/admin", …).RequireAuthorization()</c> protects every route in the group. Only
+    /// treating the last route in the table as "what was just mapped" would protect one route of the
+    /// group and leave the rest open.
+    /// </para>
+    /// </summary>
+    public IReadOnlyList<RouteEndpoint> LastMapped
+    {
+        get
+        {
+            lock (this.gate)
+                return this.lastMapped ?? [];
+        }
+    }
+
+    /// <summary>True once anything has been mapped, even when the last call registered nothing.</summary>
+    internal bool HasMapped
+    {
+        get
+        {
+            lock (this.gate)
+                return this.lastMapped is not null;
+        }
+    }
+
+    /// <summary>
+    /// Groups every route added until the returned scope is disposed into one registration, so
+    /// <see cref="LastMapped"/> — and a convention chained after the call — covers all of them.
+    /// <code>
+    /// public static HttpServer MapThings(this HttpServer server)
+    /// {
+    ///     using (server.Router.BeginRegistration())
+    ///     {
+    ///         server.MapGet("/things", List);
+    ///         server.MapPost("/things", Create);
+    ///     }
+    ///     return server;
+    /// }
+    /// </code>
+    /// Anything that maps more than one route and hands back the <see cref="HttpServer"/> should do this.
+    /// Scopes nest: an inner one rolls into the outer, and inside a scope <see cref="LastMapped"/> still
+    /// tracks each individual call, so <c>server.MapGet(…).AllowAnonymous()</c> in the middle of a group
+    /// touches only that route.
+    /// </summary>
+    public IDisposable BeginRegistration()
+    {
+        lock (this.gate)
+            this.registrations.Push([]);
+
+        return new RegistrationScope(this);
+    }
+
+    void EndRegistration()
+    {
+        lock (this.gate)
+        {
+            var finished = this.registrations.Pop();
+            this.lastMapped = [.. finished];
+
+            if (this.registrations.Count > 0)
+                this.registrations.Peek().AddRange(finished);
+        }
+    }
+
+    void Track(IReadOnlyCollection<RouteEndpoint> added)
+    {
+        this.lastMapped = [.. added];
+
+        if (this.registrations.Count > 0)
+            this.registrations.Peek().AddRange(added);
+    }
+
+    sealed class RegistrationScope(Router router) : IDisposable
+    {
+        int disposed;
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref this.disposed, 1) == 0)
+                router.EndRegistration();
+        }
+    }
+
     public void Add(RouteEndpoint endpoint)
     {
         ArgumentNullException.ThrowIfNull(endpoint);
@@ -76,6 +166,7 @@ public sealed class Router
             // Built before it is published: a duplicate throws out of the constructor and the live
             // table is untouched, so a rejected registration cannot leave the server half-changed.
             this.Publish(new RouteTable(next));
+            this.Track([endpoint]);
         }
     }
 
@@ -86,8 +177,10 @@ public sealed class Router
 
         lock (this.gate)
         {
-            List<RouteEndpoint> next = [.. this.table.Endpoints, .. endpoints];
+            RouteEndpoint[] added = [.. endpoints];
+            List<RouteEndpoint> next = [.. this.table.Endpoints, .. added];
             this.Publish(new RouteTable(next));
+            this.Track(added);
         }
     }
 

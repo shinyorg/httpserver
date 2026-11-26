@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Shiny.Net.HttpServer.Routing;
 
 namespace Shiny.Net.HttpServer.Integrity;
 
@@ -65,32 +66,38 @@ public static class HttpServerContentDigestExtensions
     }
 
     /// <summary>
-    /// Requires the most recently mapped route's requests to carry a <c>Content-Digest</c> that
+    /// Requires requests to every route the preceding call mapped to carry a <c>Content-Digest</c> that
     /// verifies — an upload that must not arrive truncated.
     /// </summary>
     public static HttpServer RequireContentDigest(this HttpServer server)
     {
         ArgumentNullException.ThrowIfNull(server);
 
-        LastEndpoint(server).RequireContentDigest();
+        foreach (var endpoint in LastMappedConventions.LastMapped(server, nameof(RequireContentDigest)))
+            new RouteEndpointBuilder(endpoint).RequireContentDigest();
+
         return server;
     }
 
-    /// <summary>Gives the most recently mapped route's responses a <c>Content-Digest</c> whether or not the client asked.</summary>
+    /// <summary>Gives the responses of every route the preceding call mapped a <c>Content-Digest</c> whether or not the client asked.</summary>
     public static HttpServer WithContentDigest(this HttpServer server)
     {
         ArgumentNullException.ThrowIfNull(server);
 
-        LastEndpoint(server).WithContentDigest();
+        foreach (var endpoint in LastMappedConventions.LastMapped(server, nameof(WithContentDigest)))
+            new RouteEndpointBuilder(endpoint).WithContentDigest();
+
         return server;
     }
 
-    /// <summary>Exempts the most recently mapped route from digests in both directions.</summary>
+    /// <summary>Exempts every route the preceding call mapped from digests in both directions.</summary>
     public static HttpServer DisableContentDigest(this HttpServer server)
     {
         ArgumentNullException.ThrowIfNull(server);
 
-        LastEndpoint(server).DisableContentDigest();
+        foreach (var endpoint in LastMappedConventions.LastMapped(server, nameof(DisableContentDigest)))
+            new RouteEndpointBuilder(endpoint).DisableContentDigest();
+
         return server;
     }
 
@@ -150,15 +157,5 @@ public static class HttpServerContentDigestExtensions
         route.WithMetadata(created);
 
         return created;
-    }
-
-    static RouteEndpointBuilder LastEndpoint(HttpServer server)
-    {
-        if (server.Router.Endpoints.Count == 0)
-            throw new InvalidOperationException(
-                "Content digest settings apply to the most recently mapped route, and no route has been mapped yet."
-            );
-
-        return new RouteEndpointBuilder(server.Router.Endpoints[^1]);
     }
 }

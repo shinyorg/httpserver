@@ -14,7 +14,7 @@ namespace Shiny.Net.HttpServer.Tests;
 /// there. The tests that matter most are the ones where the connection goes away mid-body, since
 /// keeping those bytes is the reason the package exists.
 /// </summary>
-public class TusTests
+public partial class TusTests
 {
     static CancellationToken Token => TestContext.Current.CancellationToken;
 

@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
+using Shiny.Net.HttpServer.Routing;
 
 namespace Shiny.Net.HttpServer.RateLimiting;
 
@@ -74,7 +75,7 @@ public static class HttpServerRateLimitExtensions
     }
 
     /// <summary>
-    /// Applies a named policy to the most recently mapped route.
+    /// Applies a named policy to every route the preceding call mapped.
     /// <code>
     /// app.MapPost("/upload", Handler).RequireRateLimiting("uploads");
     /// </code>
@@ -84,19 +85,19 @@ public static class HttpServerRateLimitExtensions
         ArgumentNullException.ThrowIfNull(server);
         ArgumentException.ThrowIfNullOrEmpty(policyName);
 
-        LastEndpointMetadata(server).PolicyName = policyName;
+        LastMappedConventions.Apply<RateLimitMetadata>(server, "RequireRateLimiting", m => m.PolicyName = policyName);
         return server;
     }
 
     /// <summary>
-    /// Exempts the most recently mapped route from rate limiting, including from the global policy —
+    /// Exempts every route the preceding call mapped from rate limiting, including from the global policy —
     /// a health check that a monitor hits every second, say.
     /// </summary>
     public static HttpServer DisableRateLimiting(this HttpServer server)
     {
         ArgumentNullException.ThrowIfNull(server);
 
-        LastEndpointMetadata(server).Disabled = true;
+        LastMappedConventions.Apply<RateLimitMetadata>(server, "RequireRateLimiting", m => m.Disabled = true);
         return server;
     }
 
@@ -107,23 +108,4 @@ public static class HttpServerRateLimitExtensions
                 "builder.AddRateLimiter(o => o.AddFixedWindow(\"name\", 100, TimeSpan.FromMinutes(1))), " +
                 "or pass a policy inline to UseRateLimiter."
             );
-
-    static RateLimitMetadata LastEndpointMetadata(HttpServer server)
-    {
-        if (server.Router.Endpoints.Count == 0)
-            throw new InvalidOperationException(
-                "RequireRateLimiting applies to the most recently mapped route, and no route has been mapped yet."
-            );
-
-        var endpoint = server.Router.Endpoints[^1];
-        var metadata = endpoint.GetMetadata<RateLimitMetadata>();
-
-        if (metadata is null)
-        {
-            metadata = new RateLimitMetadata();
-            endpoint.WithMetadata(metadata);
-        }
-
-        return metadata;
-    }
 }

@@ -34,6 +34,11 @@ sealed class TusHandler
         this.basePath = basePath;
         this.lastSweep = options.TimeProvider.GetTimestamp();
 
+        // The disk store can only tell an abandoned half-created upload from one being created right
+        // now by age, and the endpoint's expiration is the age that means "abandoned" here.
+        if (store is DiskTusStore disk && options.Expiration is { } expiration)
+            disk.OrphanLifetime = expiration;
+
         var list = new List<string> { "creation", "creation-with-upload" };
 
         if (options.AllowDeferredLength)
@@ -159,7 +164,7 @@ sealed class TusHandler
                     "A final upload takes its length and its bytes from its partial uploads."
                 );
 
-            length = await this.MeasurePartsAsync(parts, context.RequestAborted).ConfigureAwait(false);
+            length = await this.MeasurePartsAsync(context, parts).ConfigureAwait(false);
         }
         else if (lengthHeader is not null)
         {
@@ -217,7 +222,8 @@ sealed class TusHandler
             Metadata = metadata,
             ExpiresUtc = expires,
             Concatenation = concatenation,
-            PartialUploads = parts
+            PartialUploads = parts,
+            Owner = this.options.OwnerSelector?.Invoke(context)
         }, context.RequestAborted).ConfigureAwait(false);
 
         var response = context.Response;
@@ -326,15 +332,19 @@ sealed class TusHandler
         return IsPlausibleId(id) ? id : null;
     }
 
-    async ValueTask<long> MeasurePartsAsync(IReadOnlyList<string> parts, CancellationToken cancellationToken)
+    async ValueTask<long> MeasurePartsAsync(HttpContext context, IReadOnlyList<string> parts)
     {
         long total = 0;
 
         foreach (var id in parts)
         {
-            var part = await this.store.GetAsync(id, cancellationToken).ConfigureAwait(false);
+            var part = await this.store.GetAsync(id, context.RequestAborted).ConfigureAwait(false);
 
-            if (part is null || part.Concatenation != TusConcatenation.Partial)
+            // Someone else's part reads exactly like no part at all: naming an upload in a final
+            // one is a way of reading its bytes, so it is held to the same check as a HEAD.
+            if (part is null
+                || part.Concatenation != TusConcatenation.Partial
+                || !await this.MayUseAsync(context, part, TusUploadOperation.Concatenate).ConfigureAwait(false))
                 throw new TusException(StatusCodes.Status400BadRequest, $"'{id}' is not a partial upload on this endpoint.");
 
             // Joining unfinished parts is the concatenation-unfinished extension, which this server
@@ -353,7 +363,7 @@ sealed class TusHandler
     public async ValueTask HeadAsync(HttpContext context)
     {
         using var lease = await this.LeaseAsync(context).ConfigureAwait(false);
-        var upload = await this.RequireUploadAsync(context, lease.Id).ConfigureAwait(false);
+        var upload = await this.RequireUploadAsync(context, lease.Id, TusUploadOperation.Head).ConfigureAwait(false);
 
         var headers = context.Response.Headers;
 
@@ -403,7 +413,7 @@ sealed class TusHandler
         var checksum = ParseChecksum(context.Request.Headers.GetFirst(TusHeaderNames.UploadChecksum));
 
         using var lease = await this.LeaseAsync(context).ConfigureAwait(false);
-        var upload = await this.RequireUploadAsync(context, lease.Id).ConfigureAwait(false);
+        var upload = await this.RequireUploadAsync(context, lease.Id, TusUploadOperation.Patch).ConfigureAwait(false);
 
         if (upload.Concatenation == TusConcatenation.Final)
             throw new TusException(StatusCodes.Status403Forbidden, "A final upload is assembled from its parts and cannot be written to.");
@@ -562,6 +572,15 @@ sealed class TusHandler
         }
 
         using var lease = await this.LeaseAsync(context).ConfigureAwait(false);
+
+        // Only looked up when there is a check to make, so a DELETE costs what it did without one.
+        if (this.HasAccessCheck)
+        {
+            var upload = await this.store.GetAsync(lease.Id, context.RequestAborted).ConfigureAwait(false);
+
+            if (upload is null || !await this.MayUseAsync(context, upload, TusUploadOperation.Delete).ConfigureAwait(false))
+                throw new TusException(StatusCodes.Status404NotFound, "The upload does not exist.");
+        }
 
         if (!await this.store.DeleteAsync(lease.Id, context.RequestAborted).ConfigureAwait(false))
             throw new TusException(StatusCodes.Status404NotFound, "The upload does not exist.");
@@ -724,10 +743,14 @@ sealed class TusHandler
             );
     }
 
-    async ValueTask<TusUpload> RequireUploadAsync(HttpContext context, string id)
+    async ValueTask<TusUpload> RequireUploadAsync(HttpContext context, string id, TusUploadOperation operation)
     {
-        var upload = await this.store.GetAsync(id, context.RequestAborted).ConfigureAwait(false)
-            ?? throw new TusException(StatusCodes.Status404NotFound, "The upload does not exist.");
+        var upload = await this.store.GetAsync(id, context.RequestAborted).ConfigureAwait(false);
+
+        // Checked before expiry, so a caller who may not use the upload learns nothing about it -
+        // not even that it has expired.
+        if (upload is null || !await this.MayUseAsync(context, upload, operation).ConfigureAwait(false))
+            throw new TusException(StatusCodes.Status404NotFound, "The upload does not exist.");
 
         if (!upload.IsComplete && upload.ExpiresUtc is { } expires && expires < this.Now)
         {
@@ -736,6 +759,24 @@ sealed class TusHandler
         }
 
         return upload;
+    }
+
+    bool HasAccessCheck => this.options.OwnerSelector is not null || this.options.AuthorizeUploadAsync is not null;
+
+    /// <summary>
+    /// Whether this request may use <paramref name="upload"/>: the owner recorded at creation has to
+    /// match the caller's, and <see cref="TusOptions.AuthorizeUploadAsync"/> has to agree. A refusal
+    /// is answered as though the upload did not exist, so an upload URL that leaks says nothing to
+    /// whoever finds it.
+    /// </summary>
+    async ValueTask<bool> MayUseAsync(HttpContext context, TusUpload upload, TusUploadOperation operation)
+    {
+        if (this.options.OwnerSelector is { } owner
+            && !string.Equals(owner(context), upload.Owner, StringComparison.Ordinal))
+            return false;
+
+        return this.options.AuthorizeUploadAsync is not { } authorize
+            || await authorize(new TusUploadAccessContext(context, upload, operation)).ConfigureAwait(false);
     }
 
     /// <summary>

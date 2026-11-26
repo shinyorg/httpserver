@@ -41,7 +41,9 @@ public sealed class ProblemDetailsExceptionHandler(
         var problem = new ProblemDetails
         {
             Status = status,
-            Detail = status < 500 ? exception.Message : null
+            // Only a message written for the caller. The rest — an UnauthorizedAccessException naming an
+            // absolute path, an ArgumentException naming a parameter — stays in the log.
+            Detail = status < 500 && options.IncludesMessage(exception) ? exception.Message : null
         };
 
         ProblemDetailsDefaults.ApplyDefaults(problem, context, status);

@@ -99,14 +99,15 @@ public sealed class HttpServerOptions
 
     /// <summary>
     /// When true, Scheme, Host and client IP are taken from X-Forwarded-Proto / X-Forwarded-Host /
-    /// X-Forwarded-For.
+    /// X-Forwarded-For, read from the right — one hop per trusted proxy, up to
+    /// <see cref="ForwardedHeadersOptions.ForwardLimit"/> (1 by default). See <see cref="ForwardedHeaders"/>.
     /// <para>
-    /// <b>Warning — this trusts every sender.</b> There is no list of trusted proxies: the headers are
-    /// believed from whichever peer sent them, so any client that can reach the server directly can set
-    /// its own address, scheme and host — walking around IP filters, rate-limit partitions, host
-    /// filtering and HTTPS-only checks. Only enable it when <em>every</em> connection arrives through a
-    /// proxy or tunnel you control, which strips or overwrites the headers. Never enable it on an edge
-    /// server that faces the internet directly.
+    /// <b>Warning — by default this trusts every peer.</b> Until <see cref="ForwardedHeadersOptions.KnownProxies"/>
+    /// or <see cref="ForwardedHeadersOptions.KnownNetworks"/> is set, the headers are believed from
+    /// whichever peer sent them, so a client that can reach the server directly can set its own address,
+    /// scheme and host — walking around IP filters, rate-limit partitions, host filtering and HTTPS-only
+    /// checks. List your proxies, or only enable it when <em>every</em> connection arrives through a proxy
+    /// or tunnel you control. Never enable it on an edge server that faces the internet directly.
     /// </para>
     /// <para>
     /// <b>HTTP/1.1 only.</b> Requests arriving over HTTP/2 or HTTP/3 are not rewritten, whatever this
@@ -115,6 +116,9 @@ public sealed class HttpServerOptions
     /// </para>
     /// </summary>
     public bool UseForwardedHeaders { get; set; }
+
+    /// <summary>Which proxies <see cref="UseForwardedHeaders"/> believes, and how many hops back.</summary>
+    public ForwardedHeadersOptions ForwardedHeaders { get; } = new();
 
     /// <summary>
     /// Maximum simultaneous connections. Excess connections wait rather than being rejected.
@@ -235,6 +239,21 @@ public sealed class HttpServerOptions
     /// </para>
     /// </summary>
     public bool RecoverFromListenerFaults { get; set; } = true;
+
+    /// <summary>
+    /// How long a graceful stop waits for in-flight requests before aborting them, 5 seconds by
+    /// default. <see cref="TimeSpan.Zero"/> aborts at once; <see cref="Timeout.InfiniteTimeSpan"/>
+    /// waits for as long as the token passed to <see cref="HttpServer.StopAsync"/> allows.
+    /// <para>
+    /// A stop first stops accepting and closes idle keep-alive connections. Requests already running
+    /// carry on with <see cref="HttpContext.RequestAborted"/> untouched, and each connection closes
+    /// once its response is done. Whatever is still running when this timeout — or the stop's own
+    /// token, whichever comes first — runs out has its <see cref="HttpContext.RequestAborted"/>
+    /// cancelled and its connection aborted. HTTP/2 connections are still cut at the start of the
+    /// stop.
+    /// </para>
+    /// </summary>
+    public TimeSpan ShutdownTimeout { get; set; } = TimeSpan.FromSeconds(5);
 }
 
 /// <summary>
@@ -319,11 +338,36 @@ public sealed class HttpServerLimits
     /// </summary>
     public long? MaxRequestBodySize { get; set; } = 30 * 1024 * 1024;
 
-    /// <summary>How long a connection may stay idle between requests before it is closed.</summary>
+    /// <summary>
+    /// How long a connection may stay idle between requests before it is closed — including a new
+    /// connection that has not sent its first byte yet.
+    /// </summary>
     public TimeSpan KeepAliveTimeout { get; set; } = TimeSpan.FromSeconds(130);
 
-    /// <summary>How long a client has to finish sending the request line and headers.</summary>
+    /// <summary>
+    /// How long a client has to finish sending the request line and headers. On a cleartext
+    /// connection that may be HTTP/2, this also bounds a client that has started, but not finished,
+    /// the HTTP/2 connection preface.
+    /// </summary>
     public TimeSpan RequestHeadersTimeout { get; set; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// How long one read of an HTTP/1.1 request body may wait for the client to send more of it,
+    /// 30 seconds by default. A body that stalls past this ends with a 408 and the connection closes.
+    /// <see cref="Timeout.InfiniteTimeSpan"/> turns it off.
+    /// <para>
+    /// It is the gap between bytes, not the time for the whole body: a large upload on a slow link
+    /// is fine as long as it keeps moving.
+    /// </para>
+    /// </summary>
+    public TimeSpan RequestBodyTimeout { get; set; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// How long one write of an HTTP/1.1 response may wait for the client to take the bytes, 60
+    /// seconds by default. A client that stops reading for longer has its connection aborted, and the
+    /// handler's write fails as a client disconnect. <see cref="Timeout.InfiniteTimeSpan"/> turns it off.
+    /// </summary>
+    public TimeSpan ResponseWriteTimeout { get; set; } = TimeSpan.FromSeconds(60);
 
     /// <summary>Maximum requests served on one connection before it is closed. Null removes the limit.</summary>
     public long? MaxRequestsPerConnection { get; set; } = 1000;
@@ -466,22 +510,45 @@ public sealed class Http2Options
     /// </summary>
     public bool AllowCleartext { get; set; } = true;
 
-    /// <summary>Maximum streams a client may have open at once.</summary>
+    /// <summary>
+    /// Maximum streams a client may have open at once. A stream counts until its handler finishes,
+    /// even after the client resets it, so resetting streams cannot get a client more concurrent
+    /// handlers than this. A client that keeps getting refused, or resets streams in bulk, is
+    /// disconnected with ENHANCE_YOUR_CALM (the rapid-reset attack, CVE-2023-44487).
+    /// </summary>
     public int MaxConcurrentStreams { get; set; } = 100;
 
-    /// <summary>Flow-control window for each stream.</summary>
-    public int InitialStreamWindowSize { get; set; } = 96 * 1024;
+    /// <summary>
+    /// Flow-control window for each stream. A client can only have this much of one request body in
+    /// flight per round trip, so it is an upload's speed limit: window divided by round-trip time.
+    /// At 8 MiB a 3 ms Wi-Fi link is no longer the bottleneck; at the old 96 KiB it held an upload
+    /// to about 30 MB/s.
+    /// <para>
+    /// It is also memory: body bytes the handler has not read yet are buffered, and the window is
+    /// how much of them the client may send before it has to wait for the handler. Credit goes back
+    /// as the handler reads, so a handler that is slow to read - or never reads - holds its client
+    /// to one window of buffered body without holding up any other stream on the connection.
+    /// <see cref="InitialConnectionWindowSize"/> caps the total across a connection's streams.
+    /// </para>
+    /// </summary>
+    public int InitialStreamWindowSize { get; set; } = 8 * 1024 * 1024;
 
     /// <summary>
     /// Flow-control window for the connection as a whole. Larger than one stream's, so several
-    /// concurrent uploads do not have to take turns.
+    /// concurrent uploads do not have to take turns. Also the most unread request body one
+    /// connection can have buffered at once.
     /// </summary>
-    public int InitialConnectionWindowSize { get; set; } = 1024 * 1024;
+    public int InitialConnectionWindowSize { get; set; } = 16 * 1024 * 1024;
 
     /// <summary>Largest frame the peer may send. The protocol floor is 16 KiB.</summary>
     public int MaxFrameSize { get; set; } = 16 * 1024;
 
-    /// <summary>Advisory cap on the total size of a request's headers.</summary>
+    /// <summary>
+    /// Cap on the total size of a request's headers, counted as SETTINGS_MAX_HEADER_LIST_SIZE counts
+    /// it: name plus value plus 32 bytes per field, after HPACK decoding. A request over it is
+    /// answered 431 without reaching a handler; a header block whose encoded size alone is more
+    /// than twice it closes the connection, since it has to be buffered before it can be decoded.
+    /// </summary>
     public int MaxHeaderListSize { get; set; } = 32 * 1024;
 }
 

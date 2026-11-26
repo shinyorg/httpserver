@@ -67,14 +67,22 @@ public sealed class FileBrowserOptions
     public long MaxUploadBytes { get; set; } = 64 * 1024 * 1024;
 
     /// <summary>
-    /// Shows dotfiles. Off by default — a content directory routinely holds a <c>.env</c> or a
-    /// database journal, and listing them is how they get fetched.
+    /// Shows dotfiles and entries with the Hidden attribute. Off by default — a content directory
+    /// routinely holds a <c>.env</c> or a database journal, and listing them is how they get fetched.
+    /// Off means refused by name as well as left out of listings, and a hidden directory hides
+    /// everything under it.
     /// </summary>
     public bool ServeHiddenFiles { get; set; }
 
     /// <summary>
     /// Decides whether an entry is visible at all, by path relative to the root. Return false to
     /// hide it from listings and refuse every operation on it.
+    /// <para>
+    /// The path is spelled the way the directory entries are, not the way the request was: on a
+    /// case-insensitive file system (macOS, Windows) <c>/PRIVATE/keys.txt</c> reaches the filter as
+    /// <c>private/keys.txt</c>. When a link inside the root is followed, the filter is asked about
+    /// the path it leads to as well, and both have to pass.
+    /// </para>
     /// </summary>
     public Func<string, bool>? Filter { get; set; }
 

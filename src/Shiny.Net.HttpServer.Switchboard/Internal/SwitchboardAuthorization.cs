@@ -32,11 +32,10 @@ static class SwitchboardAuthorization
                     if (!string.IsNullOrWhiteSpace(authorize.Policy))
                         folded.Policies.Add(authorize.Policy);
 
-                    if (authorize.Roles is { } roles)
-                    {
-                        foreach (var role in roles.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-                            folded.Roles.Add(role);
-                    }
+                    // One requirement per attribute: a method's roles narrow the switchboard's, never widen them.
+                    var roles = (authorize.Roles ?? string.Empty).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                    if (roles.Length > 0)
+                        folded.RoleRequirements.Add(roles);
 
                     break;
 
@@ -53,8 +52,11 @@ static class SwitchboardAuthorization
                     foreach (var policy in existing.Policies)
                         folded.Policies.Add(policy);
 
-                    foreach (var role in existing.Roles)
-                        folded.Roles.Add(role);
+                    if (existing.Roles.Count > 0)
+                        folded.RoleRequirements.Add([.. existing.Roles]);
+
+                    foreach (var requirement in existing.RoleRequirements)
+                        folded.RoleRequirements.Add(requirement);
 
                     break;
             }
@@ -103,6 +105,9 @@ static class SwitchboardAuthorization
 
         if (metadata.Roles.Count > 0)
             policies.Add(new AuthorizationPolicyBuilder().RequireRole([.. metadata.Roles]).Build());
+
+        foreach (var roles in metadata.RoleRequirements.Where(r => r.Count > 0))
+            policies.Add(new AuthorizationPolicyBuilder().RequireRole([.. roles]).Build());
 
         if (policies.Count == 0)
             policies.Add(options.DefaultPolicy);

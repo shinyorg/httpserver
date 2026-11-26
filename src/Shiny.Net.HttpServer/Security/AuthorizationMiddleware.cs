@@ -76,6 +76,11 @@ public sealed class AuthorizationMiddleware(
         if (metadata.Roles.Count > 0)
             policies.Add(new AuthorizationPolicyBuilder().RequireRole([.. metadata.Roles]).Build());
 
+        // One policy per [Authorize(Roles = …)], so every attribute has to pass on its own. Merging
+        // them into one any-of list let a class's admin requirement be met by a method's viewer role.
+        foreach (var roles in metadata.RoleRequirements.Where(r => r.Count > 0))
+            policies.Add(new AuthorizationPolicyBuilder().RequireRole([.. roles]).Build());
+
         // A bare [Authorize] with no policy and no roles means the default policy.
         if (policies.Count == 0)
             policies.Add(options.DefaultPolicy);

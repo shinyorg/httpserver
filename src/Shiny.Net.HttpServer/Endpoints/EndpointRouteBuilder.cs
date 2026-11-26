@@ -189,27 +189,38 @@ public static class EndpointModuleExtensions
 {
     /// <summary>
     /// Mounts a module's routes. Every route it registers is tagged with the module type, so
-    /// <see cref="UnmapModule(HttpServer, Type)"/> can take them all away again.
+    /// <see cref="UnmapModule(HttpServer, Type)"/> can take them all away again. A convention chained
+    /// after the call — <c>.RequireAuthorization()</c> — applies to every one of them.
     /// </summary>
     public static HttpServer MapModule(this HttpServer server, IEndpointModule module, string prefix = "")
     {
         ArgumentNullException.ThrowIfNull(server);
         ArgumentNullException.ThrowIfNull(module);
 
-        module.Map(new EndpointRouteBuilder(server, prefix, module.GetType()));
+        using (server.Router.BeginRegistration())
+            module.Map(new EndpointRouteBuilder(server, prefix, module.GetType()));
+
         return server;
     }
 
-    /// <summary>Mounts every module registered in the container.</summary>
+    /// <summary>
+    /// Mounts every module registered in the container. A convention chained after the call applies to
+    /// every route of every module.
+    /// </summary>
     public static HttpServer MapModules(this HttpServer server, string prefix = "")
     {
         ArgumentNullException.ThrowIfNull(server);
 
-        if (server.Services?.GetService(typeof(IEnumerable<IEndpointModule>)) is not IEnumerable<IEndpointModule> modules)
-            return server;
-
-        foreach (var module in modules)
-            server.MapModule(module, prefix);
+        // Opened even when there is nothing to mount, so a convention chained after it applies to the
+        // nothing this call mapped rather than to whatever was mapped before it.
+        using (server.Router.BeginRegistration())
+        {
+            if (server.Services?.GetService(typeof(IEnumerable<IEndpointModule>)) is IEnumerable<IEndpointModule> modules)
+            {
+                foreach (var module in modules)
+                    server.MapModule(module, prefix);
+            }
+        }
 
         return server;
     }
@@ -235,13 +246,24 @@ public static class EndpointModuleExtensions
     ///     api.Map("GET", "/ping", ctx => ctx.Response.WriteAsync("pong"));
     /// });
     /// </code>
+    /// A convention chained after the call applies to every route the group mapped:
+    /// <code>
+    /// app.MapGroup("/admin", admin =>
+    /// {
+    ///     admin.MapGet("/users", ListUsers);
+    ///     admin.MapPost("/delete-all", DeleteAll);
+    /// })
+    /// .RequireAuthorization("admin");
+    /// </code>
     /// </summary>
     public static HttpServer MapGroup(this HttpServer server, string prefix, Action<IEndpointRouteBuilder> configure)
     {
         ArgumentNullException.ThrowIfNull(server);
         ArgumentNullException.ThrowIfNull(configure);
 
-        configure(new EndpointRouteBuilder(server, prefix, null));
+        using (server.Router.BeginRegistration())
+            configure(new EndpointRouteBuilder(server, prefix, null));
+
         return server;
     }
 }

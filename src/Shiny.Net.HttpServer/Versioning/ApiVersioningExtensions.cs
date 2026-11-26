@@ -64,7 +64,7 @@ public static class HttpServerApiVersioningExtensions
     }
 
     /// <summary>
-    /// Declares a version on the most recently mapped route.
+    /// Declares a version on every route the preceding call mapped.
     /// <code>
     /// app.MapGet("/users", ListV1).HasApiVersion(1.0);
     /// app.MapGet("/users", ListV2).HasApiVersion(2.0);
@@ -74,7 +74,7 @@ public static class HttpServerApiVersioningExtensions
     {
         ArgumentNullException.ThrowIfNull(version);
 
-        Last(server).SupportedVersions.Add(version);
+        Last(server, m => m.SupportedVersions.Add(version));
         return server;
     }
 
@@ -86,12 +86,12 @@ public static class HttpServerApiVersioningExtensions
     public static HttpServer HasApiVersion(this HttpServer server, string version)
         => server.HasApiVersion(ApiVersion.Parse(version));
 
-    /// <summary>Declares a deprecated version on the most recently mapped route.</summary>
+    /// <summary>Declares a deprecated version on every route the preceding call mapped.</summary>
     public static HttpServer HasDeprecatedApiVersion(this HttpServer server, ApiVersion version)
     {
         ArgumentNullException.ThrowIfNull(version);
 
-        Last(server).DeprecatedVersions.Add(version);
+        Last(server, m => m.DeprecatedVersions.Add(version));
         return server;
     }
 
@@ -99,12 +99,12 @@ public static class HttpServerApiVersioningExtensions
     public static HttpServer HasDeprecatedApiVersion(this HttpServer server, double version)
         => server.HasDeprecatedApiVersion(new ApiVersion(version));
 
-    /// <summary>Scopes the most recently mapped route to one of its set's versions.</summary>
+    /// <summary>Scopes every route the preceding call mapped to one of its set's versions.</summary>
     public static HttpServer MapToApiVersion(this HttpServer server, ApiVersion version)
     {
         ArgumentNullException.ThrowIfNull(version);
 
-        Last(server).MappedVersions.Add(version);
+        Last(server, m => m.MappedVersions.Add(version));
         return server;
     }
 
@@ -112,35 +112,34 @@ public static class HttpServerApiVersioningExtensions
     public static HttpServer MapToApiVersion(this HttpServer server, double version)
         => server.MapToApiVersion(new ApiVersion(version));
 
-    /// <summary>Gives the most recently mapped route a version set's declarations.</summary>
+    /// <summary>Gives every route the preceding call mapped a version set's declarations.</summary>
     public static HttpServer WithApiVersionSet(this HttpServer server, ApiVersionSet set)
     {
         ArgumentNullException.ThrowIfNull(set);
 
-        LastEndpoint(server).WithMetadata(set.CreateMetadata());
+        LastMappedConventions.Attach(server, nameof(WithApiVersionSet), set.CreateMetadata);
         return server;
     }
 
-    /// <summary>Marks the most recently mapped route version-neutral.</summary>
+    /// <summary>Marks every route the preceding call mapped version-neutral.</summary>
     public static HttpServer IsApiVersionNeutral(this HttpServer server)
     {
-        Last(server).IsApiVersionNeutral = true;
+        Last(server, m => m.IsApiVersionNeutral = true);
         return server;
     }
 
-    static RouteEndpoint LastEndpoint(HttpServer server)
+    static void Last(HttpServer server, Action<ApiVersionMetadata> apply)
     {
-        ArgumentNullException.ThrowIfNull(server);
+        var seen = new HashSet<ApiVersionMetadata>(ReferenceEqualityComparer.Instance);
 
-        if (server.Router.Endpoints.Count == 0)
-            throw new InvalidOperationException(
-                "API versions apply to the most recently mapped route, and no route has been mapped yet."
-            );
+        foreach (var endpoint in LastMappedConventions.LastMapped(server, "API versions"))
+        {
+            var metadata = ApiVersionRouteEndpointBuilderExtensions.GetOrAdd(endpoint);
 
-        return server.Router.Endpoints[^1];
+            if (seen.Add(metadata))
+                apply(metadata);
+        }
     }
-
-    static ApiVersionMetadata Last(HttpServer server) => ApiVersionRouteEndpointBuilderExtensions.GetOrAdd(LastEndpoint(server));
 }
 
 /// <summary>Versioning a route through the builder <c>Map</c> returns on a group or module.</summary>

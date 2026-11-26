@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
+using Shiny.Net.HttpServer.Routing;
 
 namespace Shiny.Net.HttpServer.Idempotency;
 
@@ -62,7 +63,7 @@ public static class HttpServerIdempotencyExtensions
     }
 
     /// <summary>
-    /// Requires an <c>Idempotency-Key</c> on the most recently mapped route; a request without one is
+    /// Requires an <c>Idempotency-Key</c> on every route the preceding call mapped; a request without one is
     /// refused with a 400.
     /// <code>
     /// app.MapPost("/payments", Charge).RequireIdempotencyKey();
@@ -72,19 +73,19 @@ public static class HttpServerIdempotencyExtensions
     {
         ArgumentNullException.ThrowIfNull(server);
 
-        Apply(LastEndpointMetadata(server), required: true, expiration);
+        LastMappedConventions.Apply<IdempotencyMetadata>(server, nameof(RequireIdempotencyKey), m => Apply(m, required: true, expiration));
         return server;
     }
 
     /// <summary>
-    /// Honours an <c>Idempotency-Key</c> on the most recently mapped route when the client sends one,
+    /// Honours an <c>Idempotency-Key</c> on every route the preceding call mapped when the client sends one,
     /// and lets requests without one through.
     /// </summary>
     public static HttpServer WithIdempotency(this HttpServer server, TimeSpan? expiration = null)
     {
         ArgumentNullException.ThrowIfNull(server);
 
-        Apply(LastEndpointMetadata(server), required: false, expiration);
+        LastMappedConventions.Apply<IdempotencyMetadata>(server, nameof(WithIdempotency), m => Apply(m, required: false, expiration));
         return server;
     }
 
@@ -165,15 +166,5 @@ public static class HttpServerIdempotencyExtensions
         route.WithMetadata(created);
 
         return created;
-    }
-
-    static IdempotencyMetadata LastEndpointMetadata(HttpServer server)
-    {
-        if (server.Router.Endpoints.Count == 0)
-            throw new InvalidOperationException(
-                "RequireIdempotencyKey applies to the most recently mapped route, and no route has been mapped yet."
-            );
-
-        return GetOrAdd(new RouteEndpointBuilder(server.Router.Endpoints[^1]));
     }
 }

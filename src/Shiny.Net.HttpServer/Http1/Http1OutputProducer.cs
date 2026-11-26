@@ -21,28 +21,46 @@ namespace Shiny.Net.HttpServer.Http1;
 /// reached for, since <c>GetSpan</c> cannot await the header write itself.
 /// </para>
 /// </summary>
-sealed class Http1OutputProducer : IResponseBodyControl, IInformationalResponseWriter
+sealed class Http1OutputProducer : IResponseBodyControl, IInformationalResponseWriter, IDisposable
 {
     readonly PipeWriter pipe;
     readonly HttpServerOptions options;
     readonly ResponseBodyStream stream;
     readonly ResponseBodyPipeWriter bodyWriter;
+    readonly PipeOperationTimer writeTimer;
+    readonly CancellationToken draining;
 
     HttpResponse response = null!;
     bool chunked;
     bool suppressBody;
+    bool bodyForbidden;
     bool keepAlive;
     bool completed;
     long? declaredLength;
     long bytesWritten;
 
-    public Http1OutputProducer(PipeWriter pipe, HttpServerOptions options)
+    /// <param name="pipe">The connection's output.</param>
+    /// <param name="options">Server options; the write timeout comes from its limits.</param>
+    /// <param name="draining">Signalled when the server starts shutting down, after which every response says <c>Connection: close</c>.</param>
+    public Http1OutputProducer(PipeWriter pipe, HttpServerOptions options, CancellationToken draining = default)
     {
         this.pipe = pipe;
         this.options = options;
+        this.draining = draining;
         this.stream = new ResponseBodyStream(this);
         this.bodyWriter = new ResponseBodyPipeWriter(this);
+        this.writeTimer = new PipeOperationTimer(pipe.CancelPendingFlush);
     }
+
+    /// <summary>
+    /// True once writing to the connection itself has failed — the client reset it, or stopped
+    /// reading for longer than <see cref="HttpServerLimits.ResponseWriteTimeout"/>. What the handler
+    /// sees then is the transport going away, not a fault of its own.
+    /// </summary>
+    public bool TransportFaulted { get; private set; }
+
+    /// <summary>True when a flush outlived <see cref="HttpServerLimits.ResponseWriteTimeout"/>.</summary>
+    public bool WriteTimedOut => this.writeTimer.Expired;
 
     public bool HasStarted { get; private set; }
 
@@ -72,6 +90,7 @@ sealed class Http1OutputProducer : IResponseBodyControl, IInformationalResponseW
         this.HasStarted = false;
         this.chunked = false;
         this.suppressBody = suppressBody;
+        this.bodyForbidden = false;
         this.keepAlive = keepAlive;
         this.completed = false;
         this.IsUpgrade = false;
@@ -96,8 +115,52 @@ sealed class Http1OutputProducer : IResponseBodyControl, IInformationalResponseW
         await this.EnsureStartedAsync().ConfigureAwait(false);
 
         if (!alreadyStarted)
-            await this.pipe.FlushAsync(cancellationToken).ConfigureAwait(false);
+            await this.FlushTransportAsync(cancellationToken).ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// Flushes the connection's output under <see cref="HttpServerLimits.ResponseWriteTimeout"/>.
+    /// Every flush in this producer — and the connection's own 100 Continue — comes through here, so
+    /// a client that stops reading cannot hold a handler (and its connection slot) forever, and a
+    /// failure here is known to be the transport's.
+    /// </summary>
+    public async ValueTask<FlushResult> FlushTransportAsync(CancellationToken cancellationToken)
+    {
+        if (this.writeTimer.Expired)
+            throw this.WriteTimeout();
+
+        FlushResult result;
+        this.writeTimer.Start(this.options.Limits.ResponseWriteTimeout);
+        try
+        {
+            result = await this.pipe.FlushAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or System.Net.Sockets.SocketException or ObjectDisposedException)
+        {
+            this.TransportFaulted = true;
+            throw;
+        }
+        finally
+        {
+            this.writeTimer.Stop();
+        }
+
+        if (this.writeTimer.Expired)
+            throw this.WriteTimeout();
+
+        return result;
+    }
+
+    IOException WriteTimeout()
+    {
+        this.TransportFaulted = true;
+        this.keepAlive = false;
+        return new IOException(
+            $"The client did not accept response data within {this.options.Limits.ResponseWriteTimeout.TotalSeconds:0.#}s."
+        );
+    }
+
+    public void Dispose() => this.writeTimer.Dispose();
 
     /// <summary>
     /// Stages the head without flushing. The body path uses this, because it is about to flush
@@ -119,8 +182,13 @@ sealed class Http1OutputProducer : IResponseBodyControl, IInformationalResponseW
         var res = this.response;
         var status = res.StatusCode;
 
+        // Validated before a byte is staged: a throw half way through the head would leave the start of
+        // a response in the pipe for the error response to be written after.
+        ValidateReasonPhrase(res.ReasonPhrase);
+
         // 1xx, 204 and 304 must not carry a body, and framing headers on them confuse clients.
         var bodyForbidden = IsBodyForbidden(status);
+        this.bodyForbidden = bodyForbidden;
         this.declaredLength = res.ContentLength;
 
         if (bodyForbidden)
@@ -161,6 +229,11 @@ sealed class Http1OutputProducer : IResponseBodyControl, IInformationalResponseW
         if (this.options.IncludeDateHeader && !res.Headers.ContainsKey(HeaderNames.Date))
             res.Headers.Set(HeaderNames.Date, DateHeaderCache.GetValue());
 
+        // A server that is shutting down finishes this exchange and then closes; saying so lets the
+        // client open its next request elsewhere instead of finding the connection gone.
+        if (this.draining.IsCancellationRequested)
+            this.keepAlive = false;
+
         if (this.IsUpgrade)
             this.keepAlive = false;
         else
@@ -195,7 +268,7 @@ sealed class Http1OutputProducer : IResponseBodyControl, IInformationalResponseW
 
         WriteStatusLine(this.pipe, statusCode, null);
         WriteHeaders(this.pipe, headers);
-        await this.pipe.FlushAsync(cancellationToken).ConfigureAwait(false);
+        await this.FlushTransportAsync(cancellationToken).ConfigureAwait(false);
 
         return true;
     }
@@ -203,6 +276,25 @@ sealed class Http1OutputProducer : IResponseBodyControl, IInformationalResponseW
     static bool IsBodyForbidden(int status)
         => status is StatusCodes.Status204NoContent or StatusCodes.Status304NotModified
             || status is >= 100 and < 200;
+
+    /// <summary>
+    /// A reason phrase is free text on the status line, so a CR or LF in one would end the line and
+    /// write headers of the handler's choosing — or a whole second response.
+    /// </summary>
+    static void ValidateReasonPhrase(string? reasonPhrase)
+    {
+        if (reasonPhrase is null)
+            return;
+
+        foreach (var c in reasonPhrase)
+        {
+            // reason-phrase = *( HTAB / SP / VCHAR / obs-text ), RFC 9112 §4.
+            if (c != '\t' && (c < ' ' || c == '\x7F'))
+                throw new InvalidOperationException(
+                    $"Invalid control character 0x{(int)c:X2} in the response reason phrase."
+                );
+        }
+    }
 
     static void WriteStatusLine(PipeWriter writer, int statusCode, string? reasonPhrase)
     {
@@ -262,6 +354,20 @@ sealed class Http1OutputProducer : IResponseBodyControl, IInformationalResponseW
     /// </summary>
     async ValueTask<FlushResult> EmitAsync(ReadOnlyMemory<byte> body, CancellationToken cancellationToken)
     {
+        // A 204 or 304 has no body and so no framing: bytes written to one would reach the client
+        // as the start of the next response. Refused loudly, as Kestrel does, rather than dropped —
+        // a handler writing a body here has a bug worth hearing about. A HEAD discards the bytes
+        // anyway, so it stays quiet there, as Kestrel does. Checked before the head is staged when
+        // it can be, so the handler's exception can still become a clean 500.
+        // A 101 is left alone: what follows it belongs to the protocol it switched to.
+        var forbidden = this.HasStarted
+            ? this.bodyForbidden && !this.IsUpgrade
+            : IsBodyForbidden(this.response.StatusCode) && this.response.StatusCode != StatusCodes.Status101SwitchingProtocols;
+        if (!body.IsEmpty && forbidden && !this.suppressBody)
+            throw new InvalidOperationException(
+                $"Writing to the response body is invalid for responses with status code {this.response.StatusCode}."
+            );
+
         await this.EnsureStartedAsync().ConfigureAwait(false);
 
         if (!body.IsEmpty && !this.suppressBody)
@@ -280,7 +386,7 @@ sealed class Http1OutputProducer : IResponseBodyControl, IInformationalResponseW
             this.Track(body.Length);
         }
 
-        return await this.pipe.FlushAsync(cancellationToken).ConfigureAwait(false);
+        return await this.FlushTransportAsync(cancellationToken).ConfigureAwait(false);
     }
 
     void Track(int count)
@@ -377,13 +483,18 @@ sealed class Http1OutputProducer : IResponseBodyControl, IInformationalResponseW
             }
         }
 
-        var shortfall = this.declaredLength is { } declared && this.bytesWritten < declared;
+        // A HEAD response declares the length a GET would have had and sends none of it, which is
+        // exactly right — not a shortfall.
+        var shortfall = !this.suppressBody
+            && this.declaredLength is { } declared
+            && this.bytesWritten < declared;
+
         if (shortfall)
             // We promised more than we delivered. The connection can no longer be reused, or the
             // client would read our next response as the tail of this body.
             this.keepAlive = false;
 
-        await this.pipe.FlushAsync(cancellationToken).ConfigureAwait(false);
+        await this.FlushTransportAsync(cancellationToken).ConfigureAwait(false);
 
         if (shortfall)
             throw new InvalidOperationException(

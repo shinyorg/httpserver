@@ -4,14 +4,25 @@ using System.IO.Pipelines;
 namespace Shiny.Net.HttpServer.Http1;
 
 /// <summary>
-/// What a body stream calls once, just before it reads the first byte. The connection uses it to fix
-/// the request's size limit — which routing may have changed since the request arrived — and to send
-/// a deferred <c>100 Continue</c>.
+/// The connection, as a body stream sees it.
+/// <para>
+/// <see cref="StartAsync"/> is called once, just before the first byte is read: the connection uses
+/// it to fix the request's size limit — which routing may have changed since the request arrived —
+/// and to send a deferred <c>100 Continue</c>. Every read of the input goes through
+/// <see cref="ReadAsync"/>, which is where the body-read timeout lives and where a transport failure
+/// is told apart from an exception the handler made itself.
+/// </para>
 /// </summary>
-interface IRequestBodyStart
+interface IRequestBodySource
 {
     /// <summary>Returns the size limit that applies to the body about to be read.</summary>
     ValueTask<long?> StartAsync(CancellationToken cancellationToken);
+
+    /// <summary>Reads the connection's input on the body's behalf.</summary>
+    ValueTask<ReadResult> ReadAsync(CancellationToken cancellationToken);
+
+    /// <summary>The body has been read to its last byte; nothing of this request is left on the input.</summary>
+    void OnBodyComplete();
 }
 
 /// <summary>Base for read-only, forward-only request body streams.</summary>
@@ -75,11 +86,11 @@ sealed class ContentLengthReadStream : ReadOnlyRequestStream
 {
     readonly PipeReader reader;
     readonly long length;
-    readonly IRequestBodyStart? start;
+    readonly IRequestBodySource? start;
     long remaining;
     bool started;
 
-    public ContentLengthReadStream(PipeReader reader, long length, IRequestBodyStart? start = null)
+    public ContentLengthReadStream(PipeReader reader, long length, IRequestBodySource? start = null)
     {
         this.reader = reader;
         this.length = length;
@@ -111,7 +122,7 @@ sealed class ContentLengthReadStream : ReadOnlyRequestStream
 
         while (true)
         {
-            var result = await this.reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+            var result = await this.ReadInputAsync(cancellationToken).ConfigureAwait(false);
             var readableBuffer = result.Buffer;
 
             if (!readableBuffer.IsEmpty)
@@ -120,6 +131,10 @@ sealed class ContentLengthReadStream : ReadOnlyRequestStream
                 readableBuffer.Slice(0, toCopy).CopyTo(buffer.Span);
                 this.reader.AdvanceTo(readableBuffer.GetPosition(toCopy));
                 this.remaining -= toCopy;
+
+                if (this.remaining == 0)
+                    this.start?.OnBodyComplete();
+
                 return toCopy;
             }
 
@@ -149,7 +164,7 @@ sealed class ContentLengthReadStream : ReadOnlyRequestStream
 
         while (this.remaining > 0)
         {
-            var result = await this.reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+            var result = await this.ReadInputAsync(cancellationToken).ConfigureAwait(false);
             var buffer = result.Buffer;
 
             if (buffer.IsEmpty && result.IsCompleted)
@@ -164,6 +179,9 @@ sealed class ContentLengthReadStream : ReadOnlyRequestStream
         }
         return true;
     }
+
+    ValueTask<ReadResult> ReadInputAsync(CancellationToken cancellationToken)
+        => this.start is null ? this.reader.ReadAsync(cancellationToken) : this.start.ReadAsync(cancellationToken);
 }
 
 /// <summary>A body framed with chunked transfer encoding.</summary>
@@ -171,6 +189,10 @@ sealed class ChunkedReadStream : ReadOnlyRequestStream
 {
     const byte CR = (byte)'\r';
     const byte LF = (byte)'\n';
+
+    // A chunk size line is a few hex digits and, rarely, an extension. Anything long is malformed or
+    // hostile, and an unterminated one would otherwise be buffered for as long as it kept coming.
+    const int MaxChunkSizeLine = 256;
 
     enum ChunkState
     {
@@ -182,22 +204,31 @@ sealed class ChunkedReadStream : ReadOnlyRequestStream
     }
 
     readonly PipeReader reader;
-    readonly IRequestBodyStart? start;
+    readonly IRequestBodySource? start;
+    readonly int maxTrailersSize;
     long? maxBodySize;
     bool started;
     ChunkState state = ChunkState.Size;
     long chunkRemaining;
     long totalRead;
+    int trailersSize;
 
     /// <param name="reader">The connection's input.</param>
     /// <param name="maxBodySize">A fixed limit, used when there is no <paramref name="start"/>.</param>
     /// <param name="start">Settles the limit when the body is first read, replacing <paramref name="maxBodySize"/>.</param>
-    public ChunkedReadStream(PipeReader reader, long? maxBodySize, IRequestBodyStart? start = null)
+    /// <param name="maxTrailersSize">Most bytes the trailer section may take: the same budget the request's headers get.</param>
+    public ChunkedReadStream(
+        PipeReader reader,
+        long? maxBodySize,
+        IRequestBodySource? start = null,
+        int maxTrailersSize = 32 * 1024
+    )
     {
         this.reader = reader;
         this.maxBodySize = maxBodySize;
         this.start = start;
         this.started = start is null;
+        this.maxTrailersSize = maxTrailersSize;
     }
 
     public override async ValueTask<int> ReadAsync(
@@ -219,11 +250,27 @@ sealed class ChunkedReadStream : ReadOnlyRequestStream
             if (this.state == ChunkState.Complete)
                 return 0;
 
-            var result = await this.reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+            var result = await this.ReadInputAsync(cancellationToken).ConfigureAwait(false);
             var readable = result.Buffer;
 
-            var copied = this.Advance(in readable, buffer.Span, out var consumedTo, out var examinedTo);
+            int copied;
+            SequencePosition consumedTo;
+            SequencePosition examinedTo;
+            try
+            {
+                copied = this.Advance(in readable, buffer.Span, out consumedTo, out examinedTo);
+            }
+            catch (BadHttpRequestException)
+            {
+                // The reader has to be advanced before anything can read it again, and a malformed
+                // body leaves nothing on it worth keeping.
+                this.reader.AdvanceTo(readable.Start, readable.End);
+                throw;
+            }
             this.reader.AdvanceTo(consumedTo, examinedTo);
+
+            if (this.state == ChunkState.Complete)
+                this.start?.OnBodyComplete();
 
             if (copied > 0)
                 return copied;
@@ -238,6 +285,9 @@ sealed class ChunkedReadStream : ReadOnlyRequestStream
                 throw new OperationCanceledException("The request body read was cancelled.");
         }
     }
+
+    ValueTask<ReadResult> ReadInputAsync(CancellationToken cancellationToken)
+        => this.start is null ? this.reader.ReadAsync(cancellationToken) : this.start.ReadAsync(cancellationToken);
 
     /// <summary>
     /// Drives the chunk state machine over whatever is currently buffered, copying body bytes into
@@ -260,14 +310,16 @@ sealed class ChunkedReadStream : ReadOnlyRequestStream
                 case ChunkState.Size:
                     if (!reader.TryReadTo(out ReadOnlySequence<byte> sizeLine, LF, advancePastDelimiter: true))
                     {
-                        // A chunk size line is tiny; anything long is a malformed or hostile stream.
-                        if (reader.Remaining > 256)
+                        if (reader.Remaining > MaxChunkSizeLine)
                             throw new BadHttpRequestException("Chunk size line is implausibly long.");
 
                         consumedTo = reader.Position;
                         examinedTo = readable.End;
                         return copied;
                     }
+
+                    if (sizeLine.Length > MaxChunkSizeLine)
+                        throw new BadHttpRequestException("Chunk size line is implausibly long.");
 
                     this.chunkRemaining = ParseChunkSize(sizeLine);
                     this.state = this.chunkRemaining == 0 ? ChunkState.Trailers : ChunkState.Data;
@@ -314,28 +366,67 @@ sealed class ChunkedReadStream : ReadOnlyRequestStream
                 }
 
                 case ChunkState.DataTrailingCrlf:
-                    if (!reader.TryReadTo(out ReadOnlySequence<byte> _, LF, advancePastDelimiter: true))
+                {
+                    // Exactly CRLF, or the bare LF RFC 9112 §2.2 lets a recipient accept, and nothing
+                    // else. Skipping ahead to the next LF instead made bytes after a chunk vanish — a
+                    // body two parsers read differently — and had the server buffer everything a
+                    // client sent for as long as it never sent an LF.
+                    if (!reader.TryPeek(out var first))
                     {
                         consumedTo = reader.Position;
                         examinedTo = readable.End;
                         return copied;
                     }
+
+                    if (first == LF)
+                    {
+                        reader.Advance(1);
+                    }
+                    else if (first != CR)
+                    {
+                        throw new BadHttpRequestException("Malformed chunk: data is not followed by CRLF.");
+                    }
+                    else if (!reader.TryPeek(1, out var second))
+                    {
+                        consumedTo = reader.Position;
+                        examinedTo = readable.End;
+                        return copied;
+                    }
+                    else if (second != LF)
+                    {
+                        throw new BadHttpRequestException("Malformed chunk: data is not followed by CRLF.");
+                    }
+                    else
+                    {
+                        reader.Advance(2);
+                    }
+
                     this.state = ChunkState.Size;
                     break;
+                }
 
                 case ChunkState.Trailers:
-                    // Zero-length chunk reached. Trailer headers may follow, terminated by a blank
-                    // line. We consume and discard them: nothing downstream consults trailers.
+                    // Zero-length chunk reached. Trailer fields may follow, ended by a blank line.
+                    // They are checked and discarded — nothing downstream consults them — and held to
+                    // the request-header budget, so a trailer section that never ends is refused
+                    // rather than buffered.
                     while (true)
                     {
                         if (!reader.TryReadTo(out ReadOnlySequence<byte> trailerLine, LF, advancePastDelimiter: true))
                         {
+                            if (this.trailersSize + reader.Remaining > this.maxTrailersSize)
+                                throw TrailersTooLarge(this.maxTrailersSize);
+
                             consumedTo = reader.Position;
                             examinedTo = readable.End;
                             return copied;
                         }
 
                         var length = (int)trailerLine.Length;
+                        this.trailersSize += length + 1;
+                        if (this.trailersSize > this.maxTrailersSize)
+                            throw TrailersTooLarge(this.maxTrailersSize);
+
                         if (length == 0 || (length == 1 && FirstByteIsCr(trailerLine)))
                         {
                             this.state = ChunkState.Complete;
@@ -343,6 +434,8 @@ sealed class ChunkedReadStream : ReadOnlyRequestStream
                             examinedTo = reader.Position;
                             return copied;
                         }
+
+                        ValidateTrailerLine(trailerLine);
                     }
 
                 case ChunkState.Complete:
@@ -353,27 +446,61 @@ sealed class ChunkedReadStream : ReadOnlyRequestStream
         }
     }
 
+    static BadHttpRequestException TrailersTooLarge(int max) => new(
+        $"Request trailers exceed the {max} byte limit.",
+        StatusCodes.Status431RequestHeaderFieldsTooLarge
+    );
+
     static bool FirstByteIsCr(in ReadOnlySequence<byte> sequence)
     {
         var span = sequence.FirstSpan;
         return span.Length > 0 && span[0] == CR;
     }
 
+    /// <summary>
+    /// A trailer line is a header line: a token, a colon, a value with no control characters. One
+    /// that is not is a body this parser and the next one would read differently.
+    /// </summary>
+    static void ValidateTrailerLine(in ReadOnlySequence<byte> line)
+    {
+        var buffer = line.IsSingleSegment ? line.FirstSpan : line.ToArray();
+        var span = buffer.Length > 0 && buffer[^1] == CR ? buffer[..^1] : buffer;
+
+        var colon = span.IndexOf((byte)':');
+        if (colon <= 0)
+            throw new BadHttpRequestException("Malformed trailer: missing colon.");
+
+        foreach (var b in span[..colon])
+        {
+            if (!HeaderDictionary.IsTokenChar((char)b))
+                throw new BadHttpRequestException("Malformed trailer: invalid character in name.");
+        }
+
+        if (span[(colon + 1)..].IndexOfAny(CR, (byte)0) >= 0)
+            throw new BadHttpRequestException("Malformed trailer: control character in value.");
+    }
+
     static long ParseChunkSize(in ReadOnlySequence<byte> line)
     {
-        Span<byte> buffer = stackalloc byte[32];
-        var length = (int)Math.Min(line.Length, buffer.Length);
-        line.Slice(0, length).CopyTo(buffer);
+        Span<byte> buffer = stackalloc byte[MaxChunkSizeLine];
+        var length = (int)line.Length;
+        line.CopyTo(buffer);
         var span = buffer[..length];
+
+        // chunk-size [ chunk-ext ] CRLF. The LF is already gone; a CR may only be the last byte.
+        if (span.Length > 0 && span[^1] == CR)
+            span = span[..^1];
+
+        if (span.IndexOfAny(CR, (byte)0) >= 0)
+            throw new BadHttpRequestException("Malformed chunk size line.");
 
         long value = 0;
         var digits = 0;
-        foreach (var b in span)
+        var index = 0;
+        var parsing = true;
+        while (parsing && index < span.Length)
         {
-            // Chunk extensions (";name=value") and the trailing CR end the size field.
-            if (b == CR || b == LF || b == (byte)';')
-                break;
-
+            var b = span[index];
             var digit = b switch
             {
                 >= (byte)'0' and <= (byte)'9' => b - (byte)'0',
@@ -381,18 +508,30 @@ sealed class ChunkedReadStream : ReadOnlyRequestStream
                 >= (byte)'A' and <= (byte)'F' => b - (byte)'A' + 10,
                 _ => -1
             };
+
             if (digit < 0)
-                throw new BadHttpRequestException("Malformed chunk size.");
+            {
+                parsing = false;
+            }
+            else
+            {
+                // 16 hex digits is already long.MaxValue territory; more means an overflow attempt.
+                if (++digits > 15)
+                    throw new BadHttpRequestException("Chunk size is too large.");
 
-            // 16 hex digits is already long.MaxValue territory; more means an overflow attempt.
-            if (++digits > 15)
-                throw new BadHttpRequestException("Chunk size is too large.");
-
-            value = (value << 4) | (uint)digit;
+                value = (value << 4) | (uint)digit;
+                index++;
+            }
         }
 
         if (digits == 0)
             throw new BadHttpRequestException("Malformed chunk size: no digits.");
+
+        // Whatever follows the digits can only be an extension: optional whitespace, then ';'.
+        // Extensions themselves are ignored, as RFC 9112 §7.1.1 allows.
+        var rest = span[index..].TrimStart(" \t"u8);
+        if (!rest.IsEmpty && rest[0] != (byte)';')
+            throw new BadHttpRequestException("Malformed chunk size.");
 
         return value;
     }

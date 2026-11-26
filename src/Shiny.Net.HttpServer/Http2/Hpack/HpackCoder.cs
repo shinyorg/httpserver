@@ -21,49 +21,76 @@ sealed class HpackDecoder(int maxDynamicTableSize = 4096)
     /// <summary>Largest single header name or value accepted, to bound decompression.</summary>
     public int MaxStringLength { get; set; } = 32 * 1024;
 
-    public void Decode(ReadOnlySpan<byte> block, List<HeaderField> destination)
+    /// <summary>
+    /// Ceiling on the decoded header list, counted the way SETTINGS_MAX_HEADER_LIST_SIZE counts it:
+    /// name plus value plus 32 for every field (RFC 9113 §6.5.2). Null means no ceiling.
+    /// <para>
+    /// Counted on the decoded size, not the encoded one, because the two can differ by orders of
+    /// magnitude: a one-byte index can stand for a 4 KB entry in the dynamic table, and a block of
+    /// them repeats it thousands of times.
+    /// </para>
+    /// </summary>
+    public int? MaxHeaderListSize { get; set; }
+
+    /// <summary>
+    /// Decodes <paramref name="block"/> into <paramref name="destination"/>. Returns false when the
+    /// decoded list went over <see cref="MaxHeaderListSize"/>: the block is still decoded to the end,
+    /// because the dynamic table has to stay in step with the peer's, but fields past the limit are
+    /// not collected and the request must be refused.
+    /// </summary>
+    public bool Decode(ReadOnlySpan<byte> block, List<HeaderField> destination)
     {
         ArgumentNullException.ThrowIfNull(destination);
 
         var offset = 0;
+        long listSize = 0;
+        var withinLimit = true;
 
         while (offset < block.Length)
         {
             var first = block[offset];
+            HeaderField field;
 
             if ((first & 0x80) != 0)
             {
                 // 1xxxxxxx — indexed header field.
-                var index = (int)ReadInteger(block, ref offset, 7);
-                destination.Add(this.Resolve(index));
-                continue;
+                field = this.Resolve(ReadInteger(block, ref offset, 7));
             }
-
-            if ((first & 0x40) != 0)
+            else if ((first & 0x40) != 0)
             {
                 // 01xxxxxx — literal, and the peer is adding it to its dynamic table too.
-                var field = this.ReadLiteral(block, ref offset, 6);
+                field = this.ReadLiteral(block, ref offset, 6);
                 this.table.Add(field);
-                destination.Add(field);
-                continue;
             }
-
-            if ((first & 0x20) != 0)
+            else if ((first & 0x20) != 0)
             {
-                // 001xxxxx — dynamic table size update.
-                var size = (int)ReadInteger(block, ref offset, 5);
+                // 001xxxxx — dynamic table size update. Not a field, so nothing to collect.
+                var size = ReadInteger(block, ref offset, 5);
 
                 if (size > this.MaxAllowedTableSize)
                     throw new HpackException($"The peer asked for a {size} byte dynamic table, above the agreed maximum.");
 
                 this.table.Resize(size);
-                continue;
+                field = default;
+            }
+            else
+            {
+                // 0000xxxx or 0001xxxx — literal without indexing. The "never indexed" form differs
+                // only in what an intermediary may do with it, which does not apply here.
+                field = this.ReadLiteral(block, ref offset, 4);
             }
 
-            // 0000xxxx or 0001xxxx — literal without indexing. The "never indexed" form differs
-            // only in what an intermediary may do with it, which does not apply here.
-            destination.Add(this.ReadLiteral(block, ref offset, 4));
+            if (field.Name is not null && withinLimit)
+            {
+                listSize += field.Name.Length + field.Value.Length + 32;
+                withinLimit = this.MaxHeaderListSize is not { } max || listSize <= max;
+
+                if (withinLimit)
+                    destination.Add(field);
+            }
         }
+
+        return withinLimit;
     }
 
     HeaderField Resolve(int index)
@@ -83,7 +110,7 @@ sealed class HpackDecoder(int maxDynamicTableSize = 4096)
 
     HeaderField ReadLiteral(ReadOnlySpan<byte> block, ref int offset, int prefixBits)
     {
-        var nameIndex = (int)ReadInteger(block, ref offset, prefixBits);
+        var nameIndex = ReadInteger(block, ref offset, prefixBits);
 
         var name = nameIndex == 0
             ? this.ReadString(block, ref offset)
@@ -100,7 +127,7 @@ sealed class HpackDecoder(int maxDynamicTableSize = 4096)
             throw new HpackException("The header block ended inside a string.");
 
         var huffman = (block[offset] & 0x80) != 0;
-        var length = (int)ReadInteger(block, ref offset, 7);
+        var length = ReadInteger(block, ref offset, 7);
 
         if (length > this.MaxStringLength)
             throw new HpackException($"A header string of {length} bytes exceeds the limit.");
@@ -136,17 +163,22 @@ sealed class HpackDecoder(int maxDynamicTableSize = 4096)
     /// <summary>
     /// HPACK's variable-length integer (RFC 7541 §5.1): a value that fits in the prefix is the
     /// prefix, and anything larger continues in seven-bit groups.
+    /// <para>
+    /// Capped at <see cref="int.MaxValue"/>, since every use is an index, a length or a size. A
+    /// larger value is not a big number to clamp but a peer trying to wrap one negative, past the
+    /// bounds checks that follow.
+    /// </para>
     /// </summary>
-    static uint ReadInteger(ReadOnlySpan<byte> block, ref int offset, int prefixBits)
+    static int ReadInteger(ReadOnlySpan<byte> block, ref int offset, int prefixBits)
     {
         if (offset >= block.Length)
             throw new HpackException("The header block ended inside an integer.");
 
         var mask = (1 << prefixBits) - 1;
-        var value = (uint)(block[offset++] & mask);
+        long value = block[offset++] & mask;
 
         if (value < mask)
-            return value;
+            return (int)value;
 
         var shift = 0;
         while (true)
@@ -155,15 +187,18 @@ sealed class HpackDecoder(int maxDynamicTableSize = 4096)
                 throw new HpackException("The header block ended inside an integer.");
 
             var b = block[offset++];
-            value += (uint)(b & 0x7F) << shift;
+            value += (long)(b & 0x7F) << shift;
+
+            if (value > int.MaxValue)
+                throw new HpackException("A header integer is too large.");
 
             if ((b & 0x80) == 0)
-                return value;
+                return (int)value;
 
             shift += 7;
 
-            // Five continuation bytes can already express more than a uint holds; anything longer
-            // is a peer trying to make the decoder overflow.
+            // Past 28 bits of shift a further group can only overflow, or pad with zeros that a
+            // peer has no reason to send.
             if (shift > 28)
                 throw new HpackException("A header integer is too large.");
         }

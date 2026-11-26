@@ -43,6 +43,12 @@ public sealed class TusUpload
     /// <summary>For a final upload, the partial uploads it was joined from, in order.</summary>
     public IReadOnlyList<string> PartialUploads { get; init; } = [];
 
+    /// <summary>
+    /// Who created the upload, as <see cref="TusOptions.OwnerSelector"/> said at the time. Null when
+    /// no selector was set, or it returned null.
+    /// </summary>
+    public string? Owner { get; init; }
+
     /// <summary>Every byte has arrived. Expiry no longer applies once this is true.</summary>
     public bool IsComplete => this.Length is { } length && this.Offset >= length;
 }
@@ -59,6 +65,12 @@ public sealed class TusCreateRequest
     public TusConcatenation Concatenation { get; init; }
 
     public IReadOnlyList<string> PartialUploads { get; init; } = [];
+
+    /// <summary>
+    /// Who is creating the upload, from <see cref="TusOptions.OwnerSelector"/>. A store keeps it and
+    /// returns it as <see cref="TusUpload.Owner"/>; the endpoint does the checking.
+    /// </summary>
+    public string? Owner { get; init; }
 }
 
 /// <summary>

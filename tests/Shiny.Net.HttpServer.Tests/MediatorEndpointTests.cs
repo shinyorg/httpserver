@@ -131,6 +131,16 @@ public class SecureGadgetHandlers :
 
 public record SecretGadget : IRequest<Gadget>;
 
+[MediatorHttpGroup("/api/role-gadgets", Roles = ["admin"])]
+public class RoleGadgetHandlers : IRequestHandler<RoleGadget, Gadget>
+{
+    [MediatorHttpGet("/report", Roles = ["viewer"])]
+    public Task<Gadget> Handle(RoleGadget request, IMediatorContext context, CancellationToken ct)
+        => Task.FromResult(new Gadget(3, "report"));
+}
+
+public record RoleGadget : IRequest<Gadget>;
+
 public record OpenGadget : IRequest<Gadget>;
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
@@ -384,5 +394,52 @@ public class MediatorAuthorizationTests
 
         var response = await server.Client.GetAsync("/api/secure/open", Token);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    // A group's roles and an endpoint's used to be concatenated into one any-of list, so an endpoint's
+    // viewer role let a caller past the group's admin requirement.
+    [Fact]
+    public async Task An_endpoint_role_narrows_its_group_role()
+    {
+        await using var server = await TestServer.StartAsync(
+            app =>
+            {
+                app.UseAuthentication();
+                app.UseAuthorization();
+                app.MapRoleGadgetHandlersMediatorEndpoints();
+            },
+            builder =>
+            {
+                builder.Services
+                    .AddShinyMediator(_ => { })
+                    .AddScoped<IRequestHandler<RoleGadget, Gadget>, RoleGadgetHandlers>();
+
+                builder
+                    .AddAuthentication()
+                    .AddBasic((Action<BasicAuthenticationOptions>)(o =>
+                    {
+                        o.Realm = "test";
+                        o.AddUser("viewer", "p", "viewer");
+                        o.AddUser("both", "p", "admin", "viewer");
+                    }));
+
+                builder.AddAuthorization();
+            }
+        );
+
+        Assert.Equal(HttpStatusCode.Forbidden, await GetAsync(server, "viewer"));
+        Assert.Equal(HttpStatusCode.OK, await GetAsync(server, "both"));
+
+        static async Task<HttpStatusCode> GetAsync(TestServer server, string user)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, "/api/role-gadgets/report");
+            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue(
+                "Basic",
+                Convert.ToBase64String(Encoding.UTF8.GetBytes(user + ":p"))
+            );
+
+            using var response = await server.Client.SendAsync(request, Token);
+            return response.StatusCode;
+        }
     }
 }

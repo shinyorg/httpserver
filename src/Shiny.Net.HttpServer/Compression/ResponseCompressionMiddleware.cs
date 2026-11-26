@@ -35,6 +35,13 @@ public sealed class ResponseCompressionMiddleware(ResponseCompressionOptions opt
             return;
         }
 
+        // A compressed response carries a suffixed entity tag ("abc-gzip"), so that is what a client
+        // revalidating it sends back. The handler only knows the identity tag, so the suffix comes
+        // off here, before anything downstream evaluates the condition.
+        var heldEncodedTag = StripEncodingSuffix(context.Request, provider.EncodingName);
+
+        var wrapper = new CompressingBodyControl(context.Response.BodyControl, context.Response, this.options, provider);
+
         // Deferred to the last moment before headers go out, because a handler that sets its own
         // Vary would otherwise overwrite this one. Applied whether or not this particular response
         // ends up compressed: a shared cache that stored the uncompressed copy without Vary would
@@ -42,10 +49,14 @@ public sealed class ResponseCompressionMiddleware(ResponseCompressionOptions opt
         context.Response.OnStarting(() =>
         {
             AppendVary(context.Response);
+
+            // A 304 confirms the representation the client holds, so it names that one's tag.
+            if (heldEncodedTag && wrapper.AppliedEncoding is null && context.Response.StatusCode == StatusCodes.Status304NotModified)
+                CompressingBodyControl.ApplyEncodingToETag(context.Response, provider.EncodingName);
+
             return default;
         });
 
-        var wrapper = new CompressingBodyControl(context.Response.BodyControl, context.Response, this.options, provider);
         context.Response.Bind(wrapper);
 
         try
@@ -72,6 +83,36 @@ public sealed class ResponseCompressionMiddleware(ResponseCompressionOptions opt
 
         // A HEAD carries no body, and a CONNECT or an upgrade is not ours to touch.
         return !HttpMethods.IsHead(context.Request.Method);
+    }
+
+    /// <summary>
+    /// Takes <c>-{encoding}</c> off every tag in <c>If-None-Match</c>, returning whether there was
+    /// one. Only that header: <c>If-Range</c> is left alone, because a range is always served
+    /// uncompressed and a tag for the compressed bytes must not validate one, and <c>If-Match</c>
+    /// guards writes, which this middleware never compresses the answer to anyway.
+    /// </summary>
+    static bool StripEncodingSuffix(HttpRequest request, string encoding)
+    {
+        if (request.Headers.GetFirst(HeaderNames.IfNoneMatch) is not { Length: > 0 } header)
+            return false;
+
+        var suffix = "-" + encoding + "\"";
+        var tags = header.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        var stripped = false;
+
+        for (var i = 0; i < tags.Length; i++)
+        {
+            if (tags[i].EndsWith(suffix, StringComparison.Ordinal))
+            {
+                tags[i] = tags[i][..^suffix.Length] + "\"";
+                stripped = true;
+            }
+        }
+
+        if (stripped)
+            request.Headers[HeaderNames.IfNoneMatch] = string.Join(", ", tags);
+
+        return stripped;
     }
 
     static void AppendVary(HttpResponse response)

@@ -13,10 +13,13 @@ public sealed class TusOptions
     /// Largest upload this endpoint accepts, advertised as <c>Tus-Max-Size</c>. Null is no limit,
     /// which on a device with finite storage is rarely what you want.
     /// <para>
-    /// This is the whole file. Each <c>PATCH</c> is separately bounded by the server's
-    /// <see cref="HttpServerLimits.MaxRequestBodySize"/>, so a client that sends a big file in one
-    /// request needs a chunk size below that - tus-js-client's <c>chunkSize</c>, for example - or
-    /// the tus routes need a higher limit of their own, set with <c>WithRequestSizeLimit</c>.
+    /// This is the whole file, and it is also the request body limit on the routes that carry
+    /// upload bytes (<c>PATCH</c>, creation-with-upload and the method-override <c>POST</c>), in place
+    /// of the server's <see cref="HttpServerLimits.MaxRequestBodySize"/> - so a client may send the
+    /// whole file in one request. With no <c>MaxSize</c> those routes have no body limit at all;
+    /// each <c>PATCH</c> is still refused once it runs past the upload's declared length. To bound
+    /// a single request more tightly, set a limit on the routes yourself:
+    /// <c>MapTus(…).ForEach(r =&gt; r.WithRequestSizeLimit(…))</c>.
     /// </para>
     /// </summary>
     public long? MaxSize { get; set; }
@@ -94,6 +97,39 @@ public sealed class TusOptions
     /// </summary>
     public Func<TusCompleteContext, ValueTask>? OnUploadCompleteAsync { get; set; }
 
+    /// <summary>
+    /// Who an upload belongs to, read from the request that creates it and recorded with the upload.
+    /// When set, every later request that names the upload - <c>HEAD</c>, <c>PATCH</c>,
+    /// <c>DELETE</c>, or an <c>Upload-Concat: final</c> listing it as a part - has to produce the
+    /// same value (compared ordinally), or it is answered as though the upload did not exist. Null,
+    /// the default, records nothing: anyone who can reach the routes and has an upload's URL can use
+    /// it.
+    /// <code>
+    /// o.OwnerSelector = ctx => ctx.User?.FindFirst("sub")?.Value;
+    /// </code>
+    /// <para>
+    /// A request with no owner (null) matches only an upload created with none. A custom
+    /// <see cref="ITusStore"/> has to keep <see cref="TusCreateRequest.Owner"/> and hand it back as
+    /// <see cref="TusUpload.Owner"/>; one that drops it refuses every caller that has an owner, which
+    /// fails closed rather than open.
+    /// </para>
+    /// </summary>
+    public Func<HttpContext, string?>? OwnerSelector { get; set; }
+
+    /// <summary>
+    /// Decides whether this request may use an existing upload, for a rule
+    /// <see cref="OwnerSelector"/> does not express - a role that can see everyone's uploads, or a
+    /// tenant recorded in the metadata. Runs for <c>HEAD</c>, <c>PATCH</c>, <c>DELETE</c> and each
+    /// part of an <c>Upload-Concat: final</c>, after the owner check when there is one. Return false
+    /// to refuse, which is answered as though the upload did not exist. Null, the default, allows.
+    /// <code>
+    /// o.AuthorizeUploadAsync = ctx => ValueTask.FromResult(
+    ///     ctx.Upload.Metadata.GetValueOrDefault("tenant") == ctx.HttpContext.User?.FindFirst("tenant")?.Value
+    /// );
+    /// </code>
+    /// </summary>
+    public Func<TusUploadAccessContext, ValueTask<bool>>? AuthorizeUploadAsync { get; set; }
+
     /// <summary>The clock used for expiry. Replace it in tests.</summary>
     public TimeProvider TimeProvider { get; set; } = TimeProvider.System;
 
@@ -135,6 +171,40 @@ public sealed class TusCreateContext
         this.RejectStatusCode = statusCode;
         this.RejectDetail = detail;
     }
+}
+
+/// <summary>What a request is about to do with an upload, for <see cref="TusOptions.AuthorizeUploadAsync"/>.</summary>
+public enum TusUploadOperation
+{
+    /// <summary>Reading its offset and metadata.</summary>
+    Head,
+
+    /// <summary>Appending to it.</summary>
+    Patch,
+
+    /// <summary>Terminating it.</summary>
+    Delete,
+
+    /// <summary>Naming it as a part of a final upload, which copies its bytes into one the caller owns.</summary>
+    Concatenate
+}
+
+/// <summary>A request about to use an existing upload, for <see cref="TusOptions.AuthorizeUploadAsync"/>.</summary>
+public sealed class TusUploadAccessContext
+{
+    internal TusUploadAccessContext(HttpContext httpContext, TusUpload upload, TusUploadOperation operation)
+    {
+        this.HttpContext = httpContext;
+        this.Upload = upload;
+        this.Operation = operation;
+    }
+
+    public HttpContext HttpContext { get; }
+
+    /// <summary>The upload as the store has it, including its <see cref="TusUpload.Owner"/> and metadata.</summary>
+    public TusUpload Upload { get; }
+
+    public TusUploadOperation Operation { get; }
 }
 
 /// <summary>A finished upload, for <see cref="TusOptions.OnUploadCompleteAsync"/>.</summary>

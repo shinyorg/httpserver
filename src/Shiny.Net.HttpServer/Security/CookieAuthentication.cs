@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using Microsoft.Extensions.DependencyInjection;
+using Shiny.Net.HttpServer.Sessions;
 
 namespace Shiny.Net.HttpServer.Security;
 
@@ -72,9 +73,35 @@ public sealed class CookieAuthenticationOptions
 
     /// <summary>
     /// Last check on a decoded ticket — has the user been deleted, has their password changed since.
-    /// Return false to reject a ticket that is cryptographically fine but no longer true.
+    /// Return false to reject a ticket that is cryptographically fine but no longer true. To refresh the
+    /// claims rather than only accept or reject them, use <see cref="OnValidatePrincipal"/>.
     /// </summary>
     public Func<AuthenticationTicket, HttpContext, ValueTask<bool>>? ValidateTicketAsync { get; set; }
+
+    /// <summary>
+    /// Runs after <see cref="ValidateTicketAsync"/> on every request that carries a valid cookie, and can
+    /// replace the principal (<see cref="CookieValidatePrincipalContext.ReplacePrincipal"/>), ask for the
+    /// cookie to be reissued (<see cref="CookieValidatePrincipalContext.ShouldRenew"/>) or reject it
+    /// (<see cref="CookieValidatePrincipalContext.RejectPrincipal"/>).
+    /// <code>
+    /// o.OnValidatePrincipal = async ctx =>
+    /// {
+    ///     var user = await users.FindAsync(ctx.Principal.Identity!.Name!);
+    ///     if (user is null) { ctx.RejectPrincipal(); return; }
+    ///     if (user.Version != ctx.Principal.FindFirst("ver")?.Value)
+    ///         ctx.ReplacePrincipal(user.ToPrincipal());   // reissued with fresh roles
+    /// };
+    /// </code>
+    /// Without it, a sliding renewal copies the claims the ticket already had — a role removed from a user
+    /// would stay in their cookie for as long as they kept using it.
+    /// </summary>
+    public Func<CookieValidatePrincipalContext, ValueTask>? OnValidatePrincipal { get; set; }
+
+    /// <summary>
+    /// What the ticket is bound to, so a ticket protected by the same <see cref="Protector"/> for another
+    /// purpose — a session cookie, another cookie scheme — is not accepted as this scheme's sign-in.
+    /// </summary>
+    internal string Purpose => "Shiny.Net.HttpServer.Cookies:" + this.Scheme;
 
     internal CookieOptions BuildCookieOptions(HttpContext context, DateTimeOffset? expires)
     {
@@ -93,6 +120,36 @@ public sealed class CookieAuthenticationOptions
             Expires = expires
         };
     }
+}
+
+/// <summary>
+/// What <see cref="CookieAuthenticationOptions.OnValidatePrincipal"/> sees and can change for one request.
+/// </summary>
+public sealed class CookieValidatePrincipalContext(HttpContext httpContext, AuthenticationTicket ticket)
+{
+    public HttpContext HttpContext { get; } = httpContext;
+
+    /// <summary>The ticket as it arrived in the cookie.</summary>
+    public AuthenticationTicket Ticket { get; } = ticket;
+
+    /// <summary>The principal the request will be authenticated as. Starts as the ticket's.</summary>
+    public ClaimsPrincipal Principal { get; private set; } = ticket.Principal;
+
+    /// <summary>When true, the cookie is reissued with a fresh expiry on this response.</summary>
+    public bool ShouldRenew { get; set; }
+
+    /// <summary>True once <see cref="RejectPrincipal"/> has been called.</summary>
+    public bool IsRejected { get; private set; }
+
+    /// <summary>
+    /// Authenticates the request as <paramref name="principal"/> instead, and reissues the cookie carrying
+    /// it — so the change sticks on later requests and on every sliding renewal after.
+    /// </summary>
+    public void ReplacePrincipal(ClaimsPrincipal principal)
+        => this.Principal = principal ?? throw new ArgumentNullException(nameof(principal));
+
+    /// <summary>Refuses the cookie: the request is anonymous and the cookie is deleted.</summary>
+    public void RejectPrincipal() => this.IsRejected = true;
 }
 
 /// <summary>
@@ -135,7 +192,13 @@ public sealed class CookieAuthenticationHandler(CookieAuthenticationOptions opti
         if (string.IsNullOrEmpty(cookie))
             return AuthenticateResult.NoResult();
 
-        var ticket = this.options.Protector.Unprotect(cookie);
+        var ticket = this.options.Protector.Unprotect(cookie, this.options.Purpose);
+
+        // A session cookie from before tickets carried a purpose decrypts under a shared protector, and its
+        // "Session" identity is authenticated. It is a session id, never a sign-in.
+        if (ticket is not null && ticket.Principal.Identities.Any(i => i.AuthenticationType == SessionMiddleware.SessionIdentityType))
+            ticket = null;
+
         if (ticket is null)
         {
             // Could be tampering, could be a key rotated out from under an old cookie. Either way
@@ -160,9 +223,27 @@ public sealed class CookieAuthenticationHandler(CookieAuthenticationOptions opti
             return AuthenticateResult.Fail("The authentication cookie was rejected.");
         }
 
-        this.RenewIfHalfSpent(context, ticket, now);
+        var principal = ticket.Principal;
+        var renew = false;
 
-        return AuthenticateResult.Success(ticket.Principal);
+        if (this.options.OnValidatePrincipal is { } onValidate)
+        {
+            var validation = new CookieValidatePrincipalContext(context, ticket);
+            await onValidate(validation).ConfigureAwait(false);
+
+            if (validation.IsRejected)
+            {
+                this.DeleteCookie(context);
+                return AuthenticateResult.Fail("The authentication cookie was rejected.");
+            }
+
+            principal = validation.Principal;
+            renew = validation.ShouldRenew;
+        }
+
+        this.Reissue(context, ticket, principal, renew, now);
+
+        return AuthenticateResult.Success(principal);
     }
 
     /// <summary>Issues the cookie. The response must not have started.</summary>
@@ -172,15 +253,11 @@ public sealed class CookieAuthenticationHandler(CookieAuthenticationOptions opti
         ArgumentNullException.ThrowIfNull(principal);
 
         var now = DateTimeOffset.UtcNow;
-        var ticket = new AuthenticationTicket(principal, now, now + this.options.ExpireTimeSpan);
 
         // A non-persistent cookie has no Expires and dies with the browser session — but the ticket
-        // inside it still carries an absolute expiry, so a captured cookie cannot outlive it.
-        context.Response.Cookies.Append(
-            this.options.CookieName,
-            this.options.Protector.Protect(ticket),
-            this.options.BuildCookieOptions(context, persistent ? ticket.ExpiresUtc : null)
-        );
+        // inside it still carries an absolute expiry, so a captured cookie cannot outlive it. The ticket
+        // also records which it was, so a renewal does not turn one into the other.
+        this.AppendCookie(context, new AuthenticationTicket(principal, now, now + this.options.ExpireTimeSpan, persistent));
 
         context.User = principal;
         context.Authentication.Scheme = this.Scheme;
@@ -246,30 +323,39 @@ public sealed class CookieAuthenticationHandler(CookieAuthenticationOptions opti
     }
 
     /// <summary>
-    /// Reissues a cookie that is more than halfway through its life.
+    /// Reissues the cookie when it is more than halfway through its life, when validation asked for a
+    /// renewal, or when validation replaced the principal.
     /// <para>
     /// Halfway rather than every request: rewriting the cookie on each call would put a
     /// <c>Set-Cookie</c> on every response, which breaks shared caching and costs bytes on a
-    /// connection that may be metered.
+    /// connection that may be metered. A replaced principal without a renewal keeps the ticket's
+    /// original lifetime, so refreshing claims never extends a sign-in on its own.
     /// </para>
     /// </summary>
-    void RenewIfHalfSpent(HttpContext context, AuthenticationTicket ticket, DateTimeOffset now)
+    void Reissue(HttpContext context, AuthenticationTicket ticket, ClaimsPrincipal principal, bool renew, DateTimeOffset now)
     {
-        if (!this.options.SlidingExpiration || context.Response.HasStarted)
+        if (context.Response.HasStarted)
             return;
 
         var lifetime = ticket.ExpiresUtc - ticket.IssuedUtc;
-        if (lifetime <= TimeSpan.Zero || now - ticket.IssuedUtc < lifetime / 2)
+        var halfSpent = this.options.SlidingExpiration && lifetime > TimeSpan.Zero && now - ticket.IssuedUtc >= lifetime / 2;
+
+        if (renew || halfSpent)
+        {
+            this.AppendCookie(context, new AuthenticationTicket(principal, now, now + this.options.ExpireTimeSpan, ticket.IsPersistent));
             return;
+        }
 
-        var renewed = new AuthenticationTicket(ticket.Principal, now, now + this.options.ExpireTimeSpan);
-
-        context.Response.Cookies.Append(
-            this.options.CookieName,
-            this.options.Protector.Protect(renewed),
-            this.options.BuildCookieOptions(context, renewed.ExpiresUtc)
-        );
+        if (!ReferenceEquals(principal, ticket.Principal))
+            this.AppendCookie(context, new AuthenticationTicket(principal, ticket.IssuedUtc, ticket.ExpiresUtc, ticket.IsPersistent));
     }
+
+    void AppendCookie(HttpContext context, AuthenticationTicket ticket)
+        => context.Response.Cookies.Append(
+            this.options.CookieName,
+            this.options.Protector.Protect(ticket, this.options.Purpose),
+            this.options.BuildCookieOptions(context, ticket.IsPersistent ? ticket.ExpiresUtc : null)
+        );
 
     void DeleteCookie(HttpContext context)
     {

@@ -104,7 +104,31 @@ sealed class CompressingBodyControl(
         // until the last block is written, so the response becomes chunked.
         response.ContentLength = null;
 
+        // A different representation needs a different validator: a cache holding the gzip bytes
+        // under the identity tag would serve them to a client that revalidated without gzip. And a
+        // range over these bytes is not one this server can answer - ranges are only ever served
+        // uncompressed - so resumption is not advertised for them.
+        ApplyEncodingToETag(response, provider.EncodingName);
+        response.Headers.Remove(HeaderNames.AcceptRanges);
+
         this.compressor = provider.CreateStream(inner.Stream, options.Level);
+    }
+
+    /// <summary>
+    /// Marks the response's entity tag as belonging to the <paramref name="encoding"/> variant -
+    /// <c>"abc"</c> becomes <c>"abc-gzip"</c>, inside the quotes, keeping a weak tag weak. The
+    /// middleware strips the suffix off <c>If-None-Match</c> on the way in, so whatever evaluates the
+    /// condition downstream compares against the tag it knows.
+    /// </summary>
+    internal static void ApplyEncodingToETag(HttpResponse response, string encoding)
+    {
+        if (response.Headers.GetFirst(HeaderNames.ETag) is not { Length: >= 2 } etag || etag[^1] != '"')
+            return;
+
+        var suffix = "-" + encoding + "\"";
+
+        if (!etag.EndsWith(suffix, StringComparison.Ordinal))
+            response.Headers[HeaderNames.ETag] = etag[..^1] + suffix;
     }
 
     bool ShouldCompress()

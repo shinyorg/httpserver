@@ -66,18 +66,19 @@ public interface IPrecompressedFileSource : IStaticFileSource
 /// Serves files from a directory on disk.
 /// <para>
 /// Every resolved path is checked to be inside the root after normalization *and* after following
-/// links, because a symlink is the one way a path that looks contained can leave.
+/// every link along it, because a symlink - to a file or to a directory part way down the path - is
+/// the one way a path that looks contained can leave.
 /// </para>
 /// </summary>
 public sealed class PhysicalFileSource : IPrecompressedFileSource
 {
-    readonly string root;
+    readonly ContainedRoot root;
 
     public PhysicalFileSource(string rootPath)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(rootPath);
 
-        this.root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(rootPath));
+        this.root = new ContainedRoot(Path.GetFullPath(rootPath));
     }
 
     /// <summary>Serves dotfiles. Off by default: <c>.env</c> and <c>.git</c> live in content directories.</summary>
@@ -142,26 +143,17 @@ public sealed class PhysicalFileSource : IPrecompressedFileSource
     {
         file = default;
 
-        var candidate = Path.GetFullPath(Path.Combine(this.root, segments));
-
-        // Belt and braces. The segment check above should make this unreachable; it is here because
-        // "should be unreachable" is how directory traversal keeps being rediscovered.
-        if (!this.IsInsideRoot(candidate))
+        // Every component is followed, not just the last: a linked directory in the middle of the
+        // path is as much a way out as a linked file at the end of it.
+        if (!this.root.TryResolve(segments, canonicalNames: false, this.ServeHiddenFiles, out var resolved) || !resolved.Exists)
             return false;
 
-        var info = new FileInfo(candidate);
+        var info = new FileInfo(resolved.FullPath);
         if (!info.Exists)
             return false;
 
-        // A link may point anywhere, and the path that reached us said nothing about where.
-        if (info.ResolveLinkTarget(returnFinalTarget: true) is { } target && !this.IsInsideRoot(target.FullName))
-            return false;
-
-        if (!this.ServeHiddenFiles && info.Attributes.HasFlag(FileAttributes.Hidden))
-            return false;
-
         file = new StaticFile(
-            info.Name,
+            Path.GetFileName(segments),
             info.Length,
 
             // Length plus modification time: cheap to compute, and a file whose both are unchanged
@@ -182,10 +174,6 @@ public sealed class PhysicalFileSource : IPrecompressedFileSource
 
         return true;
     }
-
-    bool IsInsideRoot(string fullPath) =>
-        fullPath.StartsWith(this.root + Path.DirectorySeparatorChar, StaticFilePath.PathComparison)
-        || string.Equals(fullPath, this.root, StaticFilePath.PathComparison);
 }
 
 /// <summary>
@@ -394,6 +382,11 @@ static class StaticFilePath
                 return false;
 
             if (segment.AsSpan().IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+                return false;
+
+            // Windows drops a trailing dot or space when it opens a name, so "keys.txt." opens
+            // keys.txt while every check made on the string sees a different name.
+            if (OperatingSystem.IsWindows() && (segment.EndsWith('.') || segment.EndsWith(' ')))
                 return false;
 
             builder.Add(segment);

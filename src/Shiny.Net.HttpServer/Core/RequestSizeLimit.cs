@@ -1,3 +1,5 @@
+using Shiny.Net.HttpServer.Routing;
+
 namespace Shiny.Net.HttpServer;
 
 /// <summary>
@@ -56,7 +58,7 @@ public sealed class DisableRequestSizeLimitAttribute : Attribute, IRequestSizeLi
 public static class RequestSizeLimitExtensions
 {
     /// <summary>
-    /// Overrides the request body limit for the most recently mapped route.
+    /// Overrides the request body limit for every route the preceding call mapped.
     /// <code>
     /// app.MapPost("/upload", Handler).WithRequestSizeLimit(500 * 1024 * 1024);
     /// </code>
@@ -65,26 +67,18 @@ public static class RequestSizeLimitExtensions
     {
         ArgumentNullException.ThrowIfNull(server);
 
-        LastEndpoint(server).WithMetadata(new RequestSizeLimitAttribute(bytes));
+        ArgumentOutOfRangeException.ThrowIfNegative(bytes);
+
+        LastMappedConventions.Attach(server, nameof(WithRequestSizeLimit), () => new RequestSizeLimitAttribute(bytes));
         return server;
     }
 
-    /// <summary>Removes the request body limit from the most recently mapped route.</summary>
+    /// <summary>Removes the request body limit from every route the preceding call mapped.</summary>
     public static HttpServer DisableRequestSizeLimit(this HttpServer server)
     {
         ArgumentNullException.ThrowIfNull(server);
 
-        LastEndpoint(server).WithMetadata(new DisableRequestSizeLimitAttribute());
+        LastMappedConventions.Attach(server, nameof(DisableRequestSizeLimit), () => new DisableRequestSizeLimitAttribute());
         return server;
-    }
-
-    static Routing.Endpoint LastEndpoint(HttpServer server)
-    {
-        if (server.Router.Endpoints.Count == 0)
-            throw new InvalidOperationException(
-                "WithRequestSizeLimit applies to the most recently mapped route, and no route has been mapped yet."
-            );
-
-        return server.Router.Endpoints[^1];
     }
 }

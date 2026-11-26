@@ -90,6 +90,9 @@ triggers:
 - RequestTimeout
 - DisableRequestTimeout
 - MaxRequestBodySize
+- RequestBodyTimeout
+- ResponseWriteTimeout
+- ShutdownTimeout
 - MaxBodySize
 - RequestSizeLimit
 - DisableRequestSizeLimit
@@ -110,6 +113,12 @@ triggers:
 - UseAntiforgery
 - IAntiforgery
 - ValidateAntiforgery
+- OnValidatePrincipal
+- CookieValidatePrincipalContext
+- ForwardedHeadersOptions
+- KnownProxies
+- BeginRegistration
+- AllowedOrigins
 - MapProxy
 - ProxyOptions
 - MapReverseProxy
@@ -373,6 +382,10 @@ triggers:
 - TusMetadata
 - TusUpload
 - TusException
+- TusUploadAccessContext
+- TusUploadOperation
+- OwnerSelector
+- AuthorizeUploadAsync
 - WithTusHeaders
 - tus
 - resumable upload
@@ -705,6 +718,16 @@ the OS pick; read it back from `server.ListenUrl`.
   upload route** (`.WithRequestSizeLimit(bytes)` / `[RequestSizeLimit(bytes)]`), not server-wide —
   see Content. HTTP/3 is always held to the server-wide value.
 - `HideExceptionDetails` is on; turn it off in development only.
+- HTTP/1.1 body reads wait at most `Limits.RequestBodyTimeout` (30 s) for more bytes (then 408), and a
+  response write at most `Limits.ResponseWriteTimeout` (60 s) for the client to read (then the
+  connection is aborted and the write throws `IOException`). Both measure the gap between bytes, not
+  the whole transfer.
+- Response headers are validated where they are set: a CR/LF/NUL in a value or a non-token name throws
+  `InvalidOperationException`. Never copy request input into a header unchecked and expect it to go
+  out; writing a body on a 204/304 throws too.
+- `RequestAborted` fires when an HTTP/1.1 client hangs up (once its body is read) and on
+  `ctx.Abort()`. A handler exception such as `FileNotFoundException` or an `HttpClient`
+  `TaskCanceledException` is a 500 through the exception-handler chain, not a silent close.
 
 ### Behind a TCP load balancer: PROXY protocol
 
@@ -720,7 +743,7 @@ builder.Options.Listen(IPAddress.Any, 8080)
 - `TrustedProxies` must not be empty, or the server refuses to start. Only generate `.Trust("0.0.0.0/0").Trust("::/0")` when the user says the port is firewalled so only the balancer can reach it.
 - `Required` (the default for `UseProxyProtocol`) closes connections that have no header. Use `Optional` only while migrating.
 - `ctx.Connection.ProxyProtocol` (null if none): `ProxyEndPoint`, `DestinationEndPoint`, `Alpn`, `Authority`, `UniqueId`, `Ssl`, `GetTlv(0xEA)`.
-- Prefer this over `UseForwardedHeaders`: it can't be spoofed by clients and it works with TLS passthrough. `UseForwardedHeaders` trusts **any** sender (no trusted-proxy list) and applies to HTTP/1.1 only — never generate it for a server that faces the internet directly. Don't enable both unless the balancer overwrites `X-Forwarded-For`, because that header overrides the PROXY address on HTTP/1.1.
+- Prefer this over `UseForwardedHeaders`: it can't be spoofed by clients and it works with TLS passthrough. `UseForwardedHeaders` applies to HTTP/1.1 only and reads `X-Forwarded-For`/`-Proto`/`-Host` **from the right**, one hop per trusted proxy up to `o.ForwardedHeaders.ForwardLimit` (1). With `o.ForwardedHeaders.KnownProxies`/`KnownNetworks` empty it believes **any** peer — always generate a `KnownNetworks`/`KnownProxies` entry for the proxy's addresses, and never enable it on a server that faces the internet directly without one. For a chain (CDN → LB → app) raise `ForwardLimit` and list the inner proxies. Don't enable both unless the balancer sets or appends `X-Forwarded-For`, because that header overrides the PROXY address on HTTP/1.1.
 - TCP endpoints only: not HTTP/3, not tunnel providers. The reverse proxy does not send a PROXY header.
 
 ## Lifecycle — and knowing *why* the server stopped
@@ -730,9 +753,14 @@ flips this switch repeatedly, so the transitions are serialized, idempotent and 
 
 ```csharp
 await server.StartAsync();     // binds and begins accepting
-await server.StopAsync();      // unbinds, then drains in-flight requests
+await server.StopAsync();      // unbinds, closes idle connections, lets in-flight requests finish
 await server.RestartAsync();   // both as one operation, re-reading Options
 ```
+
+A stop does not cancel `RequestAborted` until `Options.ShutdownTimeout` (5 s) or the stop's token
+runs out; then the remaining connections are cancelled and aborted. A long-lived handler (SSE,
+WebSocket) therefore holds a stop for the full timeout — lower `ShutdownTimeout` in an app that stops
+often. HTTP/2 follows the same rules: `GOAWAY` at once, then open streams finish within the timeout.
 
 `StateChanged` gives a UI its transitions. **`StateTransitioned` is what to generate whenever the app
 needs to diagnose a server that went down** — it carries an `HttpServerStateChange` with the reason
@@ -1123,8 +1151,9 @@ content type whether a body is worth keeping at all and cap what you store.
   `ctx.Response.OnStarting(...)`, not code after `await next(ctx)`.
 - `HttpContext` is **pooled** — never capture it past the end of the handler.
 - **Static files are served before routing**, so `[Authorize]`/`RequireAuthorization` (after routing)
-  does *not* protect them. Put an authentication check middleware in front of `UseStaticFiles` /
-  `UseEmbeddedFiles` when the served content is not public.
+  does *not* protect them — and neither does `SetFallbackPolicy`, which covers routed endpoints only
+  (not `OnRequest`, static/embedded files or the 404 for an unknown path). Put an authentication check
+  middleware in front of `UseStaticFiles` / `UseEmbeddedFiles` when the served content is not public.
 
 ## Security
 
@@ -1143,9 +1172,22 @@ builder.AddAuthorization(o =>
 ```
 
 - `[Authorize]` / `[AllowAnonymous]` on endpoint classes and methods; `RequireAuthorization(...)` /
-  `AllowAnonymous()` on raw routes (they apply to the **most recently mapped** route). A raw route may
+  `AllowAnonymous()` on raw routes. Chained onto the server they apply to **every route the preceding
+  call mapped** — one for `MapGet`, all of them for `MapGroup`, `MapModule(s)` and a generated
+  `Map{Class}()`/`Map{Assembly}Endpoints()`. So **protect a whole group by chaining after it**:
+  `app.MapGroup("/admin", g => { … }).RequireAuthorization("admin")`. Same for every server-level
+  convention (`RequireRateLimiting`, `RequireIpFilter`, `RequireCors`, `ValidateAntiforgery`,
+  `WithRequestTimeout`, `CacheOutput`, …). A custom extension that maps several routes and returns
+  `HttpServer` must wrap them in `using (server.Router.BeginRegistration()) { … }`. A raw route may
   instead take the attribute instances as metadata — `app.Map("GET", "/x", h, new AuthorizeAttribute("admin"))`
   — with the same effect.
+- **Roles across attributes are AND, within one attribute OR.** Class `[Authorize(Roles = "admin")]` +
+  method `[Authorize(Roles = "viewer")]` needs both roles; `Roles = "admin,owner"` needs either. For
+  "either role" on one endpoint use one attribute with a comma list.
+- Cookie auth: `SignInAsync(user, persistent: false)` stays a browser-session cookie across sliding
+  renewals. Use `o.OnValidatePrincipal = ctx => { … ctx.ReplacePrincipal(fresh) / ctx.RejectPrincipal() /
+  ctx.ShouldRenew = true; }` to refresh claims (a renewal otherwise copies the old ones). One
+  `TicketProtector` may serve both `AddCookie` and `AddSessions` — tickets are purpose-bound.
 - **Every `Add…` registration composes.** `AddAuthorization`, `AddCors`, `AddRateLimiter` and the rest can
   be called more than once; each call's configuration applies, in order. When writing an `Add…` for a
   package built on this library, register options with `OptionsRegistration.Configure(builder.Services,
@@ -1163,6 +1205,14 @@ builder.AddAuthorization(o =>
 CORS / rate limiting / IP filtering all follow the same shape — inline policy, or named policies plus
 `RequireX("name")` / `DisableX()` on routes and `[EnableCors]`, `[EnableRateLimiting]`,
 `[RequireIpFilter]` (+ `[DisableCors]`, `[DisableRateLimiting]`, `[AllowAnyIp]`) on endpoints.
+`RateLimitPartitioners.ByIpAddress` counts IPv6 per `/64`; `ByIpAddressAndPath` keys on the matched
+route template (or the router-normalised path), so respelling a path does not buy a new allowance.
+
+Problem details (`AddProblemDetails`): a 4xx `detail` carries the exception message only for
+`BadHttpRequestException`, `JsonPatchException` and types mapped with
+`o.MapException<MyValidationException>(422, includeMessage: true)` (or with `IncludeExceptionDetails`).
+To tell a client what was wrong, throw one of those or return `Results.Problem(…)` — not an
+`ArgumentException`.
 
 ### Host filtering (DNS rebinding) and localization
 
@@ -1322,6 +1372,13 @@ new ZipFileSource("./site.zip", "wwwroot");         // zipped with its parent fo
   resources inflate the assembly. A zip keeps real paths and stays compressed.
 - Unknown file extensions are **not served** by default. Add `ContentTypeOverrides[".x"]` rather than
   turning on `ServeUnknownFileTypes`.
+- `PhysicalFileSource` and `MapFileBrowser` follow every link along a path and refuse any that
+  leads out of the root (reads and writes); links inside the root work. Do not add your own
+  symlink checks. Hidden-attribute entries are refused like dotfiles unless `ServeHiddenFiles`.
+- `FileBrowserOptions.Filter` receives the on-disk spelling of the path (case-insensitive file
+  systems included), so compare it ordinally against the real directory names.
+- Store large media in a zip **uncompressed** if it will be range-requested: stored entries seek,
+  deflated ones inflate from the start.
 - `MapFileBrowser("/", …)` mounts the browser on the whole site — the shape a "serve this directory"
   CLI wants. Literals still beat its catch-all, so routes mapped alongside it keep answering.
 - Uploads: `await foreach (var part in ctx.Request.ReadMultipartAsync(ct))` and
@@ -1438,6 +1495,7 @@ app.MapTus("/files", o =>
     {
         await using var file = await ctx.OpenReadAsync();   // runs once, never for partials
     };
+    o.OwnerSelector = ctx => ctx.User?.FindFirst("sub")?.Value;   // only the creator may use an upload
 })
 .RequireAuthorization();
 
@@ -1445,8 +1503,15 @@ app.UseCors(p => p.WithOrigins("https://app.example.com").WithTusHeaders()); // 
 ```
 
 - Do not hand-roll chunked or resumable uploads with `MapPost`. Use this.
-- Each PATCH is bounded by `Limits.MaxRequestBodySize` (30 MB). Tell the client to use a smaller
-  chunk size (tus-js-client `chunkSize`), or give the tus routes their own `WithRequestSizeLimit`.
+- The upload routes (PATCH, creation-with-upload, override POST) are bounded by `MaxSize`, or have
+  no body limit without it — not by `Limits.MaxRequestBodySize`. Do not tell the client to chunk
+  below 30 MB, and do not add `WithRequestSizeLimit` to make big PATCHes work. To bound one request
+  more tightly: `MapTus(…).ForEach(r => r.WithRequestSizeLimit(n))` (a later route limit wins).
+- Behind `RequireAuthorization()`, generate `OwnerSelector` whenever uploads belong to users:
+  without it any authorised caller with an upload URL can HEAD/PATCH/DELETE it or concatenate it
+  into their own. Other caller rules go in `AuthorizeUploadAsync` (sees `HttpContext`, `Upload`,
+  `Operation`). Refusals answer 404. A custom store must persist `TusCreateRequest.Owner` and return
+  it as `TusUpload.Owner`.
 - Metadata values are client input: `ctx.Metadata["filename"]` is text, never a path to write to.
 - A custom `ITusStore.AppendAsync` must keep the bytes when the stream ends early and roll back
   when the stream throws. Throw `TusException(409)` for a wrong offset and `TusException(404)` for a
@@ -1635,6 +1700,12 @@ await registry.SendToUserAsync("ada", "your build finished");
   direction — each message compresses on its own, so a socket costs no persistent zlib window.
   `EnablePerMessageDeflate = false` turns it off; `CompressionThreshold` (256 bytes) is the floor
   below which deflate makes a message bigger.
+- **Cookie-authenticated sockets need `AllowedOrigins`.** WebSockets ignore the same-origin policy and
+  browsers send cookies on the handshake, so set `new WebSocketAcceptOptions { AllowedOrigins =
+  { "https://app.example.com" } }`; a disallowed `Origin` gets 403.
+- Protocol violations close the socket with the RFC status (1002, invalid UTF-8 text → 1007, corrupt
+  deflate → 1007, too big → 1009) and `ReceiveAsync` throws `WebSocketProtocolException` — catch it in
+  the receive loop.
 - **Keepalive pings every 30s**, socket torn down after 2 unanswered. This is what notices a phone
   that lost signal — a dropped mobile connection goes quiet rather than closing. Set
   `KeepAliveInterval = null` to switch it off (do that in tests that assert on frames).
@@ -1873,6 +1944,10 @@ var tokens = ctx.GetRequiredService<IAntiforgery>().GetTokens(ctx);
   without antiforgery is a delete button any page on the internet can press.
 - The token is read from a header, not a form field — reading a form would consume the body. For a
   posted form, read the form yourself and call `ValidateToken(ctx, form["__RequestVerificationToken"])`.
+- Tokens live `Lifetime` (8h) from issue and are **bound to the signed-in user** — fetch a fresh token
+  after sign-in. Over HTTPS the cookie is `Secure` and named `__Host-shiny.antiforgery`
+  (`SecurePolicy = SameAsRequest`, `UseHostPrefix = true`); client script must echo
+  `tokens.RequestToken`, never read the cookie by name.
 - **HSTS is off by default and should stay off** for a LAN or loopback server: a browser remembers it
   for the whole host, and a device that serves plain HTTP tomorrow is locked out of itself.
 
@@ -2529,3 +2604,7 @@ replaces the class's, and a `Disable` anywhere wins.
 16. **Subscribe to `StateTransitioned`, not `StateChanged`, when the app has to report why the server
     stopped.** `StateChanged` cannot tell "the user switched it off" from "the listener died", and on
     a device that distinction is the whole bug report. Treat `Reason == Restarting` as *not* down.
+17. **Set `ContentLength` only to the exact number of bytes you will write.** Every protocol holds a
+    response to it: writing more throws, and writing less fails the response (a reset stream on
+    HTTP/2 and HTTP/3, a closed connection on HTTP/1.1). For `HEAD`, write the same body as the `GET`
+    — the server drops it — so the headers match.

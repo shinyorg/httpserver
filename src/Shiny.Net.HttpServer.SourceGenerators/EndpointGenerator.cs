@@ -507,7 +507,8 @@ public sealed class EndpointGenerator : IIncrementalGenerator
     /// Combines class-level and method-level authorization.
     /// <para>
     /// A method's <c>[Authorize]</c> adds to the class's rather than replacing it, so narrowing an
-    /// endpoint is additive and cannot accidentally widen it. <c>[AllowAnonymous]</c> anywhere wins
+    /// endpoint is additive and cannot accidentally widen it — every policy and every attribute's role
+    /// list must pass. <c>[AllowAnonymous]</c> anywhere wins
     /// outright — an explicit opt-out should never be second-guessed by a convention.
     /// </para>
     /// </summary>
@@ -539,14 +540,17 @@ public sealed class EndpointGenerator : IIncrementalGenerator
             if (!string.IsNullOrWhiteSpace(policy) && !policies.Contains(policy!))
                 policies.Add(policy!);
 
+            // Each attribute's roles are one requirement (any of them), and every attribute must be met:
+            // class Roles = "admin" with method Roles = "viewer" needs both, not either.
             if (attribute.GetNamedString("Roles") is { Length: > 0 } roleList)
             {
-                foreach (var role in roleList.Split(','))
-                {
-                    var trimmed = role.Trim();
-                    if (trimmed.Length > 0 && !roles.Contains(trimmed))
-                        roles.Add(trimmed);
-                }
+                var requirement = string.Join(
+                    ",",
+                    roleList.Split(',').Select(r => r.Trim()).Where(r => r.Length > 0).Distinct()
+                );
+
+                if (requirement.Length > 0 && !roles.Contains(requirement))
+                    roles.Add(requirement);
             }
         }
 

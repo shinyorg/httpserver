@@ -42,6 +42,20 @@ public sealed class WebSocketAcceptOptions
 
     /// <summary>How many pings may go unanswered before the socket is torn down.</summary>
     public int MissedPingsBeforeClosing { get; set; } = 2;
+
+    /// <summary>
+    /// Origins allowed to open the socket — <c>https://app.example.com</c>, scheme, host and port as a
+    /// browser sends them. Empty (the default) skips the check.
+    /// <para>
+    /// A browser attaches cookies to a WebSocket handshake from any page, and the same-origin policy does
+    /// not apply to WebSockets — so a socket authenticated by a cookie is open to cross-site WebSocket
+    /// hijacking unless something checks <c>Origin</c>. A handshake whose <c>Origin</c> is not listed is
+    /// refused with 403 (<see cref="WebSocketExtensions.AcceptWebSocketAsync"/> throws a
+    /// <see cref="BadHttpRequestException"/> carrying it). One with no <c>Origin</c> at all is let through: browsers always send it, so its
+    /// absence means a non-browser client, which this check cannot protect against anyway.
+    /// </para>
+    /// </summary>
+    public IList<string> AllowedOrigins { get; } = [];
 }
 
 /// <summary>Accepting WebSocket connections.</summary>
@@ -109,6 +123,10 @@ public static class WebSocketExtensions
             throw new InvalidOperationException($"Unsupported WebSocket version '{version}'.");
         }
 
+        // A BadHttpRequestException carries its status to the client; a plain exception would be a 500.
+        if (!IsOriginAllowed(request.Headers.GetFirst(HeaderNames.Origin), options))
+            throw new BadHttpRequestException("The WebSocket handshake came from an origin that is not allowed.", StatusCodes.Status403Forbidden);
+
         var transport = context.Transport
             ?? throw new InvalidOperationException("This connection cannot be upgraded.");
 
@@ -154,6 +172,15 @@ public static class WebSocketExtensions
 
         var hash = SHA1.HashData(Encoding.ASCII.GetBytes(key + HandshakeGuid));
         return Convert.ToBase64String(hash);
+    }
+
+    static bool IsOriginAllowed(string? origin, WebSocketAcceptOptions options)
+    {
+        if (options.AllowedOrigins.Count == 0 || origin is not { Length: > 0 })
+            return true;
+
+        var normalized = origin.Trim().TrimEnd('/');
+        return options.AllowedOrigins.Any(o => string.Equals(o.Trim().TrimEnd('/'), normalized, StringComparison.OrdinalIgnoreCase));
     }
 
     static string? SelectSubProtocol(string? requested, WebSocketAcceptOptions options)

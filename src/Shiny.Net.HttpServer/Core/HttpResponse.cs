@@ -23,7 +23,7 @@ public sealed class HttpResponse
 
     public HttpContext HttpContext { get; }
 
-    public HeaderDictionary Headers { get; } = new();
+    public HeaderDictionary Headers { get; } = new() { ValidatesValues = true };
 
     public ResponseCookies Cookies { get; }
 
@@ -78,7 +78,7 @@ public sealed class HttpResponse
     /// keep reading.
     /// </para>
     /// </summary>
-    public HeaderDictionary Trailers => this.trailers ??= new HeaderDictionary(4);
+    public HeaderDictionary Trailers => this.trailers ??= new HeaderDictionary(4) { ValidatesValues = true };
 
     HeaderDictionary? trailers;
 

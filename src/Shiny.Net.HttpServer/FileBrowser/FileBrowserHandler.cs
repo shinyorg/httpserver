@@ -14,6 +14,8 @@ namespace Shiny.Net.HttpServer.FileBrowser;
 /// </summary>
 sealed class FileBrowserHandler(FileBrowserOptions options, string root)
 {
+    readonly ContainedRoot contained = new(root);
+
     public async ValueTask GetAsync(HttpContext context)
     {
         if (!this.TryResolve(context, out var fullPath, out var relativePath))
@@ -38,11 +40,13 @@ sealed class FileBrowserHandler(FileBrowserOptions options, string root)
         }
 
         // Handed to the download result so ranges, ETags and conditional requests all work — a
-        // large file over a phone's connection is exactly the case that needs resuming.
-        var info = new FileInfo(fullPath);
+        // large file over a phone's connection is exactly the case that needs resuming. Named for
+        // what the request asked for, which a link inside the root may spell differently from the
+        // file it leads to.
+        var name = Path.GetFileName(relativePath);
 
         await FileDownloadResult
-            .FromFile(fullPath, this.ContentTypeFor(info.Name), downloadName: null)
+            .FromFile(fullPath, this.ContentTypeFor(name), downloadName: name)
             .ExecuteAsync(context)
             .ConfigureAwait(false);
     }
@@ -204,27 +208,40 @@ sealed class FileBrowserHandler(FileBrowserOptions options, string root)
             : string.Empty;
 
         if (raw.Length == 0)
+        {
+            // The root itself, resolved like everything else so a listing walks the real directory.
+            if (this.contained.RealRoot is not { } realRoot)
+                return false;
+
+            fullPath = realRoot;
             return true;
+        }
 
         if (!StaticFilePath.TryNormalize(raw, options.ServeHiddenFiles, out var segments))
             return false;
 
-        var candidate = Path.GetFullPath(Path.Combine(root, segments));
+        // Every existing component is followed, so a linked directory part way down cannot lead out
+        // of the root - for a PUT as much as a GET, since the write lands wherever the path really
+        // goes. Names are canonicalised only when a filter will judge them on a file system that
+        // ignores case: "PRIVATE" is the same directory as "private" there, and the filter has to
+        // see the spelling it was written against.
+        var canonical = options.Filter is not null && StaticFilePath.PathComparison == StringComparison.OrdinalIgnoreCase;
 
-        // Belt and braces after the segment check, and again after following links — a symlink is
-        // the one way a path that looks contained can leave.
-        if (!this.IsInsideRoot(candidate) || !this.PassesFilter(segments))
+        if (!this.contained.TryResolve(segments, canonical, options.ServeHiddenFiles, out var resolved))
             return false;
 
-        var link = File.Exists(candidate) || Directory.Exists(candidate)
-            ? new FileInfo(candidate).ResolveLinkTarget(returnFinalTarget: true)
-            : null;
-
-        if (link is not null && !this.IsInsideRoot(link.FullName))
+        // Both the path asked for and the path it leads to: a link inside the root to a filtered
+        // directory is no way around the filter.
+        if (!this.PassesFilter(resolved.RelativePath))
             return false;
 
-        fullPath = candidate;
-        relativePath = segments.Replace(Path.DirectorySeparatorChar, '/');
+        if (resolved.RealRelativePath.Length > 0
+            && !string.Equals(resolved.RealRelativePath, resolved.RelativePath, StringComparison.Ordinal)
+            && !this.PassesFilter(resolved.RealRelativePath))
+            return false;
+
+        fullPath = resolved.FullPath;
+        relativePath = resolved.RelativePath;
 
         return true;
     }
@@ -286,10 +303,6 @@ sealed class FileBrowserHandler(FileBrowserOptions options, string root)
             ? ContentTypes.ForFileName(name)
             : options.DefaultContentType;
     }
-
-    bool IsInsideRoot(string fullPath) =>
-        fullPath.StartsWith(root + Path.DirectorySeparatorChar, StaticFilePath.PathComparison)
-        || string.Equals(fullPath, root, StaticFilePath.PathComparison);
 
     /// <summary>
     /// Copies the body to <paramref name="destination"/>, or returns -1 once it exceeds the limit.

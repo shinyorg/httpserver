@@ -32,7 +32,11 @@ public sealed class AuthorizeAttribute : Attribute
     /// <summary>Name of a policy registered with <c>AddAuthorization</c>.</summary>
     public string? Policy { get; set; }
 
-    /// <summary>Comma-separated roles; any one of them satisfies the requirement.</summary>
+    /// <summary>
+    /// Comma-separated roles; any one of them satisfies this attribute. Several attributes — on the class
+    /// and the method, or stacked — are each required: <c>[Authorize(Roles = "admin")]</c> on the class
+    /// and <c>[Authorize(Roles = "viewer")]</c> on a method needs a caller in both roles.
+    /// </summary>
     public string? Roles { get; set; }
 }
 

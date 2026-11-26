@@ -44,9 +44,14 @@ static class MediatorEndpointEmitter
         writer.Line("global::System.ArgumentNullException.ThrowIfNull(server);");
         writer.Blank();
 
+        // One registration, so a convention chained after the call covers every route it mapped.
+        writer.Line("using (server.Router.BeginRegistration())");
+        writer.OpenBrace();
+
         foreach (var handler in handlers)
             writer.Line($"server.Map{handler.DisplayName}MediatorEndpoints();");
 
+        writer.CloseBrace();
         writer.Blank();
         writer.Line("return server;");
         writer.CloseBrace();
@@ -71,9 +76,14 @@ static class MediatorEndpointEmitter
         writer.Line("global::System.ArgumentNullException.ThrowIfNull(server);");
         writer.Blank();
 
+        writer.Line("using (server.Router.BeginRegistration())");
+        writer.OpenBrace();
+
         foreach (var endpoint in handler.Endpoints)
             WriteRegistration(writer, handler, endpoint);
 
+        writer.CloseBrace();
+        writer.Blank();
         writer.Line("return server;");
         writer.CloseBrace();
     }
@@ -372,8 +382,14 @@ static class MediatorEndpointEmitter
         if (authorization.Policies.Count > 0)
             writer.Line($"Policies = {{ {string.Join(", ", authorization.Policies.Select(Literal))} }},");
 
-        if (authorization.Roles.Count > 0)
-            writer.Line($"Roles = {{ {string.Join(", ", authorization.Roles.Select(Literal))} }},");
+        // One entry per attribute, so the runtime requires each of them rather than any role from any of them.
+        if (authorization.RoleRequirements.Count > 0)
+        {
+            var requirements = authorization.RoleRequirements
+                .Select(r => "new string[] { " + string.Join(", ", r.Split(',').Select(Literal)) + " }");
+
+            writer.Line($"RoleRequirements = {{ {string.Join(", ", requirements)} }},");
+        }
 
         writer.CloseBraceWith(suffix);
     }

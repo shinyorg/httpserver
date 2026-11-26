@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.IO.Pipelines;
 using System.Security.Authentication;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -40,7 +41,14 @@ public sealed class HttpServer : IAsyncDisposable
     // so a shared one would leave a restarted server with an accept loop that exits immediately.
     // Superseded sources are left to the GC — disposing one that an in-flight ServeAsync is still
     // linked to would turn a normal shutdown into an ObjectDisposedException.
+    //
+    // Three of them, because a graceful stop has three moments: stop accepting (stopping), tell
+    // connections to finish what they are doing and close (draining), and give up on the ones that
+    // did not (aborting). One token for all three cancelled every in-flight request the moment a
+    // stop began, which made the drain that followed a formality.
     CancellationTokenSource stopping = new();
+    CancellationTokenSource draining = new();
+    CancellationTokenSource aborting = new();
 
     // Set the moment a stop begins, before the listeners are unbound. The stopping token cannot do
     // this job: it also cancels the in-flight connections a graceful stop is trying to drain, so it
@@ -472,7 +480,12 @@ public sealed class HttpServer : IAsyncDisposable
 
         this.stopping.Dispose();
         this.lifecycle.Dispose();
-        this.connectionLimit?.Dispose();
+
+        // The connection limit is deliberately not disposed. A connection abandoned by the stop —
+        // its handler ignoring every cancellation — still gives its slot back when it finally ends,
+        // and a disposed semaphore would turn that into an ObjectDisposedException on a thread
+        // nobody is watching. A SemaphoreSlim that never handed out its wait handle holds nothing
+        // that needs disposing.
     }
 
     async Task RestartCoreAsync(CancellationToken cancellationToken, HttpServerStateReason reason)
@@ -574,6 +587,8 @@ public sealed class HttpServer : IAsyncDisposable
         {
             this.EnsurePipeline();
             this.stopping = new CancellationTokenSource();
+            this.draining = new CancellationTokenSource();
+            this.aborting = new CancellationTokenSource();
             this.stopRequested = false;
 
             var endpoints = this.Options.ResolveEndpoints();
@@ -592,9 +607,9 @@ public sealed class HttpServer : IAsyncDisposable
 
             this.listeners = bound;
 
-            var token = this.stopping.Token;
+            var tokens = new ConnectionTokens(this.stopping.Token, this.draining.Token, this.aborting.Token);
             var loops = Task.WhenAll(
-                bound.Select(x => Task.Run(() => this.AcceptLoopAsync(x, token), CancellationToken.None))
+                bound.Select(x => Task.Run(() => this.AcceptLoopAsync(x, tokens), CancellationToken.None))
             );
 
             this.acceptLoops = loops;
@@ -657,6 +672,8 @@ public sealed class HttpServer : IAsyncDisposable
         foreach (var connectionListener in this.listeners)
             await connectionListener.UnbindAsync(cancellationToken).ConfigureAwait(false);
 
+        // Stops the accept loops, and nothing else: the connections they started are not linked
+        // to this token.
         await this.stopping.CancelAsync().ConfigureAwait(false);
 
         try
@@ -675,30 +692,75 @@ public sealed class HttpServer : IAsyncDisposable
             this.logger.LogDebug(ex, "An accept loop had already faulted when the server was stopped");
         }
 
-        Task[] inFlight;
-        lock (this.connectionsLock)
-            inFlight = [.. this.connections];
-
-        if (inFlight.Length > 0)
-        {
-            var drained = Task.WhenAll(inFlight);
-            var completed = await Task
-                .WhenAny(drained, Task.Delay(Timeout.Infinite, cancellationToken))
-                .ConfigureAwait(false);
-
-            if (completed != drained)
-                this.logger.LogWarning("{Count} connection(s) still active at shutdown; abandoning them", inFlight.Length);
-        }
+        await this.DrainConnectionsAsync(cancellationToken).ConfigureAwait(false);
 
         this.acceptLoops = null;
         this.listeners = [];
 
-        // A fresh token for connections served while stopped: a tunnel keeps handing the server
-        // connections after the local listener goes, and linking them to the cancelled token would
+        // Fresh tokens for connections served while stopped: a tunnel keeps handing the server
+        // connections after the local listener goes, and linking them to the cancelled tokens would
         // close every one of them the moment it arrived.
         this.stopping = new CancellationTokenSource();
+        this.draining = new CancellationTokenSource();
+        this.aborting = new CancellationTokenSource();
         this.SetState(HttpServerState.Stopped, reason, cause);
     }
+
+    // After the abort, how long connections get to notice before they are reported abandoned. Their
+    // transports are already gone by then, so all that is left to wait for is handler code unwinding.
+    static readonly TimeSpan AbortGracePeriod = TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// The graceful half of a stop. Idle keep-alive connections close at once; a connection serving a
+    /// request finishes it — with <see cref="HttpContext.RequestAborted"/> untouched — and closes
+    /// after. Only when <see cref="HttpServerOptions.ShutdownTimeout"/> or the stop's own token runs
+    /// out is anything cancelled, and then everything still running is aborted outright, so a stopped
+    /// server is not quietly still serving.
+    /// </summary>
+    async Task DrainConnectionsAsync(CancellationToken cancellationToken)
+    {
+        await this.draining.CancelAsync().ConfigureAwait(false);
+
+        var inFlight = this.SnapshotConnections();
+        if (inFlight.Length == 0)
+            return;
+
+        var drained = Task.WhenAll(inFlight);
+
+        using (var timeout = new CancellationTokenSource(this.Options.ShutdownTimeout))
+        using (var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token))
+        {
+            var completed = await Task
+                .WhenAny(drained, Task.Delay(Timeout.Infinite, budget.Token))
+                .ConfigureAwait(false);
+
+            if (completed == drained)
+                return;
+        }
+
+        var remaining = this.SnapshotConnections();
+        this.logger.LogWarning("{Count} connection(s) still active at shutdown; aborting them", remaining.Length);
+        await this.aborting.CancelAsync().ConfigureAwait(false);
+
+        var unwound = await Task
+            .WhenAny(drained, Task.Delay(AbortGracePeriod, CancellationToken.None))
+            .ConfigureAwait(false);
+
+        if (unwound != drained)
+            this.logger.LogWarning(
+                "{Count} connection(s) did not finish after being aborted; abandoning them",
+                this.SnapshotConnections().Length
+            );
+    }
+
+    Task[] SnapshotConnections()
+    {
+        lock (this.connectionsLock)
+            return [.. this.connections];
+    }
+
+    /// <summary>What a connection is handed: when to stop accepting, when to wind down, when to give up.</summary>
+    readonly record struct ConnectionTokens(CancellationToken Accept, CancellationToken Drain, CancellationToken Abort);
 
     void SetState(HttpServerState state, HttpServerStateReason reason, Exception? exception = null)
     {
@@ -809,8 +871,8 @@ public sealed class HttpServer : IAsyncDisposable
         if (this.connectionLimit is not null)
             await this.connectionLimit.WaitAsync(cancellationToken).ConfigureAwait(false);
 
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(this.stopping.Token, cancellationToken);
-        var task = this.ServeConnectionAsync(connection, linked.Token);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(this.aborting.Token, cancellationToken);
+        var task = this.ServeConnectionAsync(connection, linked.Token, this.draining.Token);
 
         // Tracked so a graceful shutdown drains tunnelled requests exactly like local ones.
         lock (this.connectionsLock)
@@ -900,8 +962,10 @@ public sealed class HttpServer : IAsyncDisposable
     /// exit that is not a stop leaves through <see cref="HttpServerListenerException"/>, which
     /// <see cref="OnListeningEnded"/> turns into a logged fault and a rebind.
     /// </summary>
-    async Task AcceptLoopAsync(IConnectionListener connectionListener, CancellationToken cancellationToken)
+    async Task AcceptLoopAsync(IConnectionListener connectionListener, ConnectionTokens tokens)
     {
+        var cancellationToken = tokens.Accept;
+
         // Consecutive, and reset by every connection accepted: see AcceptRetryAttempts for why the
         // loop counts failures instead of classifying them.
         var consecutiveFailures = 0;
@@ -941,7 +1005,7 @@ public sealed class HttpServer : IAsyncDisposable
             if (connection is not null)
             {
                 consecutiveFailures = 0;
-                this.TrackConnection(connection, cancellationToken);
+                this.TrackConnection(connection, tokens);
                 continue;
             }
 
@@ -1070,9 +1134,9 @@ public sealed class HttpServer : IAsyncDisposable
         }
     }
 
-    void TrackConnection(IConnection connection, CancellationToken cancellationToken)
+    void TrackConnection(IConnection connection, ConnectionTokens tokens)
     {
-        var task = Task.Run(() => this.ServeConnectionAsync(connection, cancellationToken), CancellationToken.None);
+        var task = Task.Run(() => this.ServeConnectionAsync(connection, tokens.Abort, tokens.Drain), CancellationToken.None);
 
         lock (this.connectionsLock)
             this.connections.Add(task);
@@ -1091,8 +1155,18 @@ public sealed class HttpServer : IAsyncDisposable
         );
     }
 
-    async Task ServeConnectionAsync(IConnection connection, CancellationToken cancellationToken)
+    /// <param name="connection">The accepted connection, already counted against the connection limit.</param>
+    /// <param name="cancellationToken">Aborts the connection outright: requests are cancelled and the transport torn down.</param>
+    /// <param name="drainToken">Asks the connection to finish what it is doing and close.</param>
+    async Task ServeConnectionAsync(IConnection connection, CancellationToken cancellationToken, CancellationToken drainToken)
     {
+        // Cancelling a request is a request; a handler blocked writing to a client that stopped
+        // reading never sees it. Tearing the transport down is what actually ends the connection.
+        using var abortRegistration = cancellationToken.Register(
+            static state => ((IConnection)state!).Abort(),
+            connection
+        );
+
         try
         {
             // TLS happens here rather than on the accept loop. A handshake is at best a round trip
@@ -1100,7 +1174,11 @@ public sealed class HttpServer : IAsyncDisposable
             if (connection is IConnectionInitializer initializer)
                 await initializer.InitializeAsync(cancellationToken).ConfigureAwait(false);
 
-            if (await this.IsHttp2Async(connection, cancellationToken).ConfigureAwait(false))
+            var protocol = await this.SelectProtocolAsync(connection, cancellationToken, drainToken).ConfigureAwait(false);
+            if (protocol == ConnectionProtocol.None)
+                return;
+
+            if (protocol == ConnectionProtocol.Http2)
             {
                 var http2 = new Http2Connection(
                     connection,
@@ -1110,7 +1188,9 @@ public sealed class HttpServer : IAsyncDisposable
                     this.loggerFactory.CreateLogger<Http2Connection>()
                 );
 
-                await http2.ProcessAsync(cancellationToken).ConfigureAwait(false);
+                // The same two moments an HTTP/1.1 connection gets: the drain sends GOAWAY and lets
+                // open streams finish, and the abort - ShutdownTimeout running out - cancels them.
+                await http2.ProcessAsync(drainToken, cancellationToken).ConfigureAwait(false);
                 return;
             }
 
@@ -1119,7 +1199,8 @@ public sealed class HttpServer : IAsyncDisposable
                 this.Options,
                 this.pipeline!,
                 this.Services,
-                this.loggerFactory.CreateLogger<Http1Connection>()
+                this.loggerFactory.CreateLogger<Http1Connection>(),
+                drainToken
             );
 
             await http.ProcessAsync(cancellationToken).ConfigureAwait(false);
@@ -1152,6 +1233,14 @@ public sealed class HttpServer : IAsyncDisposable
         }
     }
 
+    enum ConnectionProtocol
+    {
+        /// <summary>The connection closed, timed out or was drained before saying anything.</summary>
+        None,
+        Http1,
+        Http2
+    }
+
     /// <summary>
     /// Decides which protocol this connection speaks.
     /// <para>
@@ -1160,28 +1249,63 @@ public sealed class HttpServer : IAsyncDisposable
     /// signal is the client opening with the HTTP/2 connection preface, so the first bytes are
     /// peeked (not consumed) and compared against it. Anything else is HTTP/1.1.
     /// </para>
+    /// <para>
+    /// The peek runs on the same two clocks HTTP/1.1 uses for a request head:
+    /// <see cref="HttpServerLimits.KeepAliveTimeout"/> until the first byte, then
+    /// <see cref="HttpServerLimits.RequestHeadersTimeout"/>. It happens before either protocol's own
+    /// timers start, so without them a client that connected and said nothing held a connection
+    /// slot forever, and a few hundred of them were the whole server.
+    /// </para>
     /// </summary>
-    async ValueTask<bool> IsHttp2Async(IConnection connection, CancellationToken cancellationToken)
+    async ValueTask<ConnectionProtocol> SelectProtocolAsync(
+        IConnection connection,
+        CancellationToken cancellationToken,
+        CancellationToken drainToken
+    )
     {
         if (!this.Options.Http2.Enabled)
-            return false;
+            return ConnectionProtocol.Http1;
 
         if (connection.ApplicationProtocol is { } negotiated)
-            return negotiated == "h2";
+            return negotiated == "h2" ? ConnectionProtocol.Http2 : ConnectionProtocol.Http1;
 
         // TLS without h2 in ALPN means the client asked for HTTP/1.1; sniffing past that would be
         // second-guessing a negotiation that already concluded.
         if (connection.IsEncrypted || !this.Options.Http2.AllowCleartext)
-            return false;
+            return ConnectionProtocol.Http1;
 
         // The length is captured as an int rather than holding the span itself: a ReadOnlySpan
         // cannot survive an await.
         var prefaceLength = Http2Frame.Preface.Length;
 
+        using var timeout = new CancellationTokenSource(this.Options.Limits.KeepAliveTimeout);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, drainToken, timeout.Token);
+        var sawAnyBytes = false;
+
         while (true)
         {
-            var result = await connection.Input.ReadAsync(cancellationToken).ConfigureAwait(false);
+            ReadResult result;
+            try
+            {
+                result = await connection.Input.ReadAsync(linked.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                this.logger.LogDebug(
+                    "Connection {ConnectionId} closed before choosing a protocol: {Reason}",
+                    connection.ConnectionId,
+                    timeout.IsCancellationRequested ? "timed out" : "server stopping"
+                );
+                return ConnectionProtocol.None;
+            }
+
             var buffer = result.Buffer;
+
+            if (!buffer.IsEmpty && !sawAnyBytes)
+            {
+                sawAnyBytes = true;
+                timeout.CancelAfter(this.Options.Limits.RequestHeadersTimeout);
+            }
 
             var comparable = (int)Math.Min(buffer.Length, prefaceLength);
 
@@ -1191,20 +1315,20 @@ public sealed class HttpServer : IAsyncDisposable
             if (comparable > 0 && !MatchesPrefacePrefix(buffer, comparable))
             {
                 connection.Input.AdvanceTo(buffer.Start, buffer.Start);
-                return false;
+                return ConnectionProtocol.Http1;
             }
 
             if (buffer.Length >= prefaceLength)
             {
                 // Examined but not consumed: whichever protocol wins reads these bytes itself.
                 connection.Input.AdvanceTo(buffer.Start, buffer.GetPosition(prefaceLength));
-                return true;
+                return ConnectionProtocol.Http2;
             }
 
             connection.Input.AdvanceTo(buffer.Start, buffer.End);
 
             if (result.IsCompleted || result.IsCanceled)
-                return false;
+                return ConnectionProtocol.Http1;
         }
 
         static bool MatchesPrefacePrefix(in ReadOnlySequence<byte> buffer, int count)

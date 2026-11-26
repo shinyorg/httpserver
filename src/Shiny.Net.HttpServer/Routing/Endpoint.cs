@@ -53,7 +53,8 @@ public class Endpoint
     /// as they were, the attribute was accepted and did nothing: an endpoint that looked protected answered
     /// anyone. Folding them in here, once, means the middleware, the OpenAPI document and anything else see the
     /// same requirements, the same way the generator merges a class's attributes with a method's — policies all
-    /// required, roles any one of them, <c>[AllowAnonymous]</c> above everything.
+    /// required, each attribute's roles a requirement of its own (any role in it), <c>[AllowAnonymous]</c>
+    /// above everything.
     /// </para>
     /// </summary>
     void Add(object item)
@@ -70,11 +71,11 @@ public class Endpoint
                 if (!String.IsNullOrWhiteSpace(authorize.Policy))
                     authorization.Policies.Add(authorize.Policy);
 
-                if (authorize.Roles is { } roles)
-                {
-                    foreach (var role in roles.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-                        authorization.Roles.Add(role);
-                }
+                // Each attribute is its own requirement — any role within it, every attribute
+                // required — so a second [Authorize(Roles = …)] narrows the route instead of widening it.
+                var roles = (authorize.Roles ?? string.Empty).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                if (roles.Length > 0)
+                    authorization.RoleRequirements.Add(roles);
 
                 break;
             }

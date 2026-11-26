@@ -96,7 +96,11 @@ public sealed class HttpRequest
     /// </summary>
     public PipeReader BodyReader => this.bodyReader ??= PipeReader.Create(
         this.Body,
-        new StreamPipeReaderOptions(leaveOpen: true)
+
+        // Sized for uploads rather than the 4 KB default. A multipart parser hands out what one read
+        // buffered, so a 4 KB pipe turns a large file into a hundred thousand tiny reads and writes
+        // and costs roughly half the throughput of the same bytes sent raw.
+        new StreamPipeReaderOptions(bufferSize: 64 * 1024, minimumReadSize: 16 * 1024, leaveOpen: true)
     );
     PipeReader? bodyReader;
 

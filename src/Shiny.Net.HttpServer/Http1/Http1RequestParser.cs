@@ -7,7 +7,7 @@ namespace Shiny.Net.HttpServer.Http1;
 /// Parses one materialised line. A dedicated delegate type rather than <c>Action&lt;,&gt;</c>
 /// because a <c>ReadOnlySpan&lt;byte&gt;</c> cannot be a generic type argument.
 /// </summary>
-delegate void LineParser(ReadOnlySpan<byte> line, HttpRequest request);
+delegate void LineParser(ReadOnlySpan<byte> line, HttpRequest request, Http1RequestParser parser);
 
 /// <summary>
 /// Incremental HTTP/1.1 request parser.
@@ -43,9 +43,18 @@ sealed class Http1RequestParser
     /// (client politely went away between requests) from one that died mid-request.</summary>
     public bool HasStartedRequest => this.step != Step.RequestLine || this.requestLineBytes > 0;
 
+    /// <summary>
+    /// The authority of an absolute-form target (<c>GET http://host/path</c>), or null for the
+    /// usual origin-form. When present it is the request's host and the Host header is not
+    /// (RFC 9112 §3.2.2): a proxy that routes on the target and an app that routes on Host must not
+    /// be able to disagree about which site a request is for.
+    /// </summary>
+    public string? AbsoluteFormAuthority { get; private set; }
+
     public void Reset()
     {
         this.step = Step.RequestLine;
+        this.AbsoluteFormAuthority = null;
         this.requestLineBytes = 0;
         this.headerBytes = 0;
         this.headerCount = 0;
@@ -103,7 +112,7 @@ sealed class Http1RequestParser
                 StatusCodes.Status414UriTooLong
             );
 
-        WithLineBytes(lineSequence, length, request, static (line, req) => ParseRequestLine(line, req));
+        this.WithLineBytes(lineSequence, length, request, static (line, req, parser) => parser.ParseRequestLine(line, req));
         return true;
     }
 
@@ -140,7 +149,7 @@ sealed class Http1RequestParser
                     StatusCodes.Status431RequestHeaderFieldsTooLarge
                 );
 
-            WithLineBytes(lineSequence, length, request, static (line, req) => ParseHeaderLine(line, req));
+            this.WithLineBytes(lineSequence, length, request, static (line, req, _) => ParseHeaderLine(line, req));
         }
     }
 
@@ -157,7 +166,7 @@ sealed class Http1RequestParser
     /// Materialises a line as a contiguous span. Single-segment lines (the common case) are handed
     /// straight through with no copy; multi-segment lines are flattened into a pooled buffer.
     /// </summary>
-    static void WithLineBytes(
+    void WithLineBytes(
         in ReadOnlySequence<byte> lineSequence,
         int length,
         HttpRequest request,
@@ -166,7 +175,7 @@ sealed class Http1RequestParser
     {
         if (lineSequence.IsSingleSegment)
         {
-            parse(TrimCarriageReturn(lineSequence.FirstSpan), request);
+            parse(TrimCarriageReturn(lineSequence.FirstSpan), request, this);
             return;
         }
 
@@ -174,7 +183,7 @@ sealed class Http1RequestParser
         try
         {
             lineSequence.CopyTo(buffer);
-            parse(TrimCarriageReturn(buffer.AsSpan(0, length)), request);
+            parse(TrimCarriageReturn(buffer.AsSpan(0, length)), request, this);
         }
         finally
         {
@@ -182,7 +191,7 @@ sealed class Http1RequestParser
         }
     }
 
-    static void ParseRequestLine(ReadOnlySpan<byte> line, HttpRequest request)
+    void ParseRequestLine(ReadOnlySpan<byte> line, HttpRequest request)
     {
         var firstSpace = line.IndexOf(Space);
         if (firstSpace <= 0)
@@ -210,10 +219,10 @@ sealed class Http1RequestParser
                 StatusCodes.Status505HttpVersionNotSupported
             );
 
-        ParseTarget(target, request);
+        this.ParseTarget(target, request);
     }
 
-    static void ParseTarget(ReadOnlySpan<byte> target, HttpRequest request)
+    void ParseTarget(ReadOnlySpan<byte> target, HttpRequest request)
     {
         if (target.IsEmpty)
             throw new BadHttpRequestException("Malformed request line: empty request target.");
@@ -221,13 +230,30 @@ sealed class Http1RequestParser
         if (target[0] != (byte)'/')
         {
             // Origin-form is what browsers send, but proxies (including our own relay) may use
-            // absolute-form. Strip scheme and authority so downstream code always sees a path.
-            var schemeEnd = target.IndexOf("://"u8);
-            if (schemeEnd > 0)
+            // absolute-form. Strip scheme and authority so downstream code always sees a path, and
+            // keep the authority: it, not the Host header, names the site. Only a scheme at the very
+            // start counts — "://" further in is just a query value that happens to hold a URL.
+            var schemeLength = StartsWithIgnoreCase(target, "http://"u8) ? 7
+                : StartsWithIgnoreCase(target, "https://"u8) ? 8
+                : 0;
+
+            if (schemeLength > 0)
             {
-                var afterScheme = target[(schemeEnd + 3)..];
-                var pathStart = afterScheme.IndexOf((byte)'/');
-                target = pathStart < 0 ? "/"u8 : afterScheme[pathStart..];
+                var afterScheme = target[schemeLength..];
+                var authorityEnd = afterScheme.IndexOfAny((byte)'/', (byte)'?', (byte)'#');
+                var authority = authorityEnd < 0 ? afterScheme : afterScheme[..authorityEnd];
+
+                // Userinfo is deprecated in http(s) URIs (RFC 9110 §4.2.4) and is the classic way
+                // to make one host look like another.
+                if (authority.IsEmpty || authority.IndexOf((byte)'@') >= 0 || !HostValidator.IsValid(authority))
+                    throw new BadHttpRequestException("Malformed request target: invalid authority.");
+
+                this.AbsoluteFormAuthority = Encoding.ASCII.GetString(authority);
+
+                var rest = authorityEnd < 0 ? default : afterScheme[authorityEnd..];
+                target = rest.IsEmpty || rest[0] != (byte)'/'
+                    ? Concat("/"u8, rest)
+                    : rest;
             }
             else if (target.SequenceEqual("*"u8))
             {
@@ -264,6 +290,31 @@ sealed class Http1RequestParser
             request.QueryString = "?" + query;
             request.Query.SetRaw(query);
         }
+    }
+
+    static bool StartsWithIgnoreCase(ReadOnlySpan<byte> value, ReadOnlySpan<byte> lowerPrefix)
+    {
+        if (value.Length < lowerPrefix.Length)
+            return false;
+
+        for (var i = 0; i < lowerPrefix.Length; i++)
+        {
+            var b = value[i];
+            var lower = b is >= (byte)'A' and <= (byte)'Z' ? (byte)(b | 0x20) : b;
+            if (lower != lowerPrefix[i])
+                return false;
+        }
+        return true;
+    }
+
+    // Only for "http://host?query", which has no path of its own: the path is "/" and the query
+    // follows it. Rare enough that an allocation is fine.
+    static ReadOnlySpan<byte> Concat(ReadOnlySpan<byte> first, ReadOnlySpan<byte> second)
+    {
+        var joined = new byte[first.Length + second.Length];
+        first.CopyTo(joined);
+        second.CopyTo(joined.AsSpan(first.Length));
+        return joined;
     }
 
     static void ParseHeaderLine(ReadOnlySpan<byte> line, HttpRequest request)

@@ -174,12 +174,7 @@ public sealed class MultipartReader
         {
             // The first delimiter has no leading CRLF. Consuming it here lets every later search
             // use the same CRLF-prefixed pattern.
-            if (!await this.ReadFirstBoundaryAsync(cancellationToken).ConfigureAwait(false))
-            {
-                this.finished = true;
-                return null;
-            }
-
+            await this.ReadFirstBoundaryAsync(cancellationToken).ConfigureAwait(false);
             this.started = true;
         }
 
@@ -198,34 +193,78 @@ public sealed class MultipartReader
         return new MultipartSection(headers, this.current);
     }
 
-    async ValueTask<bool> ReadFirstBoundaryAsync(CancellationToken cancellationToken)
+    /// <summary>
+    /// Finds the first delimiter: <c>--boundary</c> at the very start of the body, or at the start
+    /// of any line after it. Whatever comes before is the preamble RFC 2046 allows - and that clients
+    /// do send, if only as a stray leading CRLF - and is discarded. A body with no delimiter at all
+    /// is refused rather than read as a form with nothing in it, which would let a mangled upload
+    /// through as an empty one.
+    /// </summary>
+    async ValueTask ReadFirstBoundaryAsync(CancellationToken cancellationToken)
     {
-        // "--boundary" — the same pattern without its leading CRLF.
+        // "--boundary" - the same pattern without its leading CRLF.
         var opening = this.boundary.AsMemory(2);
+        var checkedStart = false;
 
         while (true)
         {
             var result = await this.reader.ReadAsync(cancellationToken).ConfigureAwait(false);
             var buffer = result.Buffer;
+            var ended = result.IsCompleted || result.IsCanceled;
 
-            if (buffer.Length >= opening.Length)
+            if (!checkedStart && (buffer.Length >= opening.Length || ended))
             {
-                var head = buffer.Slice(0, opening.Length).ToArray();
-                if (head.AsSpan().SequenceEqual(opening.Span))
+                checkedStart = true;
+
+                if (buffer.Length >= opening.Length && StartsWith(buffer, opening.Span))
                 {
                     this.reader.AdvanceTo(buffer.GetPosition(opening.Length));
-                    return true;
+                    return;
                 }
-
-                this.reader.AdvanceTo(buffer.Start, buffer.End);
-                return false;
             }
 
-            this.reader.AdvanceTo(buffer.Start, buffer.End);
+            if (!checkedStart)
+            {
+                // Not enough yet to tell whether the body opens with the delimiter.
+                this.reader.AdvanceTo(buffer.Start, buffer.End);
+            }
+            else
+            {
+                var scan = new SequenceReader<byte>(buffer);
 
-            if (result.IsCompleted || result.IsCanceled)
-                return false;
+                // Past the start, a delimiter only counts at the beginning of a line, which is
+                // exactly the CRLF-prefixed pattern every later search uses.
+                if (scan.TryReadTo(out ReadOnlySequence<byte> _, this.boundary, advancePastDelimiter: true))
+                {
+                    this.reader.AdvanceTo(scan.Position);
+                    return;
+                }
+
+                if (ended)
+                {
+                    this.reader.AdvanceTo(buffer.End);
+                    throw new BadHttpRequestException("The multipart body has no boundary delimiter.");
+                }
+
+                // Preamble. Only the tail that could be the start of a delimiter split across reads
+                // is kept; everything before it is consumed, so a long preamble costs no memory.
+                var keep = this.boundary.Length - 1;
+                var consumed = buffer.Length > keep ? buffer.GetPosition(buffer.Length - keep) : buffer.Start;
+
+                this.reader.AdvanceTo(consumed, buffer.End);
+            }
         }
+    }
+
+    static bool StartsWith(in ReadOnlySequence<byte> buffer, ReadOnlySpan<byte> prefix)
+    {
+        if (buffer.FirstSpan.Length >= prefix.Length)
+            return buffer.FirstSpan.StartsWith(prefix);
+
+        Span<byte> head = stackalloc byte[prefix.Length];
+        buffer.Slice(0, prefix.Length).CopyTo(head);
+
+        return head.SequenceEqual(prefix);
     }
 
     /// <summary>

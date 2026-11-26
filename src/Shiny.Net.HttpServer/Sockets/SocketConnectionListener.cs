@@ -105,14 +105,10 @@ sealed class SocketConnectionListener : IConnectionListener
                 throw new InvalidOperationException("BindAsync must be called before accepting connections.");
             }
 
+            Socket? accepted = null;
             try
             {
-                var accepted = await socket.AcceptAsync(cancellationToken).ConfigureAwait(false);
-                var id = $"{this.connectionIdPrefix}{Interlocked.Increment(ref this.connectionCounter)}";
-
-                // Returned before the TLS handshake runs — that happens on the connection's own
-                // task, so a client that stalls mid-handshake cannot hold up the accept loop.
-                return SocketConnection.Create(id, accepted, this.options, this.endpoint.Https, this.endpoint.ProxyProtocol);
+                accepted = await socket.AcceptAsync(cancellationToken).ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is ObjectDisposedException or OperationCanceledException)
             {
@@ -123,14 +119,49 @@ sealed class SocketConnectionListener : IConnectionListener
             {
                 return null;
             }
-            catch (Exception ex)
+            catch (SocketException ex) when (IsPerClientFailure(ex.SocketErrorCode))
             {
-                // A single connection failing to come up — a client that vanished mid-accept, a
-                // transient resource limit — must not take the listener down with it.
-                this.logger.LogDebug(ex, "Failed to accept a connection; continuing to listen");
+                // A client that vanished between its SYN and our accept. Its problem, not the
+                // listener's, so the next accept goes ahead straight away.
+                this.logger.LogDebug(ex, "A connection was reset before it could be accepted; continuing to listen");
+            }
+
+            // Anything else — descriptor exhaustion (EMFILE), the interface going away — is left to
+            // escape on purpose. Swallowing it here retried at once, forever, spinning a core on a
+            // condition that a retry a microsecond later cannot fix, while the server's accept loop,
+            // which has the backoff and the give-up-and-rebind logic, never heard about it.
+            if (accepted is not null)
+            {
+                var connection = this.TryCreateConnection(accepted);
+                if (connection is not null)
+                    return connection;
             }
         }
     }
+
+    /// <summary>
+    /// Wraps an accepted socket. Configuring one that the client has already reset can fail, and
+    /// that is a failure of that one client: the socket is closed and the listener carries on.
+    /// </summary>
+    IConnection? TryCreateConnection(Socket accepted)
+    {
+        var id = $"{this.connectionIdPrefix}{Interlocked.Increment(ref this.connectionCounter)}";
+        try
+        {
+            // Returned before the TLS handshake runs — that happens on the connection's own task,
+            // so a client that stalls mid-handshake cannot hold up the accept loop.
+            return SocketConnection.Create(id, accepted, this.options, this.endpoint.Https, this.endpoint.ProxyProtocol);
+        }
+        catch (Exception ex) when (ex is SocketException or ObjectDisposedException or IOException)
+        {
+            this.logger.LogDebug(ex, "Failed to set up accepted connection {ConnectionId}; continuing to listen", id);
+            accepted.Dispose();
+            return null;
+        }
+    }
+
+    static bool IsPerClientFailure(SocketError error)
+        => error is SocketError.ConnectionReset or SocketError.ConnectionAborted or SocketError.Interrupted;
 
     public ValueTask UnbindAsync(CancellationToken cancellationToken = default)
     {

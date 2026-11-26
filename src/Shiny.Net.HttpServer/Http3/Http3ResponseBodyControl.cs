@@ -21,6 +21,11 @@ sealed class Http3ResponseBodyControl(QuicStream stream, HttpResponse response, 
     : IResponseBodyControl, IInformationalResponseWriter
 {
     readonly ArrayBufferWriter<byte> staged = new(4096);
+    readonly Http2.ResponseLengthTracker length = new();
+
+    // A HEAD response sends the headers a GET would get and no body. The handler still writes as if
+    // it were a GET, so the writes are counted and dropped rather than failed.
+    readonly bool suppressBody = HttpMethods.IsHead(response.HttpContext.Request.Method);
 
     Http3ResponseStream? bodyStream;
     PipeWriter? bodyWriter;
@@ -43,6 +48,7 @@ sealed class Http3ResponseBodyControl(QuicStream stream, HttpResponse response, 
         await response.InvokeOnStartingAsync().ConfigureAwait(false);
         this.HasStarted = true;
         response.Headers.IsReadOnly = true;
+        this.length.Begin(response);
 
         var fields = new List<HeaderField>(response.Headers.Count + 1)
         {
@@ -134,7 +140,12 @@ sealed class Http3ResponseBodyControl(QuicStream stream, HttpResponse response, 
         await this.StartAsync(cancellationToken).ConfigureAwait(false);
         await this.FlushStagedAsync(cancellationToken).ConfigureAwait(false);
 
-        if (response.HasTrailers)
+        // Short of the declared length: fail rather than FIN, so the stream is aborted and the
+        // client knows the body is incomplete instead of accepting it as whole.
+        if (!this.suppressBody && this.length.IsShort(0))
+            throw this.length.Shortfall();
+
+        if (response.HasTrailers && !this.suppressBody)
         {
             // A second HEADERS frame, after the last DATA. No pseudo-headers — the status was
             // settled by the first one.
@@ -164,6 +175,12 @@ sealed class Http3ResponseBodyControl(QuicStream stream, HttpResponse response, 
     async ValueTask WriteBodyAsync(ReadOnlyMemory<byte> data, CancellationToken cancellationToken)
     {
         await this.StartAsync(cancellationToken).ConfigureAwait(false);
+
+        // Counted before it is staged, so an overrun fails without its extra bytes going out.
+        this.length.Track(data.Length);
+
+        if (this.suppressBody)
+            return;
 
         this.staged.Write(data.Span);
 

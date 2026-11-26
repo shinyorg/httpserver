@@ -2,6 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Shiny.Net.HttpServer.Routing;
 
 namespace Shiny.Net.HttpServer.Timeouts;
 
@@ -184,7 +185,7 @@ public static class HttpServerRequestTimeoutExtensions
     }
 
     /// <summary>
-    /// Bounds the most recently mapped route.
+    /// Bounds every route the preceding call mapped.
     /// <code>
     /// app.MapGet("/report", Handler).WithRequestTimeout(TimeSpan.FromSeconds(10));
     /// </code>
@@ -193,45 +194,26 @@ public static class HttpServerRequestTimeoutExtensions
     {
         ArgumentNullException.ThrowIfNull(server);
 
-        LastEndpointMetadata(server).Timeout = timeout;
+        LastMappedConventions.Apply<RequestTimeoutMetadata>(server, "WithRequestTimeout", m => m.Timeout = timeout);
         return server;
     }
 
-    /// <summary>Applies a named policy to the most recently mapped route.</summary>
+    /// <summary>Applies a named policy to every route the preceding call mapped.</summary>
     public static HttpServer WithRequestTimeout(this HttpServer server, string policyName)
     {
         ArgumentNullException.ThrowIfNull(server);
         ArgumentException.ThrowIfNullOrEmpty(policyName);
 
-        LastEndpointMetadata(server).PolicyName = policyName;
+        LastMappedConventions.Apply<RequestTimeoutMetadata>(server, "WithRequestTimeout", m => m.PolicyName = policyName);
         return server;
     }
 
-    /// <summary>Exempts the most recently mapped route, the default policy included.</summary>
+    /// <summary>Exempts every route the preceding call mapped, the default policy included.</summary>
     public static HttpServer DisableRequestTimeout(this HttpServer server)
     {
         ArgumentNullException.ThrowIfNull(server);
 
-        LastEndpointMetadata(server).Disabled = true;
+        LastMappedConventions.Apply<RequestTimeoutMetadata>(server, "WithRequestTimeout", m => m.Disabled = true);
         return server;
-    }
-
-    static RequestTimeoutMetadata LastEndpointMetadata(HttpServer server)
-    {
-        if (server.Router.Endpoints.Count == 0)
-            throw new InvalidOperationException(
-                "WithRequestTimeout applies to the most recently mapped route, and no route has been mapped yet."
-            );
-
-        var endpoint = server.Router.Endpoints[^1];
-        var metadata = endpoint.GetMetadata<RequestTimeoutMetadata>();
-
-        if (metadata is null)
-        {
-            metadata = new RequestTimeoutMetadata();
-            endpoint.WithMetadata(metadata);
-        }
-
-        return metadata;
     }
 }

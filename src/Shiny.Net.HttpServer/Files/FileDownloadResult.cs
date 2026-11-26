@@ -53,8 +53,16 @@ public static class RangeHeader
         if (fromText.Length == 0)
         {
             // "-500" means the last 500 bytes.
-            if (!long.TryParse(toText, NumberStyles.Integer, CultureInfo.InvariantCulture, out var suffix) || suffix <= 0)
+            if (!long.TryParse(toText, NumberStyles.None, CultureInfo.InvariantCulture, out var suffix))
                 return false;
+
+            // "-0" asks for the last zero bytes, which no part of any entity satisfies - a 416, not
+            // a quiet 200 with everything (RFC 9110 14.1.1).
+            if (suffix == 0)
+            {
+                unsatisfiable = true;
+                return false;
+            }
 
             var start = Math.Max(0, length - suffix);
             range = new ByteRange(start, length - 1);
@@ -62,7 +70,7 @@ public static class RangeHeader
             return true;
         }
 
-        if (!long.TryParse(fromText, NumberStyles.Integer, CultureInfo.InvariantCulture, out var from) || from < 0)
+        if (!long.TryParse(fromText, NumberStyles.None, CultureInfo.InvariantCulture, out var from) || from < 0)
             return false;
 
         if (from >= length)
@@ -77,7 +85,7 @@ public static class RangeHeader
             return true;
         }
 
-        if (!long.TryParse(toText, NumberStyles.Integer, CultureInfo.InvariantCulture, out var to) || to < from)
+        if (!long.TryParse(toText, NumberStyles.None, CultureInfo.InvariantCulture, out var to) || to < from)
             return false;
 
         range = new ByteRange(from, Math.Min(to, length - 1));
@@ -269,7 +277,11 @@ public sealed class FileDownloadResult : IActionResult
             {
                 response.ContentLength = this.Length;
                 await response.StartAsync(cancellationToken).ConfigureAwait(false);
-                await stream.CopyToAsync(response.Body, cancellationToken).ConfigureAwait(false);
+
+                // Bounded by the length already promised: a log file that grew since it was
+                // measured would otherwise send more bytes than Content-Length said, and the
+                // response would fail at the framing layer instead of being a consistent snapshot.
+                await CopyAsync(stream, response.Body, this.Length, cancellationToken).ConfigureAwait(false);
 
                 return;
             }

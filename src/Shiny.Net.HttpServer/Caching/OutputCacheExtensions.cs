@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Shiny.Net.HttpServer.Routing;
 
 namespace Shiny.Net.HttpServer.Caching;
 
@@ -65,7 +66,7 @@ public static class HttpServerOutputCacheExtensions
     }
 
     /// <summary>
-    /// Caches the most recently mapped route for a fixed duration.
+    /// Caches every route the preceding call mapped for a fixed duration.
     /// <code>
     /// app.MapGet("/dashboard", Handler).CacheOutput(TimeSpan.FromSeconds(10));
     /// </code>
@@ -74,45 +75,26 @@ public static class HttpServerOutputCacheExtensions
     {
         ArgumentNullException.ThrowIfNull(server);
 
-        LastEndpointMetadata(server).Duration = duration;
+        LastMappedConventions.Apply<OutputCacheMetadata>(server, "CacheOutput", m => m.Duration = duration);
         return server;
     }
 
-    /// <summary>Applies a named policy to the most recently mapped route.</summary>
+    /// <summary>Applies a named policy to every route the preceding call mapped.</summary>
     public static HttpServer CacheOutput(this HttpServer server, string policyName)
     {
         ArgumentNullException.ThrowIfNull(server);
         ArgumentException.ThrowIfNullOrEmpty(policyName);
 
-        LastEndpointMetadata(server).PolicyName = policyName;
+        LastMappedConventions.Apply<OutputCacheMetadata>(server, "CacheOutput", m => m.PolicyName = policyName);
         return server;
     }
 
-    /// <summary>Exempts the most recently mapped route, the default policy included.</summary>
+    /// <summary>Exempts every route the preceding call mapped, the default policy included.</summary>
     public static HttpServer NoOutputCache(this HttpServer server)
     {
         ArgumentNullException.ThrowIfNull(server);
 
-        LastEndpointMetadata(server).Disabled = true;
+        LastMappedConventions.Apply<OutputCacheMetadata>(server, "CacheOutput", m => m.Disabled = true);
         return server;
-    }
-
-    static OutputCacheMetadata LastEndpointMetadata(HttpServer server)
-    {
-        if (server.Router.Endpoints.Count == 0)
-            throw new InvalidOperationException(
-                "CacheOutput applies to the most recently mapped route, and no route has been mapped yet."
-            );
-
-        var endpoint = server.Router.Endpoints[^1];
-        var metadata = endpoint.GetMetadata<OutputCacheMetadata>();
-
-        if (metadata is null)
-        {
-            metadata = new OutputCacheMetadata();
-            endpoint.WithMetadata(metadata);
-        }
-
-        return metadata;
     }
 }

@@ -32,12 +32,17 @@ public sealed class RateLimitMiddleware(
     {
         ArgumentNullException.ThrowIfNull(context);
 
-        var policy = this.PolicyFor(context);
+        var (policy, endpoint) = this.PolicyFor(context);
         if (policy is null)
         {
             await next(context).ConfigureAwait(false);
             return;
         }
+
+        // Handed to the partitioner, which runs before routing has set ctx.Endpoint: keying on the
+        // route rather than the raw path is what stops a respelt path getting its own allowance.
+        if (endpoint is not null)
+            context.Items[RateLimitPartitioners.ResolvedEndpointKey] = endpoint;
 
         // A null partition key is the partitioner saying this request is none of its business.
         var partitionKey = policy.Partitioner(context);
@@ -103,16 +108,17 @@ public sealed class RateLimitMiddleware(
             response.Headers.Set("X-RateLimit-Remaining", remaining.ToString(CultureInfo.InvariantCulture));
     }
 
-    RateLimitPolicy? PolicyFor(HttpContext context)
+    (RateLimitPolicy? Policy, Endpoint? Endpoint) PolicyFor(HttpContext context)
     {
-        var metadata = EndpointResolver.Resolve(router, context)?.GetMetadata<RateLimitMetadata>();
+        var endpoint = EndpointResolver.Resolve(router, context);
+        var metadata = endpoint?.GetMetadata<RateLimitMetadata>();
 
         if (metadata is { Disabled: true })
-            return null;
+            return (null, endpoint);
 
         if (metadata?.PolicyName is { } name)
-            return options.GetPolicy(name);
+            return (options.GetPolicy(name), endpoint);
 
-        return globalPolicy ?? options.GlobalPolicy;
+        return (globalPolicy ?? options.GlobalPolicy, endpoint);
     }
 }

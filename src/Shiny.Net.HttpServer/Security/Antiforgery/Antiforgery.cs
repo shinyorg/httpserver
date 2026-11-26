@@ -11,8 +11,21 @@ public readonly record struct AntiforgeryTokenSet(string CookieToken, string Req
 /// <summary>How antiforgery tokens are issued, carried and checked.</summary>
 public sealed class AntiforgeryOptions
 {
-    /// <summary>The cookie the browser round-trips. Prefixed <c>__Host-</c> style naming is not used because the server is often plain HTTP on a LAN.</summary>
+    /// <summary>
+    /// The cookie the browser round-trips. When the cookie is <c>Secure</c> it is issued and read as
+    /// <c>__Host-</c> + this name (see <see cref="UseHostPrefix"/>); on plain HTTP — a LAN server — the name
+    /// is used as is, since browsers refuse a <c>__Host-</c> cookie without <c>Secure</c>.
+    /// </summary>
     public string CookieName { get; set; } = "shiny.antiforgery";
+
+    /// <summary>
+    /// Prefixes the cookie name with <c>__Host-</c> whenever the cookie is <c>Secure</c>. On by default: the
+    /// prefix makes the browser refuse the cookie from a sibling subdomain or a plain-HTTP page, which is
+    /// how an attacker on a neighbouring host would otherwise plant a cookie of their own and pair it with
+    /// a token they hold. Script that wants the request token should use the one
+    /// <see cref="IAntiforgery.GetTokens"/> returns rather than reading the cookie by name.
+    /// </summary>
+    public bool UseHostPrefix { get; set; } = true;
 
     /// <summary>The header a client sends the request token in.</summary>
     public string HeaderName { get; set; } = "X-CSRF-TOKEN";
@@ -30,11 +43,39 @@ public sealed class AntiforgeryOptions
     /// </summary>
     public byte[]? Key { get; set; }
 
-    /// <summary>Marks the cookie <c>Secure</c>. Off by default because a LAN server is usually cleartext.</summary>
+    /// <summary>
+    /// Always marks the cookie <c>Secure</c>, whatever <see cref="SecurePolicy"/> says. Off by default; the
+    /// policy already makes it secure on HTTPS.
+    /// </summary>
     public bool SecureCookie { get; set; }
 
-    /// <summary>How long a token stays valid. Zero means for as long as the cookie lasts.</summary>
+    /// <summary>
+    /// When the cookie is <c>Secure</c>. <see cref="CookieSecurePolicy.SameAsRequest"/> by default — secure
+    /// on HTTPS, plain on a cleartext LAN server — so an HTTPS deployment no longer issues a cookie a
+    /// network attacker could read or overwrite over HTTP.
+    /// </summary>
+    public CookieSecurePolicy SecurePolicy { get; set; } = CookieSecurePolicy.SameAsRequest;
+
+    /// <summary>
+    /// How long a request token stays valid after it was issued. Zero means for as long as the cookie
+    /// lasts. The issue time travels inside the signed token, so a token is good for the full lifetime
+    /// from the moment it was handed out.
+    /// </summary>
     public TimeSpan Lifetime { get; set; } = TimeSpan.FromHours(8);
+
+    /// <summary>Whether the cookie for this request is <c>Secure</c>.</summary>
+    internal bool IsSecure(HttpContext context) => this.SecureCookie || this.SecurePolicy switch
+    {
+        CookieSecurePolicy.Always => true,
+        CookieSecurePolicy.Never => false,
+        _ => context.Request.IsHttps
+    };
+
+    /// <summary>The cookie name for this request — <c>__Host-</c> prefixed when it is secure.</summary>
+    internal string CookieNameFor(HttpContext context)
+        => this.UseHostPrefix && this.IsSecure(context) && !this.CookieName.StartsWith("__Host-", StringComparison.Ordinal)
+            ? "__Host-" + this.CookieName
+            : this.CookieName;
 }
 
 /// <summary>Issues and validates antiforgery tokens.</summary>
@@ -64,6 +105,13 @@ public interface IAntiforgery
 /// cannot forge the HMAC, so it cannot produce a matching request token.
 /// </para>
 /// <para>
+/// The request token also carries the moment it was issued and is bound to the signed-in user, both
+/// inside the signature: it expires <see cref="AntiforgeryOptions.Lifetime"/> after it was handed out, and
+/// a token issued to one user (or to an anonymous visitor) does not validate for another — so a token
+/// obtained while signed out cannot be replayed against a victim's authenticated session. Fetch a fresh
+/// token after signing in.
+/// </para>
+/// <para>
 /// Everything here is in-box crypto: <see cref="RandomNumberGenerator"/> and
 /// <see cref="HMACSHA256"/>, no key derivation library and no data protection stack.
 /// </para>
@@ -72,6 +120,9 @@ public sealed class Antiforgery(AntiforgeryOptions options) : IAntiforgery
 {
     const int TokenBytes = 32;
 
+    // Tokens stamped by a clock a little ahead of this one are still accepted.
+    static readonly TimeSpan ClockSkew = TimeSpan.FromMinutes(5);
+
     readonly AntiforgeryOptions options = options ?? throw new ArgumentNullException(nameof(options));
     readonly byte[] key = options.Key ?? RandomNumberGenerator.GetBytes(64);
 
@@ -79,26 +130,27 @@ public sealed class Antiforgery(AntiforgeryOptions options) : IAntiforgery
     {
         ArgumentNullException.ThrowIfNull(context);
 
-        var cookieToken = context.Request.Cookies[this.options.CookieName];
+        var cookieName = this.options.CookieNameFor(context);
+        var cookieToken = context.Request.Cookies[cookieName];
 
         if (cookieToken is not { Length: > 0 } || !TryDecode(cookieToken, out _))
         {
             cookieToken = Base64Url.Encode(RandomNumberGenerator.GetBytes(TokenBytes));
 
-            context.Response.Cookies.Append(this.options.CookieName, cookieToken, new CookieOptions
+            context.Response.Cookies.Append(cookieName, cookieToken, new CookieOptions
             {
                 // Deliberately readable by script: a page fetches the pair and echoes the request
                 // token back in a header. The security comes from the signature, not from secrecy
                 // of the cookie — and an HttpOnly cookie a single-page app cannot read is a cookie
                 // it cannot send back.
                 HttpOnly = false,
-                Secure = this.options.SecureCookie,
+                Secure = this.options.IsSecure(context),
                 SameSite = SameSiteMode.Strict,
                 Path = "/"
             });
         }
 
-        return new AntiforgeryTokenSet(cookieToken, this.Sign(cookieToken));
+        return new AntiforgeryTokenSet(cookieToken, this.Sign(cookieToken, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), UserBinding(context)));
     }
 
     public bool Validate(HttpContext context)
@@ -115,33 +167,56 @@ public sealed class Antiforgery(AntiforgeryOptions options) : IAntiforgery
         if (requestToken is not { Length: > 0 })
             return false;
 
-        if (context.Request.Cookies[this.options.CookieName] is not { Length: > 0 } cookieToken)
+        if (context.Request.Cookies[this.options.CookieNameFor(context)] is not { Length: > 0 } cookieToken)
             return false;
 
-        var expected = this.Sign(cookieToken);
+        // issued.signature — the issue time is read from the token, then checked by recomputing the
+        // signature over it, so it cannot be edited to extend a token's life.
+        var dot = requestToken.IndexOf('.');
+        if (dot <= 0 || !long.TryParse(requestToken.AsSpan(0, dot), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var issued))
+            return false;
+
+        var expected = this.Sign(cookieToken, issued, UserBinding(context));
 
         // Fixed-time comparison. A token check that leaks its progress through the string is a
         // token check an attacker can walk one byte at a time.
-        return CryptographicOperations.FixedTimeEquals(
-            Encoding.ASCII.GetBytes(requestToken),
-            Encoding.ASCII.GetBytes(expected)
-        );
+        if (!CryptographicOperations.FixedTimeEquals(Encoding.ASCII.GetBytes(requestToken), Encoding.ASCII.GetBytes(expected)))
+            return false;
+
+        if (this.options.Lifetime <= TimeSpan.Zero)
+            return true;
+
+        var age = DateTimeOffset.UtcNow - DateTimeOffset.FromUnixTimeSeconds(Math.Min(issued, DateTimeOffset.MaxValue.ToUnixTimeSeconds()));
+        return age <= this.options.Lifetime && age >= -ClockSkew;
     }
 
     /// <summary>
-    /// The request token: the cookie value, a timestamp, and an HMAC over both. The timestamp is
-    /// inside the signature, so an expired token cannot be refreshed by editing it.
+    /// The request token: the issue time, and an HMAC over the cookie value, that time and the user it was
+    /// issued to. Signing the time rather than a fixed window means a token lives its whole lifetime from
+    /// the moment it is handed out — a bucketed stamp died at the next bucket boundary, which with a short
+    /// lifetime could be a second after it was issued.
     /// </summary>
-    string Sign(string cookieToken)
+    string Sign(string cookieToken, long issued, string user)
     {
-        var stamp = this.options.Lifetime > TimeSpan.Zero
-            ? (DateTimeOffset.UtcNow.ToUnixTimeSeconds() / (long)Math.Max(1, this.options.Lifetime.TotalSeconds)).ToString(System.Globalization.CultureInfo.InvariantCulture)
-            : "0";
-
-        var payload = Encoding.UTF8.GetBytes(cookieToken + "." + stamp);
+        var stamp = issued.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var payload = Encoding.UTF8.GetBytes(cookieToken + "." + stamp + "." + user);
         var signature = HMACSHA256.HashData(this.key, payload);
 
         return stamp + "." + Base64Url.Encode(signature);
+    }
+
+    /// <summary>Who the token is for: the signed-in user's stable id, or nobody for an anonymous visitor.</summary>
+    static string UserBinding(HttpContext context)
+    {
+        var user = context.User;
+
+        if (user.Identity?.IsAuthenticated != true)
+            return string.Empty;
+
+        return user.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value
+            ?? user.FindFirst("sub")?.Value
+            ?? user.Identity.Name
+            ?? string.Empty;
     }
 
     static bool TryDecode(string value, out byte[] bytes)
