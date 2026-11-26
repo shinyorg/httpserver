@@ -449,10 +449,11 @@ public sealed class WebSocket : IAsyncDisposable
     internal void StartKeepAlive(TimeSpan interval, int missedPingsBeforeClosing)
         => _ = Task.Run(async () =>
         {
-            var token = this.keepAliveStopped.Token;
-
             try
             {
+                // Read inside the try: a socket disposed before this task is scheduled has already
+                // disposed the source, and the throw would otherwise fault a task nobody observes.
+                var token = this.keepAliveStopped.Token;
                 using var timer = new PeriodicTimer(interval);
 
                 while (await timer.WaitForNextTickAsync(token).ConfigureAwait(false))
