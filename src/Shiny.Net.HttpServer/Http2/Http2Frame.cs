@@ -169,19 +169,91 @@ static class Http2Frame
 }
 
 /// <summary>Serializes frame writes, so two streams cannot interleave halves of a frame.</summary>
-sealed class Http2FrameWriter(PipeWriter writer) : IAsyncDisposable
+/// <param name="writer">The connection's output.</param>
+/// <param name="connectionClosing">
+/// Cancelled when the whole connection is being torn down - the only time a flush may stop part way,
+/// because nothing will be written after it.
+/// </param>
+/// <param name="stallTimeout">
+/// How long one flush may wait for the client to take the bytes before <paramref name="onStalled"/>
+/// is called - <see cref="HttpServerLimits.ResponseWriteTimeout"/>, as over HTTP/1.1. A flush that
+/// waits that long means the client has stopped reading the whole connection, not one stream.
+/// </param>
+/// <param name="onStalled">Tears the connection down, which cancels <paramref name="connectionClosing"/>.</param>
+sealed class Http2FrameWriter(
+    PipeWriter writer,
+    CancellationToken connectionClosing = default,
+    TimeSpan stallTimeout = default,
+    Action? onStalled = null
+) : IAsyncDisposable
 {
     readonly SemaphoreSlim gate = new(1, 1);
     int disposed;
 
-    /// <summary>Runs <paramref name="write"/> with exclusive access to the connection, then flushes.</summary>
+    // When the flush in progress started, or 0 between flushes. Checked by one timer per connection
+    // rather than a timer per flush: a flush happens for every frame, and almost all of them finish
+    // at once.
+    long flushStarted;
+    Timer? watchdog;
+
+    void Watch()
+    {
+        if (this.watchdog is not null || onStalled is null || stallTimeout <= TimeSpan.Zero || stallTimeout == Timeout.InfiniteTimeSpan)
+            return;
+
+        var period = TimeSpan.FromMilliseconds(Math.Clamp(stallTimeout.TotalMilliseconds / 4, 10, 1000));
+        this.watchdog = new Timer(static state => ((Http2FrameWriter)state!).Check(), this, period, period);
+    }
+
+    void Check()
+    {
+        var started = Interlocked.Read(ref this.flushStarted);
+        if (started == 0 || Environment.TickCount64 - started < stallTimeout.TotalMilliseconds)
+            return;
+
+        // Once is enough: the connection is going.
+        Interlocked.Exchange(ref this.flushStarted, 0);
+        this.watchdog?.Dispose();
+        onStalled!();
+    }
+
+    /// <summary>
+    /// Runs <paramref name="write"/> with exclusive access to the connection, then flushes.
+    /// <para>
+    /// <paramref name="cancellationToken"/> only ever cancels the wait for a turn. Once a frame is
+    /// in the pipe, the flush runs to the end whatever happens to the stream that wrote it. The
+    /// caller's token is usually one stream's RequestAborted, which fires when the client resets
+    /// that stream, and a flush cancelled part way tears the write to the transport mid-record:
+    /// over TLS every record after it then fails to decrypt, and every other stream on the
+    /// connection dies with it. Only the connection's own teardown may stop a flush part way, since
+    /// nothing is written after that; it is what frees a flush stuck on a peer that stopped reading.
+    /// </para>
+    /// </summary>
     public async ValueTask WriteAsync(Action<PipeWriter> write, CancellationToken cancellationToken)
     {
         await this.gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             write(writer);
-            await writer.FlushAsync(cancellationToken).ConfigureAwait(false);
+
+            var flush = writer.FlushAsync(connectionClosing);
+            if (!flush.IsCompleted)
+            {
+                this.Watch();
+                Interlocked.Exchange(ref this.flushStarted, Environment.TickCount64);
+                try
+                {
+                    await flush.ConfigureAwait(false);
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref this.flushStarted, 0);
+                }
+            }
+            else
+            {
+                await flush.ConfigureAwait(false);
+            }
         }
         finally
         {
@@ -200,7 +272,10 @@ sealed class Http2FrameWriter(PipeWriter writer) : IAsyncDisposable
     public ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref this.disposed, 1) == 0)
+        {
+            this.watchdog?.Dispose();
             this.gate.Dispose();
+        }
 
         return ValueTask.CompletedTask;
     }

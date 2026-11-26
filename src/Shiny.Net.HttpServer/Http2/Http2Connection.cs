@@ -105,7 +105,19 @@ sealed class Http2Connection
         this.application = application;
         this.rootServices = rootServices;
         this.logger = logger;
-        this.writer = new Http2FrameWriter(connection.Output);
+        this.writer = new Http2FrameWriter(
+            connection.Output,
+            this.shutdown.Token,
+            options.Limits.ResponseWriteTimeout,
+            () =>
+            {
+                this.logger.LogDebug(
+                    "Closing HTTP/2 connection {ConnectionId}: the client stopped accepting data",
+                    connection.ConnectionId
+                );
+                this.AbortStreams();
+            }
+        );
         this.closing = this.shutdown.Token;
 
         this.localSettings = new Http2Settings
@@ -887,6 +899,7 @@ sealed class Http2Connection
         };
 
         stream.BodyConsumed = count => this.OnBodyConsumedAsync(stream, count);
+        stream.BodyReadTimeout = this.options.Limits.RequestBodyTimeout;
         this.streams[streamId] = stream;
 
         if (endStream)
@@ -1305,6 +1318,15 @@ sealed class Http2Connection
     /// </summary>
     async ValueTask<int> ReserveWindowAsync(Http2Stream stream, int wanted, CancellationToken cancellationToken)
     {
+        // The wait for credit runs under ResponseWriteTimeout, as a write does over HTTP/1.1. A
+        // client that vanished - a laptop closing, a network handing over - sends no reset and no
+        // more WINDOW_UPDATEs, and with no bytes in flight nothing at the TCP level notices either;
+        // without this the stream, its handler and whatever the handler holds wait for ever.
+        var limit = this.options.Limits.ResponseWriteTimeout;
+        var deadline = limit == Timeout.InfiniteTimeSpan || limit <= TimeSpan.Zero
+            ? long.MaxValue
+            : Environment.TickCount64 + (long)limit.TotalMilliseconds;
+
         while (true)
         {
             if (stream.State == Http2StreamState.Closed || this.closed || cancellationToken.IsCancellationRequested)
@@ -1324,7 +1346,23 @@ sealed class Http2Connection
             {
                 // Either window being refilled, the stream ending or the connection closing wakes
                 // this; the loop then works out which.
-                await Task.WhenAny(streamSignal, connectionSignal).WaitAsync(cancellationToken).ConfigureAwait(false);
+                var left = deadline - Environment.TickCount64;
+                if (left <= 0)
+                    throw this.WriteStalled(stream, limit);
+
+                var woken = Task.WhenAny(streamSignal, connectionSignal);
+                var wait = deadline == long.MaxValue
+                    ? woken.WaitAsync(cancellationToken)
+                    : woken.WaitAsync(TimeSpan.FromMilliseconds(Math.Min(left, int.MaxValue)), cancellationToken);
+
+                try
+                {
+                    await wait.ConfigureAwait(false);
+                }
+                catch (TimeoutException)
+                {
+                    throw this.WriteStalled(stream, limit);
+                }
             }
             else if (Interlocked.CompareExchange(ref this.connectionSendWindow, connectionWindow - available, connectionWindow) == connectionWindow)
             {
@@ -1333,6 +1371,25 @@ sealed class Http2Connection
                 return available;
             }
         }
+    }
+
+    /// <summary>
+    /// The client has given a stream no credit for <see cref="HttpServerLimits.ResponseWriteTimeout"/>.
+    /// The stream is reset, so the handler sees RequestAborted, and the write that was waiting fails
+    /// as a client disconnect - the same outcome as a stalled write over HTTP/1.1. The reset is not
+    /// waited on: the peer is likely gone, and the handler should not wait on it again.
+    /// </summary>
+    IOException WriteStalled(Http2Stream stream, TimeSpan limit)
+    {
+        var message = $"The client did not accept response data within {limit.TotalSeconds:0.#}s.";
+        this.logger.LogDebug("Resetting HTTP/2 stream {StreamId}: {Reason}", stream.Id, message);
+
+        stream.Abort(new IOException(message));
+        _ = this.SendRstStreamAsync(stream.Id, Http2ErrorCode.Cancel, CancellationToken.None)
+            .AsTask()
+            .ContinueWith(static t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted);
+
+        return new IOException(message);
     }
 
     internal ValueTask SendRstStreamAsync(uint streamId, Http2ErrorCode code, CancellationToken cancellationToken)

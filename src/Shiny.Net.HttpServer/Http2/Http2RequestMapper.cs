@@ -210,7 +210,7 @@ sealed class Http2RequestBodyStream(Http2Stream stream, HttpRequest request) : S
 
         while (true)
         {
-            var result = await this.reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+            var result = await this.ReadWithTimeoutAsync(cancellationToken).ConfigureAwait(false);
             var available = result.Buffer;
 
             if (!available.IsEmpty)
@@ -239,6 +239,38 @@ sealed class Http2RequestBodyStream(Http2Stream stream, HttpRequest request) : S
 
     public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
         => this.ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+
+    /// <summary>
+    /// One read of the body, under <see cref="HttpServerLimits.RequestBodyTimeout"/> as over
+    /// HTTP/1.1. A client that vanishes mid-upload - a laptop closing, a network handing over - sends
+    /// no reset and no more DATA, and nothing else on HTTP/2 notices: the stream sits open and its
+    /// handler waits for a body that is never coming, holding whatever it holds (a file, a slot).
+    /// Bytes already buffered are returned without a timer.
+    /// </summary>
+    async ValueTask<ReadResult> ReadWithTimeoutAsync(CancellationToken cancellationToken)
+    {
+        var limit = stream.BodyReadTimeout;
+        if (this.reader.TryRead(out var ready))
+            return ready;
+
+        if (limit == Timeout.InfiniteTimeSpan || limit <= TimeSpan.Zero)
+            return await this.reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(limit);
+
+        try
+        {
+            return await this.reader.ReadAsync(timeout.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new BadHttpRequestException(
+                $"The request body was not received within {limit.TotalSeconds:0.#}s.",
+                StatusCodes.Status408RequestTimeout
+            );
+        }
+    }
 
     static BadHttpRequestException TooLarge(long max) => new(
         $"Request body exceeds the {max} byte limit.",

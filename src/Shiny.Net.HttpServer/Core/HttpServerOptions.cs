@@ -352,9 +352,9 @@ public sealed class HttpServerLimits
     public TimeSpan RequestHeadersTimeout { get; set; } = TimeSpan.FromSeconds(30);
 
     /// <summary>
-    /// How long one read of an HTTP/1.1 request body may wait for the client to send more of it,
-    /// 30 seconds by default. A body that stalls past this ends with a 408 and the connection closes.
-    /// <see cref="Timeout.InfiniteTimeSpan"/> turns it off.
+    /// How long one read of a request body may wait for the client to send more of it, 30 seconds by
+    /// default. A body that stalls past this ends with a 408; over HTTP/1.1 the connection closes, over
+    /// HTTP/2 only the stream ends. <see cref="Timeout.InfiniteTimeSpan"/> turns it off.
     /// <para>
     /// It is the gap between bytes, not the time for the whole body: a large upload on a slow link
     /// is fine as long as it keeps moving.
@@ -363,9 +363,11 @@ public sealed class HttpServerLimits
     public TimeSpan RequestBodyTimeout { get; set; } = TimeSpan.FromSeconds(30);
 
     /// <summary>
-    /// How long one write of an HTTP/1.1 response may wait for the client to take the bytes, 60
-    /// seconds by default. A client that stops reading for longer has its connection aborted, and the
-    /// handler's write fails as a client disconnect. <see cref="Timeout.InfiniteTimeSpan"/> turns it off.
+    /// How long one write of a response may wait for the client to take the bytes, 60 seconds by
+    /// default. A client that stops reading for longer has its connection aborted, and the handler's
+    /// write fails as a client disconnect. Over HTTP/2 the wait is for the stream's flow-control
+    /// credit, and only that stream is reset; a connection whose writes stall that long is closed.
+    /// <see cref="Timeout.InfiniteTimeSpan"/> turns it off.
     /// </summary>
     public TimeSpan ResponseWriteTimeout { get; set; } = TimeSpan.FromSeconds(60);
 

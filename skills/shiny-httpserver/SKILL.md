@@ -723,10 +723,10 @@ the OS pick; read it back from `server.ListenUrl`.
   upload route** (`.WithRequestSizeLimit(bytes)` / `[RequestSizeLimit(bytes)]`), not server-wide —
   see Content. HTTP/3 is always held to the server-wide value.
 - `HideExceptionDetails` is on; turn it off in development only.
-- HTTP/1.1 body reads wait at most `Limits.RequestBodyTimeout` (30 s) for more bytes (then 408), and a
+- Body reads wait at most `Limits.RequestBodyTimeout` (30 s) for more bytes (then 408), and a
   response write at most `Limits.ResponseWriteTimeout` (60 s) for the client to read (then the
-  connection is aborted and the write throws `IOException`). Both measure the gap between bytes, not
-  the whole transfer.
+  connection - or, on HTTP/2, just that stream - is aborted and the write throws `IOException`).
+  Both measure the gap between bytes, not the whole transfer, and both apply to HTTP/1.1 and HTTP/2.
 - Response headers are validated where they are set: a CR/LF/NUL in a value or a non-token name throws
   `InvalidOperationException`. Never copy request input into a header unchecked and expect it to go
   out; writing a body on a 204/304 throws too.

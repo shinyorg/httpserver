@@ -115,6 +115,12 @@ sealed class Http2Stream
     /// <summary>Called on the handler's thread with each count of body bytes it reads.</summary>
     public Func<int, ValueTask>? BodyConsumed { get; set; }
 
+    /// <summary>
+    /// How long one read of the request body may wait for the client to send more of it -
+    /// <see cref="HttpServerLimits.RequestBodyTimeout"/>, as over HTTP/1.1.
+    /// </summary>
+    public TimeSpan BodyReadTimeout { get; set; } = Timeout.InfiniteTimeSpan;
+
     public Task? Handler { get; set; }
 
     /// <summary>Cancelled when the peer resets the stream or the connection goes away.</summary>
