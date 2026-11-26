@@ -197,12 +197,15 @@ public sealed class RelayServer : IAsyncDisposable
         await this.controlListener.BindAsync(cancellationToken).ConfigureAwait(false);
         await this.publicListener.BindAsync(cancellationToken).ConfigureAwait(false);
 
+        // The token is read here, not inside the loops: a relay stopped and disposed before they are
+        // scheduled has disposed the source, and the throw would fault a task nobody observes.
+        var token = this.shutdown.Token;
         this.controlLoop = Task.Run(
-            () => this.AcceptLoopAsync(this.controlListener, this.HandleControlAsync, "control"),
+            () => this.AcceptLoopAsync(this.controlListener, this.HandleControlAsync, "control", token),
             CancellationToken.None
         );
         this.publicLoop = Task.Run(
-            () => this.AcceptLoopAsync(this.publicListener, this.HandlePublicAsync, "public"),
+            () => this.AcceptLoopAsync(this.publicListener, this.HandlePublicAsync, "public", token),
             CancellationToken.None
         );
 
@@ -250,11 +253,10 @@ public sealed class RelayServer : IAsyncDisposable
     async Task AcceptLoopAsync(
         SocketConnectionListener listener,
         Func<IConnection, Task> handler,
-        string which
+        string which,
+        CancellationToken token
     )
     {
-        var token = this.shutdown.Token;
-
         while (!token.IsCancellationRequested)
         {
             IConnection? connection;

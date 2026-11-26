@@ -131,8 +131,16 @@ public class RequestSizeLimitTests
         var raised = await test.Client.PostAsync("/upload", Streamed(32 * 1024), Token);
         Assert.Equal("32768", await raised.Content.ReadAsStringAsync(Token));
 
-        var refused = await test.Client.PostAsync("/other", Streamed(32 * 1024), Token);
-        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, refused.StatusCode);
+        // The server answers 413 and closes while the client may still be streaming the body, so the
+        // client either reads the 413 or fails its write with a broken pipe first. Both are a refusal.
+        try
+        {
+            var refused = await test.Client.PostAsync("/other", Streamed(32 * 1024), Token);
+            Assert.Equal(HttpStatusCode.RequestEntityTooLarge, refused.StatusCode);
+        }
+        catch (HttpRequestException ex) when (ex.InnerException is IOException)
+        {
+        }
     }
 
     [Fact]
