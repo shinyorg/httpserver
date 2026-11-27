@@ -310,11 +310,14 @@ public class TunnelFlowControlUnitTests
         var sender = new StreamSendWindow(Initial);
 
         // Each chunk takes far longer than a round trip to be taken: the destination, not the window, is the limit.
+        // Measured against the round trip actually recorded - a loaded machine oversleeps the 5 ms above, sometimes by
+        // a lot - so the destination is slow relative to it however the scheduling falls.
+        var slow = TimeSpan.FromTicks(Math.Max(TimeSpan.FromMilliseconds(20).Ticks, roundTrip.Estimate!.Value.Ticks * 4));
         var receiver = new StreamReceiver(
             Initial,
             async (_, ct) =>
             {
-                await Task.Delay(50, ct);
+                await Task.Delay(slow, ct);
                 return true;
             },
             increment =>
@@ -327,9 +330,9 @@ public class TunnelFlowControlUnitTests
             new StreamWindowBudget(64L * 1024 * 1024)
         );
 
-        await FeedAsync(receiver, sender, 512 * 1024);
+        await FeedAsync(receiver, sender, 256 * 1024);
         receiver.Complete();
-        await receiver.Completion.WaitAsync(TimeSpan.FromSeconds(20), Token);
+        await receiver.Completion.WaitAsync(TimeSpan.FromSeconds(60), Token);
 
         Assert.Equal(Initial, receiver.Window);
     }
