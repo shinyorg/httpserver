@@ -28,6 +28,16 @@ public sealed class RelayServer : IAsyncDisposable
     readonly ConcurrentDictionary<string, TunnelSession> sessions = new(StringComparer.OrdinalIgnoreCase);
     readonly CancellationTokenSource shutdown = new();
 
+    // Captured once: a token stays readable after its source is disposed, but the source's Token property throws, and
+    // a connection accepted as the relay is disposed would fault reading it, leaving its socket open.
+    readonly CancellationToken shutdownToken;
+
+    // Orders a registration against capacity and against a stop: count, stopping check and insert happen as one, so
+    // MaxTunnels cannot be overshot by registrations finishing together, and nothing is registered after StopAsync's
+    // final sweep - which would report TunnelDisconnected after StopAsync had returned.
+    readonly Lock registrationGate = new();
+    bool stopping;
+
     SocketConnectionListener? controlListener;
     SocketConnectionListener? publicListener;
     Task? controlLoop;
@@ -39,6 +49,7 @@ public sealed class RelayServer : IAsyncDisposable
         this.options = options ?? new RelayServerOptions();
         this.loggerFactory = loggerFactory ?? NullLoggerFactory.Instance;
         this.logger = this.loggerFactory.CreateLogger<RelayServer>();
+        this.shutdownToken = this.shutdown.Token;
     }
 
     /// <summary>Hosts currently registered, for diagnostics and admin endpoints.</summary>
@@ -199,7 +210,7 @@ public sealed class RelayServer : IAsyncDisposable
 
         // The token is read here, not inside the loops: a relay stopped and disposed before they are
         // scheduled has disposed the source, and the throw would fault a task nobody observes.
-        var token = this.shutdown.Token;
+        var token = this.shutdownToken;
         this.controlLoop = Task.Run(
             () => this.AcceptLoopAsync(this.controlListener, this.HandleControlAsync, "control", token),
             CancellationToken.None
@@ -223,6 +234,9 @@ public sealed class RelayServer : IAsyncDisposable
 
         // Taken before cancelling: once the token fires, a session's own loop can remove it from
         // the dictionary while it is still closing, and StopAsync must wait for that close too.
+        lock (this.registrationGate)
+            this.stopping = true;
+
         var open = this.sessions.Values.ToArray();
         await this.shutdown.CancelAsync().ConfigureAwait(false);
 
@@ -286,14 +300,30 @@ public sealed class RelayServer : IAsyncDisposable
                     }
                     catch (Exception ex) when (TunnelSession.IsExpectedDisconnect(ex))
                     {
+                        // A handler that failed before taking charge of the connection - the relay stopping under a
+                        // handshake, say - leaves it open; disposing twice is harmless.
+                        await DisposeQuietlyAsync(connection).ConfigureAwait(false);
                     }
                     catch (Exception ex)
                     {
                         this.logger.LogError(ex, "Unhandled error on a {Which} connection", which);
+                        await DisposeQuietlyAsync(connection).ConfigureAwait(false);
                     }
                 },
                 CancellationToken.None
             );
+        }
+    }
+
+    static async ValueTask DisposeQuietlyAsync(IConnection connection)
+    {
+        try
+        {
+            await connection.DisposeAsync().ConfigureAwait(false);
+        }
+        catch
+        {
+            // Already gone.
         }
     }
 
@@ -302,7 +332,7 @@ public sealed class RelayServer : IAsyncDisposable
     async Task HandleControlAsync(IConnection connection)
     {
         var channel = new TunnelChannel(connection.Input, connection.Output);
-        var token = this.shutdown.Token;
+        var token = this.shutdownToken;
 
         var hello = await ReadHelloAsync(connection.Input, token).ConfigureAwait(false);
         if (hello is null)
@@ -345,15 +375,6 @@ public sealed class RelayServer : IAsyncDisposable
             return;
         }
 
-        // Checked again: other registrations may have completed while this one was authorizing.
-        if (this.sessions.Count >= this.options.MaxTunnels)
-        {
-            await channel.SendAsync(TunnelFrameType.HelloReject, 0, "The relay is at capacity.", token)
-                .ConfigureAwait(false);
-            await connection.DisposeAsync().ConfigureAwait(false);
-            return;
-        }
-
         var host = $"{subdomain}.{this.options.Domain}".ToLowerInvariant();
         var tunnel = new RelayTunnel(
             host,
@@ -364,10 +385,20 @@ public sealed class RelayServer : IAsyncDisposable
         );
         var session = new TunnelSession(tunnel, connection, channel);
 
-        if (!this.sessions.TryAdd(host, session))
+        string? refusal;
+        lock (this.registrationGate)
         {
-            await channel.SendAsync(TunnelFrameType.HelloReject, 0, $"'{host}' is already registered.", token)
-                .ConfigureAwait(false);
+            // Checked again, atomically with the insert: other registrations may have completed while this one was
+            // authorizing.
+            refusal = this.stopping ? "The relay is stopping."
+                : this.sessions.Count >= this.options.MaxTunnels ? "The relay is at capacity."
+                : !this.sessions.TryAdd(host, session) ? $"'{host}' is already registered."
+                : null;
+        }
+
+        if (refusal is not null)
+        {
+            await channel.SendAsync(TunnelFrameType.HelloReject, 0, refusal, token).ConfigureAwait(false);
             await connection.DisposeAsync().ConfigureAwait(false);
             return;
         }
@@ -500,7 +531,7 @@ public sealed class RelayServer : IAsyncDisposable
 
     async Task HandlePublicAsync(IConnection connection)
     {
-        var token = this.shutdown.Token;
+        var token = this.shutdownToken;
 
         var head = await this.ReadHeadAsync(connection, this.options.RequestHeadTimeout, token).ConfigureAwait(false);
         if (head is not { Complete: true, Host: { } host })

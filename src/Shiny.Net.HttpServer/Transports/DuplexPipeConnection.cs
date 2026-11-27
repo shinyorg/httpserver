@@ -39,7 +39,12 @@ public sealed class DuplexPipeConnection : IConnection
         PipeOptions? pipeOptions = null
     )
     {
-        var options = pipeOptions ?? new PipeOptions(useSynchronizationContext: false);
+        // Memory from a pool of its own that hands nothing on. Abort completes all four pipe ends from whichever thread
+        // calls it, which returns the pipes' memory while the transport or the app may still be reading a buffer it got
+        // from them. From the shared pool that memory could be rented straight away by another connection's pipe - and
+        // a tunnel would then send one stream's bytes in another stream's frame. Memory nobody else can be given is
+        // only ever read by whoever still holds it, and is collected once they let go.
+        var options = pipeOptions ?? new PipeOptions(pool: UnsharedMemoryPool.Instance, useSynchronizationContext: false);
 
         this.inbound = new Pipe(options);
         this.outbound = new Pipe(options);
@@ -131,4 +136,34 @@ public sealed class DuplexPipeConnection : IConnection
         }
     }
 
+}
+
+/// <summary>
+/// A <see cref="System.Buffers.MemoryPool{T}"/> that allocates every block fresh and never reuses one; see
+/// <see cref="DuplexPipeConnection"/> for why a pipe that can be torn down from another thread needs it.
+/// </summary>
+sealed class UnsharedMemoryPool : System.Buffers.MemoryPool<byte>
+{
+    public static readonly UnsharedMemoryPool Instance = new();
+
+    const int DefaultBlockSize = 4096;
+
+    public override int MaxBufferSize => int.MaxValue;
+
+    public override System.Buffers.IMemoryOwner<byte> Rent(int minBufferSize = -1)
+        => new Block(new byte[minBufferSize <= 0 ? DefaultBlockSize : Math.Max(minBufferSize, DefaultBlockSize)]);
+
+    protected override void Dispose(bool disposing)
+    {
+    }
+
+    sealed class Block(byte[] array) : System.Buffers.IMemoryOwner<byte>
+    {
+        public Memory<byte> Memory { get; } = array;
+
+        // Nothing goes back anywhere: the array is collected once nothing references it.
+        public void Dispose()
+        {
+        }
+    }
 }

@@ -26,6 +26,9 @@ public sealed class Http3Listener : IAsyncDisposable
 
     QuicListener? listener;
     Task? acceptLoop;
+
+    // Connections being served, so a stop waits for their requests to drain instead of leaving them running.
+    readonly System.Collections.Concurrent.ConcurrentDictionary<Task, byte> connections = new();
     int disposed;
 
     public Http3Listener(HttpServer server, Http3Options options, ILoggerFactory? loggerFactory = null)
@@ -118,6 +121,22 @@ public sealed class Http3Listener : IAsyncDisposable
 
             this.acceptLoop = null;
         }
+
+        // Each connection drains its requests within the server's ShutdownTimeout, then gets a few seconds to close.
+        var serving = this.connections.Keys.ToArray();
+        if (serving.Length > 0)
+        {
+            try
+            {
+                await Task.WhenAll(serving)
+                    .WaitAsync(this.server.Options.ShutdownTimeout + TimeSpan.FromSeconds(10), CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+            catch
+            {
+                // Out of time, or a connection that faulted - which it has already logged.
+            }
+        }
     }
 
     public async ValueTask DisposeAsync()
@@ -160,9 +179,10 @@ public sealed class Http3Listener : IAsyncDisposable
         if (quic is null)
             return;
 
-        while (!cancellationToken.IsCancellationRequested)
+        var accepting = true;
+        while (accepting && !cancellationToken.IsCancellationRequested)
         {
-            QuicConnection connection;
+            QuicConnection? connection = null;
 
             try
             {
@@ -170,25 +190,37 @@ public sealed class Http3Listener : IAsyncDisposable
             }
             catch (Exception ex) when (Http3Connection.IsExpectedDisconnect(ex))
             {
-                break;
+                accepting = false;
             }
             catch (Exception ex)
             {
                 this.logger.LogError(ex, "Accepting a QUIC connection failed");
-                continue;
             }
 
-            var http3 = new Http3Connection(
-                connection,
-                this.options,
-                this.server.Options,
-                this.server.BuildPipelineForTransport(),
-                this.server.Services,
-                this.loggerFactory
-            );
-
-            _ = Task.Run(() => http3.ProcessAsync(cancellationToken), CancellationToken.None);
+            if (connection is not null)
+                this.Serve(connection, cancellationToken);
         }
+    }
+
+    void Serve(QuicConnection connection, CancellationToken cancellationToken)
+    {
+        var http3 = new Http3Connection(
+            connection,
+            this.options,
+            this.server.Options,
+            this.server.BuildPipelineForTransport(),
+            this.server.Services,
+            this.loggerFactory
+        );
+
+        var serving = Task.Run(() => http3.ProcessAsync(cancellationToken), CancellationToken.None);
+        this.connections.TryAdd(serving, 0);
+        _ = serving.ContinueWith(
+            done => this.connections.TryRemove(done, out _),
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default
+        );
     }
 }
 

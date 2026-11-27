@@ -18,6 +18,13 @@ public sealed class WebhookOptions
 
     readonly Dictionary<string, IWebhookVerifier> verifiers = new(StringComparer.Ordinal);
 
+    /// <summary>
+    /// Deliveries this process is handling right now. A sender that gives up waiting retries while the first
+    /// attempt still runs; acknowledging that retry as a duplicate would lose the event if the first attempt then
+    /// fails, so it is told to come back instead.
+    /// </summary>
+    internal System.Collections.Concurrent.ConcurrentDictionary<string, byte> InFlight { get; } = new(StringComparer.Ordinal);
+
     public IReadOnlyDictionary<string, IWebhookVerifier> Verifiers => this.verifiers;
 
     /// <summary>

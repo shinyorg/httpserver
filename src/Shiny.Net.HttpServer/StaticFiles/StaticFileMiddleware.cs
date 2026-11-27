@@ -38,11 +38,8 @@ public sealed class StaticFileMiddleware(StaticFileOptions options) : IHttpMiddl
 
         var accepted = this.AcceptedEncodings(context.Request);
 
-        if (this.TryResolve(relative, accepted, out var file, out var contentType))
-        {
-            await this.ServeAsync(context, file, contentType).ConfigureAwait(false);
+        if (await this.ServeResolvedAsync(context, () => (this.TryResolve(relative, accepted, out var file, out var contentType), file, contentType)).ConfigureAwait(false))
             return;
-        }
 
         // The fallback runs *after* the pipeline, not instead of it: a real route for this path
         // must win over the single-page app's catch-all.
@@ -205,14 +202,47 @@ public sealed class StaticFileMiddleware(StaticFileOptions options) : IHttpMiddl
 
     async ValueTask TryServeFallbackAsync(HttpContext context)
     {
-        if (!this.TryResolveFile(this.options.FallbackFile!, this.AcceptedEncodings(context.Request), out var file, out var contentType))
-            return;
+        var accepted = this.AcceptedEncodings(context.Request);
+        (bool, StaticFile, string) Resolve()
+        {
+            var found = this.TryResolveFile(this.options.FallbackFile!, accepted, out var file, out var contentType);
 
-        // The route was not found, but the document that handles it was — the client-side router
-        // will map the URL, so this is a 200 for the app shell rather than a 404 with a body.
-        context.Response.StatusCode = StatusCodes.Status200OK;
+            // The route was not found, but the document that handles it was — the client-side router
+            // will map the URL, so this is a 200 for the app shell rather than a 404 with a body.
+            if (found)
+                context.Response.StatusCode = StatusCodes.Status200OK;
 
-        await this.ServeAsync(context, file, contentType).ConfigureAwait(false);
+            return (found, file, contentType);
+        }
+
+        await this.ServeResolvedAsync(context, Resolve).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Resolves and serves, resolving again when the file changed between being measured and being opened. Bounded:
+    /// a file rewritten continuously gets a few tries, then the failure stands.
+    /// </summary>
+    async ValueTask<bool> ServeResolvedAsync(HttpContext context, Func<(bool Found, StaticFile File, string ContentType)> resolve)
+    {
+        var attempt = 0;
+
+        while (true)
+        {
+            var (found, file, contentType) = resolve();
+            if (!found)
+                return false;
+
+            try
+            {
+                await this.ServeAsync(context, file, contentType).ConfigureAwait(false);
+                return true;
+            }
+            catch (StaticFileChangedException) when (++attempt < 3 && !context.Response.HasStarted)
+            {
+                // Appended rather than set by the serve, so it would otherwise be there twice.
+                context.Response.Headers.Remove(HeaderNames.Vary);
+            }
+        }
     }
 
     async ValueTask ServeAsync(HttpContext context, StaticFile file, string contentType)

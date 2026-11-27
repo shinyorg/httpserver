@@ -123,6 +123,22 @@ static class WebhookPipeline
 
             if (!await store.TryAddAsync(deliveryKey, context.RequestAborted).ConfigureAwait(false))
             {
+                if (options.InFlight.ContainsKey(deliveryKey))
+                {
+                    // Not a duplicate of a delivery that succeeded - one that is still running. If it goes on to fail,
+                    // its key is forgotten and this retry, sent again, is handled.
+                    logger.LogInformation(
+                        "{Verifier} webhook delivery {DeliveryId} is still being handled; asked the sender to retry",
+                        verifier.Name,
+                        deliveryId
+                    );
+
+                    context.Response.StatusCode = StatusCodes.Status409Conflict;
+                    context.Response.Headers.Set(HeaderNames.RetryAfter, "5");
+                    context.Response.ContentLength = 0;
+                    return;
+                }
+
                 logger.LogInformation(
                     "Acknowledged duplicate {Verifier} webhook delivery {DeliveryId} without handling it",
                     verifier.Name,
@@ -135,20 +151,38 @@ static class WebhookPipeline
             }
         }
 
+        if (deliveryKey is not null)
+        {
+            options.InFlight.TryAdd(deliveryKey, 0);
+
+            // A 5xx tells the sender to retry. Forgotten as the response starts, not after the handler returns: a
+            // response with a known length is on the wire before then, and a sender that retries at once reached
+            // the store while the key was still there - its retry acknowledged as a duplicate, the event lost.
+            var key = deliveryKey;
+            context.Response.OnStarting(() => context.Response.StatusCode >= 500
+                ? ForgetAsync(options, key)
+                : ValueTask.CompletedTask);
+        }
+
         try
         {
             await next(context).ConfigureAwait(false);
+
+            // Also here: a response that has not started yet (nothing written) only runs OnStarting after the
+            // pipeline, and the key has to be gone before it stops counting as in flight.
+            if (context.Response.StatusCode >= 500)
+                await ForgetAsync(options, deliveryKey).ConfigureAwait(false);
         }
         catch
         {
             await ForgetAsync(options, deliveryKey).ConfigureAwait(false);
             throw;
         }
-
-        // A 5xx tells the sender to retry. Keeping the id would turn that retry into a "duplicate"
-        // of a delivery that never succeeded, and the event would be lost.
-        if (context.Response.StatusCode >= 500)
-            await ForgetAsync(options, deliveryKey).ConfigureAwait(false);
+        finally
+        {
+            if (deliveryKey is not null)
+                options.InFlight.TryRemove(deliveryKey, out _);
+        }
     }
 
     static ValueTask ForgetAsync(WebhookOptions options, string? deliveryKey)

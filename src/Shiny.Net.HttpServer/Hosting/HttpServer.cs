@@ -709,9 +709,15 @@ public sealed class HttpServer : IAsyncDisposable
         // Fresh tokens for connections served while stopped: a tunnel keeps handing the server
         // connections after the local listener goes, and linking them to the cancelled tokens would
         // close every one of them the moment it arrived.
-        this.stopping = new CancellationTokenSource();
-        this.draining = new CancellationTokenSource();
-        this.aborting = new CancellationTokenSource();
+        // Under the connections lock, which ServeAsync reads them under: a tunnelled connection arriving now gets
+        // both tokens from one generation, never a cancelled drain paired with a fresh abort.
+        lock (this.connectionsLock)
+        {
+            this.stopping = new CancellationTokenSource();
+            this.draining = new CancellationTokenSource();
+            this.aborting = new CancellationTokenSource();
+        }
+
         this.SetState(HttpServerState.Stopped, reason, cause);
     }
 
@@ -880,8 +886,16 @@ public sealed class HttpServer : IAsyncDisposable
         if (this.connectionLimit is not null)
             await this.connectionLimit.WaitAsync(cancellationToken).ConfigureAwait(false);
 
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(this.aborting.Token, cancellationToken);
-        var task = this.ServeConnectionAsync(connection, linked.Token, this.draining.Token);
+        CancellationToken abortToken;
+        CancellationToken drainToken;
+        lock (this.connectionsLock)
+        {
+            abortToken = this.aborting.Token;
+            drainToken = this.draining.Token;
+        }
+
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(abortToken, cancellationToken);
+        var task = this.ServeConnectionAsync(connection, linked.Token, drainToken);
 
         // Tracked so a graceful shutdown drains tunnelled requests exactly like local ones.
         lock (this.connectionsLock)

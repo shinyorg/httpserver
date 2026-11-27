@@ -1,7 +1,9 @@
 using System.Net;
 using Shiny.Net.HttpServer.Caching;
 using Shiny.Net.HttpServer.Http1;
+using Shiny.Net.HttpServer.Idempotency;
 using Shiny.Net.HttpServer.Sessions;
+using Shiny.Net.HttpServer.Sse;
 
 namespace Shiny.Net.HttpServer.Tests;
 
@@ -231,5 +233,110 @@ public class ConcurrencyRegressionTests
         release.SetResult();
         Assert.NotNull(await client.WaitForEndAsync(1, Wait));
         Assert.Null(client.Frames.FirstOrDefault(x => x.Type == Http2RawFrame.GoAway));
+    }
+
+    // ---- Idempotency: a request that overran its claim does not touch the retry's ----
+
+    [Fact]
+    public async Task A_request_that_overran_its_claim_cannot_release_the_retrys()
+    {
+        IIdempotencyStore store = new MemoryIdempotencyStore();
+
+        Assert.Null(await store.TryReserveAsync("k", "fp", "first", TimeSpan.FromMilliseconds(1), Token));
+        await Task.Delay(20, Token);
+
+        // The first overran: the retry takes the key.
+        Assert.Null(await store.TryReserveAsync("k", "fp", "retry", TimeSpan.FromMinutes(5), Token));
+
+        // The first then fails and releases - which must not free the retry's claim for a third request.
+        await store.ReleaseAsync("k", "first", Token);
+
+        var third = await store.TryReserveAsync("k", "fp", "third", TimeSpan.FromMinutes(5), Token);
+        Assert.NotNull(third);
+        Assert.True(third.InFlight);
+        Assert.Equal("retry", third.Owner);
+    }
+
+    [Fact]
+    public async Task A_request_that_overran_its_claim_cannot_store_over_the_retrys()
+    {
+        IIdempotencyStore store = new MemoryIdempotencyStore();
+        var response = new IdempotentResponse(200, [], [1, 2, 3], DateTimeOffset.UtcNow);
+
+        Assert.Null(await store.TryReserveAsync("k", "fp", "first", TimeSpan.FromMilliseconds(1), Token));
+        await Task.Delay(20, Token);
+        Assert.Null(await store.TryReserveAsync("k", "fp", "retry", TimeSpan.FromMinutes(5), Token));
+
+        var stored = await store.CompleteAsync("k", "first", new IdempotencyRecord("fp", response, DateTimeOffset.UtcNow.AddHours(1)), Token);
+
+        Assert.False(stored);
+        var current = await store.TryReserveAsync("k", "fp", "other", TimeSpan.FromMinutes(5), Token);
+        Assert.Equal("retry", current!.Owner);
+        Assert.True(current.InFlight);
+    }
+
+    // ---- Output cache: an invalidation while a response is being captured ----
+
+    [Fact]
+    public async Task A_response_captured_across_an_invalidation_is_not_stored()
+    {
+        var store = new MemoryOutputCacheStore();
+        var now = DateTimeOffset.UtcNow;
+
+        // The GET misses and starts capturing; a writer invalidates the key; the GET then stores what it read.
+        var capturedAt = store.Generation;
+        await store.RemoveAsync("page", Token);
+        await store.SetAsync("page", new OutputCacheEntry(200, [], [1], now, now.AddMinutes(5)), capturedAt, Token);
+
+        Assert.Null(await store.GetAsync("page", Token));
+        Assert.Equal(0, store.SizeInBytes);
+    }
+
+    [Fact]
+    public async Task A_response_captured_with_no_invalidation_is_stored()
+    {
+        var store = new MemoryOutputCacheStore();
+        var now = DateTimeOffset.UtcNow;
+
+        var capturedAt = store.Generation;
+        await store.SetAsync("page", new OutputCacheEntry(200, [], [1], now, now.AddMinutes(5)), capturedAt, Token);
+
+        Assert.NotNull(await store.GetAsync("page", Token));
+    }
+
+    // ---- Server-sent events: a heartbeat beside the producer ----
+
+    [Fact]
+    public async Task Concurrent_sends_on_one_event_stream_keep_every_frame_whole()
+    {
+        const int PerSender = 200;
+
+        await using var server = await TestServer.StartAsync(app => app.MapGet("/events", async ctx =>
+        {
+            var stream = await ServerSentEventStream.StartAsync(ctx, cancellationToken: ctx.RequestAborted);
+
+            // The usual shape: a producer and a heartbeat timer, sending at the same time.
+            await Task.WhenAll(
+                Task.Run(async () =>
+                {
+                    for (var i = 0; i < PerSender; i++)
+                        await stream.SendAsync("data", $"payload-{i}", ctx.RequestAborted);
+                }),
+                Task.Run(async () =>
+                {
+                    for (var i = 0; i < PerSender; i++)
+                        await stream.SendHeartbeatAsync(ctx.RequestAborted);
+                })
+            );
+        }));
+
+        var body = await server.Client.GetStringAsync("/events", Token);
+
+        // Every event intact: each payload line appears exactly once and nothing is spliced into it.
+        for (var i = 0; i < PerSender; i++)
+            Assert.Contains($"event:data\ndata:payload-{i}\n\n", body);
+
+        Assert.Equal(PerSender, body.Split("event:data\n").Length - 1);
+        Assert.Equal(PerSender, body.Split(":ping\n\n").Length - 1);
     }
 }

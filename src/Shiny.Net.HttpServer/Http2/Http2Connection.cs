@@ -1447,8 +1447,9 @@ sealed class Http2Connection
             var connectionSignal = this.connectionWindowAvailable.Task;
 
             var connectionWindow = Interlocked.Read(ref this.connectionSendWindow);
+            var streamWindow = stream.SendWindow;
             var available = (int)Math.Min(
-                Math.Min(stream.SendWindow, connectionWindow),
+                Math.Min(streamWindow, connectionWindow),
                 Math.Min(wanted, this.remoteSettings.MaxFrameSize)
             );
 
@@ -1474,11 +1475,15 @@ sealed class Http2Connection
                     throw this.WriteStalled(stream, limit);
                 }
             }
-            else if (Interlocked.CompareExchange(ref this.connectionSendWindow, connectionWindow - available, connectionWindow) == connectionWindow)
+            else if (stream.TryReserveSendWindow(streamWindow, available))
             {
-                // Only this stream's writer spends its window, so it needs no swap of its own.
-                stream.AdjustSendWindow(-available);
-                return available;
+                // The stream's window first, compare-and-swap against the value read: the read loop moves it too, on a
+                // SETTINGS change. Then the connection's, which every stream spends; losing that race hands the
+                // stream's share back and goes round again.
+                if (Interlocked.CompareExchange(ref this.connectionSendWindow, connectionWindow - available, connectionWindow) == connectionWindow)
+                    return available;
+
+                stream.AdjustSendWindow(available);
             }
         }
     }

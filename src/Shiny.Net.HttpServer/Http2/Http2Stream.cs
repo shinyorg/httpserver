@@ -91,6 +91,14 @@ sealed class Http2Stream
     public long AdjustSendWindow(long delta) => Interlocked.Add(ref this.sendWindow, delta);
 
     /// <summary>
+    /// Spends <paramref name="amount"/> of the send window if it still holds <paramref name="expected"/>. The read loop
+    /// can shrink the window between the writer reading it and spending it - a SETTINGS that lowers
+    /// INITIAL_WINDOW_SIZE - and spending against the old value would put out a DATA frame the peer never allowed.
+    /// </summary>
+    public bool TryReserveSendWindow(long expected, int amount)
+        => Interlocked.CompareExchange(ref this.sendWindow, expected - amount, expected) == expected;
+
+    /// <summary>
     /// How many body bytes the peer may still send us. Spent by the read loop as DATA arrives and
     /// refilled from the handler's thread as it reads, so it is atomic like the send window.
     /// </summary>

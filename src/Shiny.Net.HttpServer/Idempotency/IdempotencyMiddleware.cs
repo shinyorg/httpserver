@@ -105,7 +105,10 @@ public sealed class IdempotencyMiddleware(
         var key = BuildKey(context, clientKey);
         var abort = context.RequestAborted;
 
-        var existing = await this.store.TryReserveAsync(key, fingerprint, this.options.InFlightTimeout, abort).ConfigureAwait(false);
+        // This request's own claim id: a request that overruns InFlightTimeout loses the key to the next retry, and
+        // must not then release or overwrite that retry's claim when it finally finishes.
+        var owner = Guid.NewGuid().ToString("N");
+        var existing = await this.store.TryReserveAsync(key, fingerprint, owner, this.options.InFlightTimeout, abort).ConfigureAwait(false);
 
         if (existing is not null)
         {
@@ -128,7 +131,7 @@ public sealed class IdempotencyMiddleware(
         catch
         {
             // A failure is not an answer. The claim goes, so the client's retry gets to run.
-            await this.store.ReleaseAsync(key, CancellationToken.None).ConfigureAwait(false);
+            await this.store.ReleaseAsync(key, owner, CancellationToken.None).ConfigureAwait(false);
 
             // Nothing has reached the wire, so the error response is written to the connection
             // directly rather than into a buffer that is about to be thrown away.
@@ -143,7 +146,7 @@ public sealed class IdempotencyMiddleware(
         buffer.Seal();
         try
         {
-            await this.RecordAsync(context, key, fingerprint, metadata, buffer).ConfigureAwait(false);
+            await this.RecordAsync(context, key, owner, fingerprint, metadata, buffer).ConfigureAwait(false);
         }
         finally
         {
@@ -153,7 +156,7 @@ public sealed class IdempotencyMiddleware(
         }
     }
 
-    async ValueTask RecordAsync(HttpContext context, string key, string fingerprint, IdempotencyMetadata metadata, BufferingBodyControl buffer)
+    async ValueTask RecordAsync(HttpContext context, string key, string owner, string fingerprint, IdempotencyMetadata metadata, BufferingBodyControl buffer)
     {
         var response = context.Response;
 
@@ -168,7 +171,14 @@ public sealed class IdempotencyMiddleware(
             );
 
             var record = new IdempotencyRecord(fingerprint, stored, now + (metadata.Expiration ?? this.options.Expiration));
-            await this.store.CompleteAsync(key, record, CancellationToken.None).ConfigureAwait(false);
+            if (!await this.store.CompleteAsync(key, owner, record, CancellationToken.None).ConfigureAwait(false))
+            {
+                this.logger.LogWarning(
+                    "{Method} {Path} finished after its idempotency claim had passed to a retry; its response was not stored",
+                    context.Request.Method,
+                    context.Request.Path
+                );
+            }
             return;
         }
 
@@ -182,7 +192,7 @@ public sealed class IdempotencyMiddleware(
             );
         }
 
-        await this.store.ReleaseAsync(key, CancellationToken.None).ConfigureAwait(false);
+        await this.store.ReleaseAsync(key, owner, CancellationToken.None).ConfigureAwait(false);
     }
 
     async ValueTask AnswerFromExistingAsync(HttpContext context, IdempotencyRecord existing, string fingerprint)

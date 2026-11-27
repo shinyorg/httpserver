@@ -60,6 +60,26 @@ public sealed class MemoryOutputCacheStore(long maxBytes = 8 * 1024 * 1024) : IO
     readonly ConcurrentDictionary<string, OutputCacheEntry> entries = new(StringComparer.Ordinal);
     long size;
 
+    // Moved by every removal. A response is captured over the whole of a request; one that read the old data before a
+    // writer invalidated the key would otherwise be stored after the removal, and served stale for its whole duration.
+    long generation;
+
+    /// <summary>Taken when a response starts being captured, and handed back when it is stored.</summary>
+    internal long Generation => Interlocked.Read(ref this.generation);
+
+    /// <summary>
+    /// Stores <paramref name="entry"/> unless something was removed since <paramref name="capturedAt"/>. Checked after
+    /// the store, and the removal moves the generation before it drops: whichever of the two lands second, the stale
+    /// entry does not survive.
+    /// </summary>
+    internal async ValueTask SetAsync(string key, OutputCacheEntry entry, long capturedAt, CancellationToken cancellationToken)
+    {
+        await this.SetAsync(key, entry, cancellationToken).ConfigureAwait(false);
+
+        if (this.Generation != capturedAt)
+            this.Drop(key, entry);
+    }
+
     /// <summary>Bytes of response body currently held.</summary>
     public long SizeInBytes => Interlocked.Read(ref this.size);
 
@@ -100,10 +120,16 @@ public sealed class MemoryOutputCacheStore(long maxBytes = 8 * 1024 * 1024) : IO
         return default;
     }
 
-    public ValueTask<bool> RemoveAsync(string key, CancellationToken cancellationToken) => new(this.Drop(key));
+    public ValueTask<bool> RemoveAsync(string key, CancellationToken cancellationToken)
+    {
+        Interlocked.Increment(ref this.generation);
+        return new(this.Drop(key));
+    }
 
     public ValueTask ClearAsync(CancellationToken cancellationToken)
     {
+        Interlocked.Increment(ref this.generation);
+
         foreach (var key in this.entries.Keys)
             this.Drop(key);
 

@@ -46,6 +46,9 @@ public sealed class OutputCacheMiddleware(OutputCacheOptions options, IOutputCac
             return;
         }
 
+        // Before the handler reads anything, so an invalidation while it runs is seen when the response is stored.
+        var generation = (this.store as MemoryOutputCacheStore)?.Generation;
+
         var buffer = new BufferingBodyControl(context.Response, this.options.MaxBodyBytes);
         context.Response.Bind(buffer);
 
@@ -65,7 +68,7 @@ public sealed class OutputCacheMiddleware(OutputCacheOptions options, IOutputCac
         buffer.Seal();
         try
         {
-            await this.StoreAsync(context, policy, key, buffer).ConfigureAwait(false);
+            await this.StoreAsync(context, policy, key, buffer, generation).ConfigureAwait(false);
         }
         finally
         {
@@ -73,7 +76,7 @@ public sealed class OutputCacheMiddleware(OutputCacheOptions options, IOutputCac
         }
     }
 
-    async ValueTask StoreAsync(HttpContext context, OutputCachePolicy policy, string key, BufferingBodyControl buffer)
+    async ValueTask StoreAsync(HttpContext context, OutputCachePolicy policy, string key, BufferingBodyControl buffer, long? generation)
     {
         if (buffer.Captured is { } body && this.ShouldStore(context, policy))
         {
@@ -86,7 +89,10 @@ public sealed class OutputCacheMiddleware(OutputCacheOptions options, IOutputCac
                 now + policy.Duration
             );
 
-            await this.store.SetAsync(key, entry, CancellationToken.None).ConfigureAwait(false);
+            if (generation is { } capturedAt && this.store is MemoryOutputCacheStore memory)
+                await memory.SetAsync(key, entry, capturedAt, CancellationToken.None).ConfigureAwait(false);
+            else
+                await this.store.SetAsync(key, entry, CancellationToken.None).ConfigureAwait(false);
         }
     }
 

@@ -15,6 +15,10 @@ public sealed class ServerSentEventStream
     readonly HttpContext context;
     readonly StringBuilder builder = new(256);
 
+    // One send at a time. A heartbeat timer beside the producer is the usual way to use this, and two sends at once
+    // shared the builder and the response writer: interleaved frames, or a concurrent flush the writer rejects.
+    readonly SemaphoreSlim sendGate = new(1, 1);
+
     ServerSentEventStream(HttpContext context) => this.context = context;
 
     /// <summary>Cancelled when the client disconnects, which is how an SSE loop knows to stop.</summary>
@@ -64,10 +68,18 @@ public sealed class ServerSentEventStream
     {
         ArgumentNullException.ThrowIfNull(message);
 
-        this.builder.Clear();
-        message.WriteTo(this.builder);
+        await this.sendGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            this.builder.Clear();
+            message.WriteTo(this.builder);
 
-        await this.WriteAsync(this.builder.ToString(), cancellationToken).ConfigureAwait(false);
+            await this.WriteAsync(this.builder.ToString(), cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            this.sendGate.Release();
+        }
     }
 
     /// <summary>Sends a plain data event.</summary>

@@ -44,6 +44,9 @@ sealed class Http1Connection : IRequestBodySource
     CancellationTokenSource? requestAborted;
     bool handlerRunning;
     bool bodyComplete;
+
+    /// <summary>A forgiven body-read deadline whose cancel is still latched on the input pipe.</summary>
+    bool staleCancelPending;
     bool watchForDisconnect;
     bool inputFaulted;
     bool abortRequested;
@@ -309,7 +312,14 @@ sealed class Http1Connection : IRequestBodySource
                 return ReadHeadResult.ConnectionClosed;
 
             if (result.IsCanceled)
-                return ReadHeadResult.ConnectionClosed;
+            {
+                // A cancel left latched by a body-read deadline that was forgiven (the body had arrived) is no reason
+                // to drop the connection: it is consumed here and the read goes on.
+                if (!this.staleCancelPending || !result.Buffer.IsEmpty)
+                    return ReadHeadResult.ConnectionClosed;
+
+                this.staleCancelPending = false;
+            }
         }
     }
 
@@ -774,6 +784,14 @@ sealed class Http1Connection : IRequestBodySource
         try
         {
             result = await input.ReadAsync(cancellationToken).ConfigureAwait(false);
+
+            // A cancel left over from a deadline that was forgiven last time - see below - not a real one.
+            if (this.staleCancelPending && result.IsCanceled && result.Buffer.IsEmpty)
+            {
+                this.staleCancelPending = false;
+                input.AdvanceTo(result.Buffer.Start, result.Buffer.End);
+                result = await input.ReadAsync(cancellationToken).ConfigureAwait(false);
+            }
         }
         catch (Exception ex) when (ex is IOException or System.Net.Sockets.SocketException or ObjectDisposedException)
         {
@@ -783,6 +801,16 @@ sealed class Http1Connection : IRequestBodySource
         finally
         {
             this.readTimer.Stop();
+        }
+
+        if (this.readTimer.Expired && !result.Buffer.IsEmpty)
+        {
+            // The deadline's timer is a callback, and on a busy machine it can run after the bytes it was waiting for
+            // arrived but before this read picked them up. The client met the deadline: the data is served. If the
+            // cancel did not land on this read, it is still latched on the pipe and would cut the next one short.
+            this.readTimer.Forgive();
+            this.staleCancelPending = !result.IsCanceled;
+            return result;
         }
 
         if (this.readTimer.Expired)

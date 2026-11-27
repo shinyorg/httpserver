@@ -139,6 +139,34 @@ public sealed class PhysicalFileSource : IPrecompressedFileSource
         return this.TryResolve(segments, out file);
     }
 
+    /// <summary>
+    /// Opens the file and checks it is still the one that was measured. The length and ETag went into the response
+    /// from a stat taken earlier; a file rewritten in between - an over-the-air bundle update landing - would be served
+    /// cut short or under the old ETag. Nothing has been sent when this runs, so the middleware resolves it again.
+    /// </summary>
+    static FileStream OpenUnchanged(FileInfo measured)
+    {
+        var stream = new FileStream(
+            measured.FullName,
+            new FileStreamOptions
+            {
+                Mode = FileMode.Open,
+                Access = FileAccess.Read,
+                Share = FileShare.Read,
+                Options = FileOptions.Asynchronous | FileOptions.SequentialScan
+            }
+        );
+
+        var length = RandomAccess.GetLength(stream.SafeFileHandle);
+        var modified = File.GetLastWriteTimeUtc(stream.SafeFileHandle);
+
+        if (length == measured.Length && modified == measured.LastWriteTimeUtc)
+            return stream;
+
+        stream.Dispose();
+        throw new StaticFileChangedException(measured.FullName);
+    }
+
     bool TryResolve(string segments, out StaticFile file)
     {
         file = default;
@@ -160,16 +188,7 @@ public sealed class PhysicalFileSource : IPrecompressedFileSource
             // is the same file for caching purposes.
             $"\"{info.LastWriteTimeUtc.Ticks:x}-{info.Length:x}\"",
             info.LastWriteTimeUtc,
-            _ => new ValueTask<Stream>(new FileStream(
-                info.FullName,
-                new FileStreamOptions
-                {
-                    Mode = FileMode.Open,
-                    Access = FileAccess.Read,
-                    Share = FileShare.Read,
-                    Options = FileOptions.Asynchronous | FileOptions.SequentialScan
-                }
-            ))
+            _ => new ValueTask<Stream>(OpenUnchanged(info))
         );
 
         return true;
@@ -399,3 +418,6 @@ static class StaticFilePath
         return true;
     }
 }
+
+/// <summary>The file changed between being measured and being opened; resolve and serve it again.</summary>
+sealed class StaticFileChangedException(string path) : IOException($"'{path}' changed while it was being served.");

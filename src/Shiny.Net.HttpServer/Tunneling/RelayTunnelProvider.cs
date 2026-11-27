@@ -111,59 +111,85 @@ public sealed class RelayTunnelProvider : ITunnelProvider
     async Task<Task> DialAsync(CancellationToken cancellationToken)
     {
         var connectSocket = new Socket(SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
-        await connectSocket.ConnectAsync(this.options.Host, this.options.Port, cancellationToken).ConfigureAwait(false);
+        Task? loop = null;
 
-        Stream stream = new NetworkStream(connectSocket, ownsSocket: false);
-
-        if (this.options.UseTls)
+        try
         {
-            var ssl = new SslStream(
-                stream,
-                leaveInnerStreamOpen: false,
-                this.options.ServerCertificateValidation
+            await connectSocket.ConnectAsync(this.options.Host, this.options.Port, cancellationToken).ConfigureAwait(false);
+
+            Stream stream = new NetworkStream(connectSocket, ownsSocket: false);
+
+            if (this.options.UseTls)
+            {
+                var ssl = new SslStream(
+                    stream,
+                    leaveInnerStreamOpen: false,
+                    this.options.ServerCertificateValidation
+                );
+
+                await ssl.AuthenticateAsClientAsync(
+                    new SslClientAuthenticationOptions
+                    {
+                        TargetHost = this.options.Host,
+                        EnabledSslProtocols = this.options.SslProtocols
+                    },
+                    cancellationToken
+                ).ConfigureAwait(false);
+
+                stream = ssl;
+            }
+
+            this.socket = connectSocket;
+            this.transport = stream;
+
+            var tunnel = new TunnelChannel(
+                PipeReader.Create(stream, new StreamPipeReaderOptions(leaveOpen: true)),
+                PipeWriter.Create(stream, new StreamPipeWriterOptions(leaveOpen: true))
             );
+            this.channel = tunnel;
 
-            await ssl.AuthenticateAsClientAsync(
-                new SslClientAuthenticationOptions
-                {
-                    TargetHost = this.options.Host,
-                    EnabledSslProtocols = this.options.SslProtocols
-                },
-                cancellationToken
-            ).ConfigureAwait(false);
+            var ack = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            this.handshake = ack;
 
-            stream = ssl;
+            // The read loop starts before the handshake is sent, because the acknowledgement comes back
+            // as an ordinary frame — one loop handles registration and traffic alike.
+                loop = Task.Run(() => tunnel.RunAsync(this.HandleFrameAsync, cancellationToken), CancellationToken.None);
+
+            await tunnel
+                .SendAsync(TunnelFrameType.Hello, 0, $"{this.options.Token}\n{this.options.Subdomain}", cancellationToken)
+                .ConfigureAwait(false);
+
+            this.PublicUrl = await ack.Task
+                .WaitAsync(this.options.HandshakeTimeout, cancellationToken)
+                .ConfigureAwait(false);
+
+            this.logger.LogInformation("Tunnel registered at {Url}", this.PublicUrl);
+
+            _ = Task.Run(() => this.KeepAliveAsync(tunnel, cancellationToken), CancellationToken.None);
+
+            return loop;
         }
+        catch
+        {
+            // A dial that fails part way - refused, TLS, a rejected or late handshake - must not leave its socket
+            // open: the relay would keep the subdomain registered to it (a HelloAck that arrives after the handshake
+            // timeout) and the next bind would be refused as already taken. Closing it is what tells the relay.
+            this.channel = null;
+            this.CloseTransport();
+            connectSocket.Dispose();
 
-        this.socket = connectSocket;
-        this.transport = stream;
+            if (loop is not null)
+            {
+                _ = loop.ContinueWith(
+                    static t => _ = t.Exception,
+                    CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default
+                );
+            }
 
-        var tunnel = new TunnelChannel(
-            PipeReader.Create(stream, new StreamPipeReaderOptions(leaveOpen: true)),
-            PipeWriter.Create(stream, new StreamPipeWriterOptions(leaveOpen: true))
-        );
-        this.channel = tunnel;
-
-        var ack = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
-        this.handshake = ack;
-
-        // The read loop starts before the handshake is sent, because the acknowledgement comes back
-        // as an ordinary frame — one loop handles registration and traffic alike.
-        var loop = Task.Run(() => tunnel.RunAsync(this.HandleFrameAsync, cancellationToken), CancellationToken.None);
-
-        await tunnel
-            .SendAsync(TunnelFrameType.Hello, 0, $"{this.options.Token}\n{this.options.Subdomain}", cancellationToken)
-            .ConfigureAwait(false);
-
-        this.PublicUrl = await ack.Task
-            .WaitAsync(this.options.HandshakeTimeout, cancellationToken)
-            .ConfigureAwait(false);
-
-        this.logger.LogInformation("Tunnel registered at {Url}", this.PublicUrl);
-
-        _ = Task.Run(() => this.KeepAliveAsync(tunnel, cancellationToken), CancellationToken.None);
-
-        return loop;
+            throw;
+        }
     }
 
     async Task SuperviseAsync(Task loop)
@@ -284,7 +310,21 @@ public sealed class RelayTunnelProvider : ITunnelProvider
 
         if (!this.streams.TryAdd(streamId, connection))
         {
+            // An id still in use - a stream left over from before a reconnect. Refused, but the relay is told, or its
+            // public client waits out the whole keep-alive timeout for a response that is never coming.
             connection.Abort();
+            if (this.channel is { } channel)
+            {
+                _ = channel.SendAsync(TunnelFrameType.CloseStream, streamId, this.stopping.Token)
+                    .AsTask()
+                    .ContinueWith(
+                        static t => _ = t.Exception,
+                        CancellationToken.None,
+                        TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                        TaskScheduler.Default
+                    );
+            }
+
             return;
         }
 

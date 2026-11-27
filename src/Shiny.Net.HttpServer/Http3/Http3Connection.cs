@@ -33,8 +33,18 @@ sealed class Http3Connection(
 
     long nextConnectionId;
 
+    /// <summary>
+    /// Serves the connection until <paramref name="cancellationToken"/> - the server stopping - or the peer ends it.
+    /// A stop takes no new requests and gives the ones in flight the server's ShutdownTimeout to finish, as HTTP/1.1
+    /// and HTTP/2 do; only then are they cancelled and the connection closed. Closing at once cut every request in
+    /// flight off mid-response and left its handler running against a disposed connection.
+    /// </summary>
     public async Task ProcessAsync(CancellationToken cancellationToken)
     {
+        // Requests are cancelled by this, not by the stop itself, so a stop can let them finish first.
+        using var requestsAborted = new CancellationTokenSource();
+        var requests = new System.Collections.Concurrent.ConcurrentDictionary<Task, byte>();
+
         try
         {
             // The control stream carries SETTINGS and must be opened before anything is sent that
@@ -45,9 +55,21 @@ sealed class Http3Connection(
             {
                 var stream = await connection.AcceptInboundStreamAsync(cancellationToken).ConfigureAwait(false);
 
-                _ = stream.Type == QuicStreamType.Bidirectional
-                    ? Task.Run(() => this.ServeRequestAsync(stream, cancellationToken), CancellationToken.None)
-                    : Task.Run(() => this.ReadUnidirectionalAsync(stream, cancellationToken), CancellationToken.None);
+                if (stream.Type == QuicStreamType.Bidirectional)
+                {
+                    var request = Task.Run(() => this.ServeRequestAsync(stream, requestsAborted.Token), CancellationToken.None);
+                    requests.TryAdd(request, 0);
+                    _ = request.ContinueWith(
+                        done => requests.TryRemove(done, out _),
+                        CancellationToken.None,
+                        TaskContinuationOptions.ExecuteSynchronously,
+                        TaskScheduler.Default
+                    );
+                }
+                else
+                {
+                    _ = Task.Run(() => this.ReadUnidirectionalAsync(stream, requestsAborted.Token), CancellationToken.None);
+                }
             }
         }
         catch (Exception ex) when (IsExpectedDisconnect(ex))
@@ -59,6 +81,12 @@ sealed class Http3Connection(
         }
         finally
         {
+            await DrainAsync(requests, serverOptions.ShutdownTimeout).ConfigureAwait(false);
+            HttpContext.CancelQuietly(requestsAborted);
+
+            // Cancelled requests get a moment to unwind before the connection they write to goes.
+            await DrainAsync(requests, TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+
             try
             {
                 await connection.CloseAsync(Http3ErrorCode.NoError, CancellationToken.None).ConfigureAwait(false);
@@ -68,6 +96,22 @@ sealed class Http3Connection(
             }
 
             await connection.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+    static async Task DrainAsync(System.Collections.Concurrent.ConcurrentDictionary<Task, byte> requests, TimeSpan timeout)
+    {
+        var running = requests.Keys.ToArray();
+        if (running.Length == 0)
+            return;
+
+        try
+        {
+            await Task.WhenAll(running).WaitAsync(timeout).ConfigureAwait(false);
+        }
+        catch
+        {
+            // Out of time, or a request that faulted - which it has already logged. Either way the wait is over.
         }
     }
 

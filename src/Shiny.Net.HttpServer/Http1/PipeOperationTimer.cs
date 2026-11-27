@@ -60,6 +60,16 @@ sealed class PipeOperationTimer : IDisposable
         }
     }
 
+    /// <summary>
+    /// Takes back an expiry that lost its race: the timer came due while the data the operation was waiting for had
+    /// already arrived. The caller has the data, so the deadline was met.
+    /// </summary>
+    public void Forgive()
+    {
+        lock (this.gate)
+            this.expired = false;
+    }
+
     public void Dispose()
     {
         lock (this.gate)

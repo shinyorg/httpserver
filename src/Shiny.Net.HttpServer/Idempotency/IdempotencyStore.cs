@@ -28,6 +28,12 @@ public sealed record IdempotencyRecord(
     DateTimeOffset Expires
 )
 {
+    /// <summary>
+    /// Identifies the request that made the claim, so only that request can complete or release it. Null for a
+    /// record from a store that does not track owners.
+    /// </summary>
+    public string? Owner { get; init; }
+
     /// <summary>True while the first request holding the key has not finished.</summary>
     public bool InFlight => this.Response is null;
 
@@ -68,6 +74,34 @@ public interface IIdempotencyStore
     /// handler threw, answered with a status that is not stored, or wrote a body too large to keep.
     /// </summary>
     ValueTask ReleaseAsync(string key, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Claims <paramref name="key"/> on behalf of <paramref name="owner"/>; otherwise as
+    /// <see cref="TryReserveAsync(string, string, TimeSpan, CancellationToken)"/>.
+    /// <para>
+    /// The owner is what makes an overrun safe. A request that runs past its <paramref name="lease"/> loses the claim
+    /// to the retry that comes next; when it then finishes, the owner-aware <see cref="CompleteAsync(string, string, IdempotencyRecord, CancellationToken)"/>
+    /// and <see cref="ReleaseAsync(string, string, CancellationToken)"/> leave the retry's claim alone. Without
+    /// them the late request releases the retry's claim, and a third request runs the handler alongside the second.
+    /// A store that does not override these keeps the behaviour of the owner-less methods.
+    /// </para>
+    /// </summary>
+    ValueTask<IdempotencyRecord?> TryReserveAsync(string key, string fingerprint, string owner, TimeSpan lease, CancellationToken cancellationToken)
+        => this.TryReserveAsync(key, fingerprint, lease, cancellationToken);
+
+    /// <summary>
+    /// Stores the response if <paramref name="owner"/> still holds the claim. Returns false, storing nothing, when
+    /// the claim has passed to another request.
+    /// </summary>
+    async ValueTask<bool> CompleteAsync(string key, string owner, IdempotencyRecord record, CancellationToken cancellationToken)
+    {
+        await this.CompleteAsync(key, record, cancellationToken).ConfigureAwait(false);
+        return true;
+    }
+
+    /// <summary>Gives up the claim if <paramref name="owner"/> still holds it.</summary>
+    ValueTask ReleaseAsync(string key, string owner, CancellationToken cancellationToken)
+        => this.ReleaseAsync(key, cancellationToken);
 }
 
 /// <summary>
@@ -133,6 +167,71 @@ public sealed class MemoryIdempotencyStore(long maxBytes = 4 * 1024 * 1024, int 
             this.records[key] = new IdempotencyRecord(fingerprint, null, now + lease);
             return new ValueTask<IdempotencyRecord?>((IdempotencyRecord?)null);
         }
+    }
+
+    public ValueTask<IdempotencyRecord?> TryReserveAsync(string key, string fingerprint, string owner, TimeSpan lease, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        ArgumentNullException.ThrowIfNull(fingerprint);
+        ArgumentNullException.ThrowIfNull(owner);
+
+        var now = DateTimeOffset.UtcNow;
+
+        lock (this.gate)
+        {
+            if (this.records.TryGetValue(key, out var existing))
+            {
+                if (!existing.IsExpired(now))
+                    return new ValueTask<IdempotencyRecord?>(existing);
+
+                this.Drop(key);
+            }
+
+            this.records[key] = new IdempotencyRecord(fingerprint, null, now + lease) { Owner = owner };
+            return new ValueTask<IdempotencyRecord?>((IdempotencyRecord?)null);
+        }
+    }
+
+    public ValueTask<bool> CompleteAsync(string key, string owner, IdempotencyRecord record, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        ArgumentNullException.ThrowIfNull(owner);
+        ArgumentNullException.ThrowIfNull(record);
+
+        lock (this.gate)
+        {
+            // Only over this owner's own claim. A claim that expired and went to a retry is the retry's now, and
+            // overwriting it - or a response the retry already stored - would answer the retry with this one's result.
+            // A claim that expired with nobody taking it over is still this owner's to complete.
+            var mine = !this.records.TryGetValue(key, out var existing)
+                || (existing.InFlight && existing.Owner == owner);
+
+            if (!mine)
+                return new ValueTask<bool>(false);
+
+            this.Drop(key);
+
+            this.records[key] = record with { Owner = owner };
+            this.size += record.Response?.Body.Length ?? 0;
+
+            this.Trim();
+        }
+
+        return new ValueTask<bool>(true);
+    }
+
+    public ValueTask ReleaseAsync(string key, string owner, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        ArgumentNullException.ThrowIfNull(owner);
+
+        lock (this.gate)
+        {
+            if (this.records.TryGetValue(key, out var existing) && existing.InFlight && existing.Owner == owner)
+                this.Drop(key);
+        }
+
+        return default;
     }
 
     public ValueTask CompleteAsync(string key, IdempotencyRecord record, CancellationToken cancellationToken)
