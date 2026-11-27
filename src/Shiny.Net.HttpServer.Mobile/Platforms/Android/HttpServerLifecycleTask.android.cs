@@ -10,19 +10,11 @@ public partial class HttpServerLifecycleTask
     /// <summary>Set by the service itself as Android brings it up and tears it down, so this is the fact rather than the intent.</summary>
     static partial bool BackgroundExecutionIsActive => HttpServerForegroundService.IsStarted;
 
+    // Decided against what has been asked for as well as what is up - see the service for why
+    // IsStarted alone left the notification up when a foreground followed a background closely.
     partial void StartBackgroundExecutionPlatform()
-    {
-        if (HttpServerForegroundService.IsStarted)
-            return;
-
-        Host.Platform.StartService(typeof(HttpServerForegroundService));
-    }
+        => HttpServerForegroundService.RequestStart(static () => Host.Platform.StartService(typeof(HttpServerForegroundService)));
 
     partial void StopBackgroundExecutionPlatform()
-    {
-        if (!HttpServerForegroundService.IsStarted)
-            return;
-
-        Host.Platform.StopService(typeof(HttpServerForegroundService));
-    }
+        => HttpServerForegroundService.RequestStop(static () => Host.Platform.StopService(typeof(HttpServerForegroundService)));
 }

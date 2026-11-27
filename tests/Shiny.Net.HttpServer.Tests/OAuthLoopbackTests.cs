@@ -161,6 +161,43 @@ public class OAuthLoopbackTests
         await Assert.ThrowsAsync<TimeoutException>(() => listener.WaitAsync(Token));
     }
 
+    /// <summary>
+    /// A dispose from elsewhere - the app's sign-in screen closing - used to leave a WaitAsync with no
+    /// timeout waiting forever for a callback the stopped server could no longer receive.
+    /// </summary>
+    [Fact]
+    public async Task Disposing_ends_a_pending_wait()
+    {
+        var listener = await LoopbackCallbackListener.StartAsync(new() { Timeout = null }, Token);
+        var wait = listener.WaitAsync(Token);
+
+        await listener.DisposeAsync();
+
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => wait.WaitAsync(TimeSpan.FromSeconds(10), Token));
+    }
+
+    /// <summary>
+    /// The browser must not say "Signed in" for a code the app has stopped waiting for: the user goes
+    /// back to an app that is showing a timeout.
+    /// </summary>
+    [Fact]
+    public async Task A_callback_after_the_timeout_is_told_the_sign_in_expired()
+    {
+        await using var listener = await LoopbackCallbackListener.StartAsync(new() { Timeout = TimeSpan.FromMilliseconds(50) }, Token);
+        await Assert.ThrowsAsync<TimeoutException>(() => listener.WaitAsync(Token));
+
+        using var browser = Browser();
+        var response = await browser.GetAsync($"{listener.RedirectUri}?code=late&state={Uri.EscapeDataString(listener.State)}", Token);
+        var page = await response.Content.ReadAsStringAsync(Token);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("Sign-in expired", page);
+        Assert.DoesNotContain("Signed in", page);
+
+        // And the sign-in stays over for anyone who asks again.
+        await Assert.ThrowsAsync<TimeoutException>(() => listener.WaitAsync(Token));
+    }
+
     [Fact]
     public async Task Cancellation_is_not_reported_as_a_timeout()
     {

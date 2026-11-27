@@ -62,9 +62,11 @@ sealed class ServerTransitionRunner(HttpServerLifecycleOptions options, ILogger 
             // into an ObjectDisposedException on a thread with nobody to report it to.
             this.current?.Cancel();
             this.current = cancel = new CancellationTokenSource();
-        }
 
-        this.Completion = Task.Run(() => this.RunAsync(operation, transition, cancel.Token));
+            // Published under the lock, so CancelAsync never waits on a run older than the one it
+            // has just cancelled.
+            this.Completion = Task.Run(() => this.RunAsync(operation, transition, cancel.Token));
+        }
     }
 
     /// <summary>
@@ -81,6 +83,29 @@ sealed class ServerTransitionRunner(HttpServerLifecycleOptions options, ILogger 
             this.current?.Cancel();
             this.current = null;
         }
+    }
+
+    /// <summary>
+    /// Abandons whatever is in flight and waits for it to unwind.
+    /// <para>
+    /// Cancelling only asks. A restart that is already past the point where it looks at its token
+    /// goes on to bind the listener, and a stop issued alongside it can land first and be undone a
+    /// moment later. A stop that must stick waits for this before it stops.
+    /// </para>
+    /// </summary>
+    public Task CancelAsync()
+    {
+        Task completion;
+
+        lock (this.sync)
+        {
+            this.current?.Cancel();
+            this.current = null;
+            completion = this.Completion;
+        }
+
+        // RunAsync catches everything it can raise, so there is no fault to observe here.
+        return completion;
     }
 
     public void Dispose()

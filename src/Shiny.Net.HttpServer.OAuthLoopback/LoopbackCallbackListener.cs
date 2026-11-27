@@ -28,13 +28,20 @@ public sealed class LoopbackCallbackListener : IAsyncDisposable
     const string FormPost = "form_post";
     const string Query = "query";
 
+    // The one-way states of the sign-in this listener is for. A callback moves it from Waiting to
+    // Claimed; a timeout or a dispose moves it from Waiting to Abandoned. Whichever gets there first
+    // decides both what the app is told and what the browser is shown, so the two cannot disagree.
+    const int Waiting = 0;
+    const int Claimed = 1;
+    const int Abandoned = 2;
+
     readonly HttpServer server;
     readonly LoopbackCallbackOptions options;
     readonly ILogger logger;
     readonly TaskCompletionSource<LoopbackCallbackResult> completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
     readonly byte[] expectedState;
     int completed;
-    bool disposed;
+    volatile bool disposed;
 
     LoopbackCallbackListener(LoopbackCallbackOptions options, string state)
     {
@@ -134,7 +141,9 @@ public sealed class LoopbackCallbackListener : IAsyncDisposable
     /// <summary>
     /// Waits for the callback. Completes with the provider's answer — success or an OAuth error —
     /// and throws <see cref="TimeoutException"/> when <see cref="LoopbackCallbackOptions.Timeout"/>
-    /// passes first, or <see cref="OperationCanceledException"/> when cancelled.
+    /// passes first, <see cref="OperationCanceledException"/> when cancelled, or
+    /// <see cref="ObjectDisposedException"/> when the listener is disposed while it waits. Once it has
+    /// timed out the sign-in is over: a callback that arrives later is shown that it expired.
     /// </summary>
     public async Task<LoopbackCallbackResult> WaitAsync(CancellationToken cancellationToken = default)
     {
@@ -150,7 +159,17 @@ public sealed class LoopbackCallbackListener : IAsyncDisposable
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            throw new TimeoutException($"No OAuth callback arrived at {this.RedirectUri} within {this.options.Timeout}.");
+            var timedOut = new TimeoutException($"No OAuth callback arrived at {this.RedirectUri} within {this.options.Timeout}.");
+
+            // A callback that claimed the sign-in as the timer ran out has already told the browser it
+            // worked, and is only finishing the page. The app gets it rather than a timeout.
+            if (Interlocked.CompareExchange(ref this.completed, Abandoned, Waiting) == Claimed)
+                return await this.completion.Task.ConfigureAwait(false);
+
+            // The sign-in is over. A callback arriving now is told so instead of "Signed in" for a
+            // result nobody is waiting for, and a later WaitAsync gets this same timeout.
+            this.completion.TrySetException(timedOut);
+            throw timedOut;
         }
     }
 
@@ -161,6 +180,14 @@ public sealed class LoopbackCallbackListener : IAsyncDisposable
             return;
 
         this.disposed = true;
+
+        // Abandoned before the server stops, so a WaitAsync still pending - possibly with no timeout,
+        // on another thread - ends now instead of waiting forever for a callback that cannot arrive,
+        // and a callback racing the stop is told the sign-in is over rather than that it worked. One
+        // that already claimed it is left to finish: the drain below lets its page reach the browser,
+        // and it completes the waiter itself.
+        if (Interlocked.CompareExchange(ref this.completed, Abandoned, Waiting) == Waiting)
+            this.completion.TrySetException(new ObjectDisposedException(nameof(LoopbackCallbackListener)));
 
         // Bounded: a browser holding a keep-alive connection open must not hold up the app.
         using var drain = new CancellationTokenSource(TimeSpan.FromSeconds(5));
@@ -220,11 +247,20 @@ public sealed class LoopbackCallbackListener : IAsyncDisposable
 
         var result = new LoopbackCallbackResult(parameters, responseMode, this.BuildCallbackUri(request, parameters, responseMode));
 
-        if (Interlocked.Exchange(ref this.completed, 1) == 1)
+        switch (Interlocked.CompareExchange(ref this.completed, Claimed, Waiting))
         {
-            // A refresh of the completion page, or the browser replaying the redirect.
-            await response.WriteAsync(RenderMessage("Already signed in", "You can close this window and return to the app."), "text/html; charset=utf-8").ConfigureAwait(false);
-            return;
+            case Claimed:
+                // A refresh of the completion page, or the browser replaying the redirect.
+                await response.WriteAsync(RenderMessage("Already signed in", "You can close this window and return to the app."), "text/html; charset=utf-8").ConfigureAwait(false);
+                return;
+
+            case Abandoned:
+                // The app timed out or disposed the listener. Saying "Signed in" here would send the
+                // user back to an app that never got the code.
+                this.logger.LogWarning("An OAuth callback arrived after the sign-in was abandoned");
+                response.StatusCode = StatusCodes.Status400BadRequest;
+                await response.WriteAsync(RenderMessage("Sign-in expired", "This sign-in is no longer in progress. Return to the app and start again."), "text/html; charset=utf-8").ConfigureAwait(false);
+                return;
         }
 
         try

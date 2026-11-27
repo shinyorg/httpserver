@@ -214,6 +214,46 @@ public class HttpServerAdvertiserTests
         Assert.Equal(1, mdns.GoodbyesSent);
     }
 
+    /// <summary>
+    /// A network change the server was already reporting when the app stopped advertising. The
+    /// unsubscribe does not reach a handler that has started, so its work takes a stamp after the
+    /// stop's - newer, as far as the stamps can tell - and used to put the record back up.
+    /// </summary>
+    [Fact]
+    public async Task A_network_change_in_flight_does_not_republish_after_a_stop()
+    {
+        var mdns = new FakeMdns();
+        await using var test = await TestServer.StartAsync(server => { });
+
+        await using var advertiser = new HttpServerAdvertiser(mdns, test.Server, FastRetries());
+        await advertiser.StartAsync(Token);
+        await advertiser.StopAsync(Token);
+
+        // Stamped after the stop, the way the in-flight handler's is.
+        await advertiser.ReannounceAsync(advertiser.Next());
+        await advertiser.ApplyStateAsync(advertiser.Next(), new HttpServerStateChange(HttpServerState.Running, HttpServerStateReason.Requested));
+
+        Assert.Null(advertiser.Publication);
+        Assert.Single(mdns.Published);
+        Assert.Equal(1, mdns.GoodbyesSent);
+    }
+
+    /// <summary>Stopped is not final: advertising again after a stop publishes again.</summary>
+    [Fact]
+    public async Task Advertises_again_when_started_after_a_stop()
+    {
+        var mdns = new FakeMdns();
+        await using var test = await TestServer.StartAsync(server => { });
+
+        await using var advertiser = new HttpServerAdvertiser(mdns, test.Server, FastRetries());
+        await advertiser.StartAsync(Token);
+        await advertiser.StopAsync(Token);
+        await advertiser.StartAsync(Token);
+
+        Assert.NotNull(advertiser.Publication);
+        Assert.Equal(2, mdns.Published.Count);
+    }
+
     /// <summary>The shipped policy with the waiting taken out of it.</summary>
     static HttpServerAdvertisementOptions FastRetries() => new()
     {

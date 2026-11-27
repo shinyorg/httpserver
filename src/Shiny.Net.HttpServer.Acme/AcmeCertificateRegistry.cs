@@ -148,10 +148,15 @@ public sealed class AcmeCertificateRegistry : IAsyncDisposable
             manager.CertificateChanged += (_, certificate) => this.OnCertificateChanged(entry, certificate);
             manager.IssuanceFailed += (_, exception) => this.OnIssuanceFailed(entry, exception);
 
+            // Set before the entry is published, not after. Find reads the dictionary without this
+            // lock, so an IssueAsync on another thread could otherwise see the entry with the default,
+            // already-completed Loading, order without waiting for the load, and then have the load
+            // land on top of what it issued. LoadEntryAsync yields before touching anything, so
+            // starting it first does not let it run ahead of the publish.
+            entry.Loading = this.LoadEntryAsync(entry);
+
             this.entries[name] = entry;
             this.RebuildIndex();
-
-            entry.Loading = this.LoadEntryAsync(entry);
         }
 
         if (previous is not null)

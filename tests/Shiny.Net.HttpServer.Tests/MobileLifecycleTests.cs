@@ -371,3 +371,162 @@ public class AppleLocalNetworkRequirementsTests
         Assert.Empty(notes);
     }
 }
+
+
+/// <summary>
+/// The foreground and background transitions, and the connectivity rebinds, applied one at a time.
+/// <para>
+/// Each platform callback hands its transition to the thread pool, and they used to run there side
+/// by side: a foreground arriving while the background stop was still draining asked "did the
+/// lifecycle stop this?" before the stop had said so, did nothing, and left the app in the
+/// foreground with its server off. A rebind that had looked before a background stop restarted the
+/// server just after it. The coordinator is outside the <c>PLATFORM</c> guard, so the transitions
+/// can be driven here with the platform's part stubbed.
+/// </para>
+/// </summary>
+public class ServerLifecycleCoordinatorTests
+{
+    static CancellationToken Token => TestContext.Current.CancellationToken;
+
+    static HttpServerLifecycleOptions Fast() => new()
+    {
+        RestartAttempts = 3,
+        RestartRetryDelay = TimeSpan.FromMilliseconds(5),
+        MaxRestartRetryDelay = TimeSpan.FromMilliseconds(20)
+    };
+
+    static ServerLifecycleCoordinator Create(HttpServer server, ServerTransitionRunner runner, Func<bool?> isInForeground) => new(
+        server,
+        Fast(),
+        runner,
+        new RecordingLogger<ServerLifecycleCoordinatorTests>(),
+        isInForeground,
+        supportsBackgroundExecution: true,
+        startBackgroundExecution: () => { },
+        stopBackgroundExecution: () => { }
+    );
+
+    [Fact]
+    public async Task A_foreground_during_the_background_drain_starts_the_server_once_the_stop_finishes()
+    {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var draining = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        await using var server = new HttpServer(new HttpServerOptions { Port = 0, Address = IPAddress.Loopback });
+        server.MapGet("/slow", async ctx =>
+        {
+            entered.TrySetResult();
+            await release.Task;
+            await ctx.Response.WriteAsync("done");
+        });
+        server.StateChanged += (_, state) =>
+        {
+            if (state == HttpServerState.Stopping)
+                draining.TrySetResult();
+        };
+        await server.StartAsync(Token);
+
+        using var runner = new ServerTransitionRunner(Fast(), new RecordingLogger<ServerLifecycleCoordinatorTests>());
+        bool? foreground = true;
+        using var coordinator = Create(server, runner, () => foreground);
+
+        // A request in flight is what holds the stop in its drain - the window the foreground lands in.
+        using var client = new HttpClient { BaseAddress = new Uri(server.ListenUrl!) };
+        var request = client.GetStringAsync("/slow", Token);
+        await entered.Task;
+
+        foreground = false;
+        var background = coordinator.ApplyAsync();
+        await draining.Task;
+
+        foreground = true;
+        var foregrounding = coordinator.ApplyAsync();
+
+        // Queued behind the stop rather than racing it.
+        Assert.False(foregrounding.IsCompleted);
+
+        release.SetResult();
+        Assert.Equal("done", await request);
+        await background;
+        await foregrounding;
+        await runner.Completion;
+
+        Assert.True(server.IsRunning);
+    }
+
+    [Fact]
+    public async Task A_rebind_that_looked_before_a_background_stop_does_not_restart_the_server_after_it()
+    {
+        await using var server = new HttpServer(new HttpServerOptions { Port = 0, Address = IPAddress.Loopback });
+        await server.StartAsync(Token);
+
+        using var runner = new ServerTransitionRunner(Fast(), new RecordingLogger<ServerLifecycleCoordinatorTests>());
+        bool? foreground = true;
+        using var coordinator = Create(server, runner, () => foreground);
+
+        var asked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var answer = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        // The address diff is the step the settle takes between "is it running?" and the restart.
+        // Holding it open is holding the old race open.
+        var rebind = Task.Run(() => coordinator.TryRebindAsync(() =>
+        {
+            asked.TrySetResult();
+            return answer.Task.GetAwaiter().GetResult();
+        }), Token);
+        await asked.Task;
+
+        foreground = false;
+        var background = coordinator.ApplyAsync();
+        Assert.False(background.IsCompleted);
+
+        answer.SetResult(true);
+        Assert.True(await rebind);
+        await background;
+        await runner.Completion;
+
+        Assert.False(server.IsRunning);
+
+        // Whether the stop caught the restart before or after it bound, the server was meant to be up,
+        // so coming back puts it back.
+        foreground = true;
+        await coordinator.ApplyAsync();
+        await runner.Completion;
+
+        Assert.True(server.IsRunning);
+    }
+
+    [Fact]
+    public async Task No_rebind_once_the_app_is_backgrounded_with_the_stop_still_queued()
+    {
+        await using var server = new HttpServer(new HttpServerOptions { Port = 0, Address = IPAddress.Loopback });
+        await server.StartAsync(Token);
+
+        using var runner = new ServerTransitionRunner(Fast(), new RecordingLogger<ServerLifecycleCoordinatorTests>());
+        using var coordinator = Create(server, runner, () => false);
+
+        var asked = false;
+        var rebound = await coordinator.TryRebindAsync(() => asked = true);
+
+        Assert.False(rebound);
+        Assert.False(asked);
+        await server.StopAsync(Token);
+    }
+
+    [Fact]
+    public async Task A_background_transition_applied_after_the_app_came_back_leaves_the_server_running()
+    {
+        await using var server = new HttpServer(new HttpServerOptions { Port = 0, Address = IPAddress.Loopback });
+        await server.StartAsync(Token);
+
+        using var runner = new ServerTransitionRunner(Fast(), new RecordingLogger<ServerLifecycleCoordinatorTests>());
+
+        // The background callback's work reached the coordinator only after the foreground callback
+        // had already landed: it applies where the app is, not where it was.
+        using var coordinator = Create(server, runner, () => true);
+        await coordinator.ApplyAsync();
+
+        Assert.True(server.IsRunning);
+    }
+}

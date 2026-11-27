@@ -113,7 +113,13 @@ public sealed class HttpServerAdvertiser : IHttpServerAdvertiser
     readonly SemaphoreSlim gate = new(1, 1);
 
     int advertisedPort;
+
     bool started;
+
+    // Read inside the gate by every publish. Set by StopAsync before it unsubscribes, so a handler the
+    // server was already running when the stop came in - an unsubscribe does not reach one that has
+    // started - finds the advertiser stopped by the time its work reaches the gate.
+    volatile bool stopped;
 
     // Stamped on the thread that caused the change and compared again once the work reaches the
     // front of the gate. See OnStateChanged for what goes wrong without it.
@@ -146,6 +152,7 @@ public sealed class HttpServerAdvertiser : IHttpServerAdvertiser
             return;
 
         this.started = true;
+        this.stopped = false;
 
         // Both hooks matter and for different reasons: StateTransitioned covers a server that is
         // toggled by a button or restarted onto a new port, and NetworkAddressesChanged covers the
@@ -163,6 +170,7 @@ public sealed class HttpServerAdvertiser : IHttpServerAdvertiser
     public async Task StopAsync(CancellationToken cancellationToken = default)
     {
         this.started = false;
+        this.stopped = true;
         this.server.StateTransitioned -= this.OnStateChanged;
         this.server.NetworkAddressesChanged -= this.OnAddressesChanged;
 
@@ -171,11 +179,10 @@ public sealed class HttpServerAdvertiser : IHttpServerAdvertiser
         await this.WithdrawAsync(this.Next()).ConfigureAwait(false);
     }
 
-    public async ValueTask DisposeAsync()
-    {
-        await this.StopAsync(CancellationToken.None).ConfigureAwait(false);
-        this.gate.Dispose();
-    }
+    // The gate is not disposed: nothing reads its wait handle, and a handler still in flight when the
+    // advertiser is disposed would otherwise fail on it and log an error for an advertiser that has
+    // already been told to go away. With the gate intact it reaches the stopped check and does nothing.
+    public async ValueTask DisposeAsync() => await this.StopAsync(CancellationToken.None).ConfigureAwait(false);
 
     void OnStateChanged(object? sender, HttpServerStateChange change)
     {
@@ -239,17 +246,19 @@ public sealed class HttpServerAdvertiser : IHttpServerAdvertiser
 
         var stamp = this.Next();
 
-        _ = Task.Run(async () =>
+        _ = Task.Run(() => this.ReannounceAsync(stamp));
+    }
+
+    internal async Task ReannounceAsync(long stamp)
+    {
+        try
         {
-            try
-            {
-                await this.PublishAsync(stamp, CancellationToken.None, force: true).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                this.logger.LogError(ex, "Failed to re-announce the mDNS advertisement after a network change");
-            }
-        });
+            await this.PublishAsync(stamp, CancellationToken.None, force: true).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            this.logger.LogError(ex, "Failed to re-announce the mDNS advertisement after a network change");
+        }
     }
 
     /// <summary>The stamp for one request to change the advertisement. Taken on the thread that caused it.</summary>
@@ -276,6 +285,15 @@ public sealed class HttpServerAdvertiser : IHttpServerAdvertiser
             if (this.Superseded(stamp))
             {
                 this.logger.LogDebug("Skipping a stale advertisement update; a newer one has already been applied");
+                return;
+            }
+
+            // The stamp alone does not cover this. A network change or a Running already being handled
+            // when StopAsync ran takes its stamp after the stop's, so it looks newer than the
+            // withdrawal and would put the record back up for an app that asked for it to come down.
+            if (this.stopped)
+            {
+                this.logger.LogDebug("Skipping an advertisement update that arrived after the advertiser was stopped");
                 return;
             }
 

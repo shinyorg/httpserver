@@ -34,17 +34,76 @@ public class HttpServerForegroundService : ShinyAndroidForegroundService
     /// <summary>True while the service is holding the process up.</summary>
     public static bool IsStarted { get; private set; }
 
+    // The last start or stop intent posted that the service has not acted on yet, or null when it
+    // has caught up. Starting and stopping only post intents - the service comes up or goes down on
+    // the main looper some time later - so IsStarted alone answers "is it up now?", not "will it be
+    // up once what was asked for lands?". Deciding on IsStarted skipped the stop for a start still on
+    // its way, and the service then came up and held its notification over an app in the foreground.
+    // Intents to one service are delivered in the order they were posted, so the last one posted is
+    // the state the service will settle in.
+    static readonly object requestLock = new();
+    static bool? pendingStart;
+
+    /// <summary>Posts a start unless the service is up, or on its way up, with no stop behind it.</summary>
+    internal static void RequestStart(Action post)
+    {
+        lock (requestLock)
+        {
+            // A start that is still pending is posted again rather than trusted: one Android refused
+            // inside the service never reaches OnStart, and would otherwise block every later start.
+            // A second start intent to a service that is up just rebuilds the same notification.
+            if (IsStarted && pendingStart != false)
+                return;
+
+            post();
+            pendingStart = true;
+        }
+    }
+
+    /// <summary>Posts a stop if the service is up or on its way up, and no stop is already on its way.</summary>
+    internal static void RequestStop(Action post)
+    {
+        lock (requestLock)
+        {
+            // A second stop behind the first is worse than redundant: the first destroys the
+            // service, and the second, being a start intent with a stop action, creates it again -
+            // promoted to the foreground, notification and all - only to stop it.
+            if (pendingStart == false)
+                return;
+
+            if (pendingStart is null && !IsStarted)
+                return;
+
+            post();
+            pendingStart = false;
+        }
+    }
+
     protected override ForegroundService StartForegroundServiceType => ForegroundService.TypeDataSync;
 
     protected override void OnStart(Intent? intent)
     {
-        IsStarted = true;
+        lock (requestLock)
+        {
+            IsStarted = true;
+
+            // Only the start it answers is cleared: a stop posted behind it is still on its way.
+            if (pendingStart == true)
+                pendingStart = null;
+        }
+
         Log()?.LogInformation("The foreground service is up; the process will be held for as long as it runs");
     }
 
     protected override void OnStop()
     {
-        IsStarted = false;
+        lock (requestLock)
+        {
+            IsStarted = false;
+
+            if (pendingStart == false)
+                pendingStart = null;
+        }
 
         // The service can go without anyone in this library asking. Android stops it when the user
         // swipes the task away, when the notification permission is revoked, when the OS decides the

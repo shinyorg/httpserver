@@ -25,25 +25,45 @@ sealed class AcmeChallengeResponder
     public static readonly SslApplicationProtocol AcmeTls1 = new("acme-tls/1");
 
     readonly ConcurrentDictionary<string, string> http = new(StringComparer.Ordinal);
-    readonly ConcurrentDictionary<string, X509Certificate2> tlsAlpn = new(StringComparer.OrdinalIgnoreCase);
+    // Per name, every TLS-ALPN-01 certificate currently pending, newest last. A list rather than one
+    // slot because a registry's entries share this responder and may cover the same name: two orders
+    // validating it at once each add their own certificate, and with one slot the second overwrote -
+    // and disposed - the first's mid-validation, and the first's cleanup then removed the second's.
+    readonly Dictionary<string, List<X509Certificate2>> tlsAlpn = new(StringComparer.OrdinalIgnoreCase);
 
     public void AddHttp(string token, string keyAuthorization) => this.http[token] = keyAuthorization;
 
     public void RemoveHttp(string token) => this.http.TryRemove(token, out _);
 
-    public void AddTlsAlpn(string name, string keyAuthorization)
+    /// <summary>Adds a TLS-ALPN-01 certificate for <paramref name="name"/>; hand the result back to <see cref="RemoveTlsAlpn"/>.</summary>
+    public X509Certificate2 AddTlsAlpn(string name, string keyAuthorization)
     {
         var certificate = CreateTlsAlpnCertificate(name, keyAuthorization);
-        if (this.tlsAlpn.TryGetValue(name, out var old))
-            old.Dispose();
 
-        this.tlsAlpn[name] = certificate;
+        lock (this.tlsAlpn)
+        {
+            if (!this.tlsAlpn.TryGetValue(name, out var pending))
+            {
+                pending = [];
+                this.tlsAlpn[name] = pending;
+            }
+
+            pending.Add(certificate);
+        }
+
+        return certificate;
     }
 
-    public void RemoveTlsAlpn(string name)
+    /// <summary>Removes the certificate <see cref="AddTlsAlpn"/> returned, and only that one.</summary>
+    public void RemoveTlsAlpn(string name, X509Certificate2 certificate)
     {
-        if (this.tlsAlpn.TryRemove(name, out var certificate))
-            certificate.Dispose();
+        lock (this.tlsAlpn)
+        {
+            if (this.tlsAlpn.TryGetValue(name, out var pending) && pending.Remove(certificate) && pending.Count == 0)
+                this.tlsAlpn.Remove(name);
+        }
+
+        certificate.Dispose();
     }
 
     public bool TryGetHttp(string token, out string keyAuthorization)
@@ -55,14 +75,30 @@ sealed class AcmeChallengeResponder
     /// stray <c>acme-tls/1</c> probe for a name we are not validating, is left to the normal handshake
     /// — which has no protocol in common with it and refuses it.
     /// </summary>
+    /// <remarks>
+    /// With two challenges pending for one name there is no telling from the hello which the CA is
+    /// validating - TLS-ALPN-01 carries no token - so the newest is served. The older order's
+    /// validation may then fail and be retried, which is the CA's to judge; what no longer happens is
+    /// one order tearing down the other's certificate.
+    /// </remarks>
     public TlsChallengeResponse? Respond(TlsClientHello hello)
     {
-        if (this.tlsAlpn.IsEmpty || hello.ServerName is not { } name || !hello.Offers(AcmeTls1))
+        if (hello.ServerName is not { } name || !hello.Offers(AcmeTls1))
             return null;
 
-        return this.tlsAlpn.TryGetValue(name, out var certificate)
-            ? new TlsChallengeResponse(certificate, AcmeTls1)
-            : null;
+        lock (this.tlsAlpn)
+        {
+            return this.tlsAlpn.TryGetValue(name, out var pending) && pending.Count > 0
+                ? new TlsChallengeResponse(pending[^1], AcmeTls1)
+                : null;
+        }
+    }
+
+    /// <summary>The certificate a hello for <paramref name="name"/> would be answered with now, for tests.</summary>
+    internal X509Certificate2? PendingTlsAlpn(string name)
+    {
+        lock (this.tlsAlpn)
+            return this.tlsAlpn.TryGetValue(name, out var pending) && pending.Count > 0 ? pending[^1] : null;
     }
 
     /// <summary>

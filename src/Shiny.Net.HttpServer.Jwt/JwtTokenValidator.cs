@@ -92,7 +92,10 @@ public sealed class JwtTokenValidator(JwtValidationParameters parameters, TimePr
         out string error
     )
     {
-        if (this.Parameters.SigningKeys.Count == 0)
+        // Read once, so a key rotated in or out while this runs is either all the way in this
+        // validation or not in it at all.
+        var keys = this.Parameters.SigningKeySnapshot;
+        if (keys.Length == 0)
         {
             error = "No signing key is configured.";
             return false;
@@ -119,16 +122,15 @@ public sealed class JwtTokenValidator(JwtValidationParameters parameters, TimePr
 
         var tried = false;
 
-        foreach (var key in this.Parameters.SigningKeys)
+        // The key decides the algorithm. A token asking for HS256 can only ever be checked against a
+        // key that is itself HS256.
+        var candidates = keys.Where(key =>
+            key.Algorithm == algorithm
+            && (keyId is null || key.KeyId is null || string.Equals(key.KeyId, keyId, StringComparison.Ordinal))
+        );
+
+        foreach (var key in candidates)
         {
-            // The key decides the algorithm. A token asking for HS256 can only ever be checked
-            // against a key that is itself HS256.
-            if (key.Algorithm != algorithm)
-                continue;
-
-            if (keyId is not null && key.KeyId is not null && !string.Equals(key.KeyId, keyId, StringComparison.Ordinal))
-                continue;
-
             tried = true;
 
             try
@@ -248,19 +250,22 @@ public sealed class JwtTokenValidator(JwtValidationParameters parameters, TimePr
 
         if (this.Parameters.ValidateIssuer)
         {
-            if (this.Parameters.ValidIssuers.Count == 0)
+            // Read once: the list can change between the emptiness check and the lookup.
+            var validIssuers = this.Parameters.ValidIssuerSnapshot;
+            if (validIssuers.Length == 0)
                 return JwtValidationResult.Fail("Issuer validation is on but no valid issuer is configured.");
 
-            if (issuer is null || !this.Parameters.ValidIssuers.Contains(issuer, StringComparer.Ordinal))
+            if (issuer is null || !validIssuers.Contains(issuer, StringComparer.Ordinal))
                 return JwtValidationResult.Fail("The token issuer is not accepted.");
         }
 
         if (this.Parameters.ValidateAudience)
         {
-            if (this.Parameters.ValidAudiences.Count == 0)
+            var validAudiences = this.Parameters.ValidAudienceSnapshot;
+            if (validAudiences.Length == 0)
                 return JwtValidationResult.Fail("Audience validation is on but no valid audience is configured.");
 
-            if (!audiences.Any(a => this.Parameters.ValidAudiences.Contains(a, StringComparer.Ordinal)))
+            if (!audiences.Any(a => validAudiences.Contains(a, StringComparer.Ordinal)))
                 return JwtValidationResult.Fail("The token audience is not accepted.");
         }
 
