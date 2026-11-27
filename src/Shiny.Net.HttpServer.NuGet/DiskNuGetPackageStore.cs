@@ -29,6 +29,9 @@ public sealed class DiskNuGetPackageStore : INuGetPackageStore
     readonly SemaphoreSlim gate = new(1, 1);
     Dictionary<string, Dictionary<NuGetVersion, NuGetPackage>>? index;
 
+    /// <summary>Serialises every change to the directory and the index. Exposed so a test can hold it.</summary>
+    internal SemaphoreSlim Gate => this.gate;
+
     public DiskNuGetPackageStore(string root)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(root);
@@ -59,20 +62,38 @@ public sealed class DiskNuGetPackageStore : INuGetPackageStore
             return [.. index.Values.SelectMany(v => v.Values)];
     }
 
-    public async ValueTask<bool> AddAsync(NuGetPackage package, Stream nupkg, ReadOnlyMemory<byte> manifest, CancellationToken cancellationToken)
+    public ValueTask<bool> AddAsync(NuGetPackage package, Stream nupkg, ReadOnlyMemory<byte> manifest, CancellationToken cancellationToken)
+        => this.WriteAsync(package, nupkg, manifest, replace: false, cancellationToken);
+
+    /// <summary>
+    /// Writes the new files beside the old ones and moves each into place over its predecessor, so
+    /// a restore running alongside the overwrite gets the old package or the new one - never a 404
+    /// from the moment between a delete and an add.
+    /// </summary>
+    public ValueTask<bool> ReplaceAsync(NuGetPackage package, Stream nupkg, ReadOnlyMemory<byte> manifest, CancellationToken cancellationToken)
+        => this.WriteAsync(package, nupkg, manifest, replace: true, cancellationToken);
+
+    async ValueTask<bool> WriteAsync(NuGetPackage package, Stream nupkg, ReadOnlyMemory<byte> manifest, bool replace, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(package);
         ArgumentNullException.ThrowIfNull(nupkg);
 
-        var index = await this.GetIndexAsync(cancellationToken).ConfigureAwait(false);
         await this.gate.WaitAsync(cancellationToken).ConfigureAwait(false);
 
         try
         {
-            lock (index)
+            // Taken inside the gate: an index fetched before it could be dropped by a Reload and
+            // rebuilt from disk while this push waits, and the push would then land in a dictionary
+            // nobody reads any more - a 201 for a package that search never shows.
+            var index = await this.LoadIndexAsync(cancellationToken).ConfigureAwait(false);
+
+            if (!replace)
             {
-                if (index.TryGetValue(package.Id, out var existing) && existing.ContainsKey(package.Version))
-                    return false;
+                lock (index)
+                {
+                    if (index.TryGetValue(package.Id, out var existing) && existing.ContainsKey(package.Version))
+                        return false;
+                }
             }
 
             var (id, version) = Names(package.Id, package.Version);
@@ -84,7 +105,9 @@ public sealed class DiskNuGetPackageStore : INuGetPackageStore
             // The .nupkg is what marks a version as present - when the directory is read back, a
             // folder without one is ignored - so it is moved into place last and in one step. A
             // crash part way leaves a folder that is invisible, not a package that is half there.
-            var temp = Path.Combine(directory, "." + Guid.NewGuid().ToString("n") + ".tmp");
+            // An overwrite takes the same path: every file is written to a temporary name and
+            // renamed over the one it replaces, so there is never a moment without a package.
+            var temp = TempPath(directory);
             long size;
             string sha512;
 
@@ -98,13 +121,17 @@ public sealed class DiskNuGetPackageStore : INuGetPackageStore
 
                 sha512 = package.Sha512 ?? await HashAsync(temp, cancellationToken).ConfigureAwait(false);
 
-                await File.WriteAllBytesAsync(Path.Combine(directory, $"{id}.nuspec"), manifest.ToArray(), cancellationToken).ConfigureAwait(false);
-                await File.WriteAllTextAsync(packagePath + ".sha512", sha512, cancellationToken).ConfigureAwait(false);
+                await WriteAtomicallyAsync(Path.Combine(directory, $"{id}.nuspec"), manifest.ToArray(), cancellationToken).ConfigureAwait(false);
+                await WriteAtomicallyAsync(packagePath + ".sha512", System.Text.Encoding.UTF8.GetBytes(sha512), cancellationToken).ConfigureAwait(false);
+
+                var marker = Path.Combine(directory, UnlistedMarker);
 
                 if (!package.Listed)
-                    await File.WriteAllBytesAsync(Path.Combine(directory, UnlistedMarker), [], cancellationToken).ConfigureAwait(false);
+                    await File.WriteAllBytesAsync(marker, [], cancellationToken).ConfigureAwait(false);
+                else
+                    File.Delete(marker);
 
-                File.Move(temp, packagePath);
+                File.Move(temp, packagePath, overwrite: replace);
             }
             finally
             {
@@ -159,11 +186,13 @@ public sealed class DiskNuGetPackageStore : INuGetPackageStore
 
     public async ValueTask<bool> SetListedAsync(string id, NuGetVersion version, bool listed, CancellationToken cancellationToken)
     {
-        var index = await this.GetIndexAsync(cancellationToken).ConfigureAwait(false);
         await this.gate.WaitAsync(cancellationToken).ConfigureAwait(false);
 
         try
         {
+            // Inside the gate for the same reason as a push: a change made to an index a Reload has
+            // already dropped is a change nobody sees.
+            var index = await this.LoadIndexAsync(cancellationToken).ConfigureAwait(false);
             NuGetPackage? current;
 
             lock (index)
@@ -193,11 +222,13 @@ public sealed class DiskNuGetPackageStore : INuGetPackageStore
 
     public async ValueTask<bool> DeleteAsync(string id, NuGetVersion version, CancellationToken cancellationToken)
     {
-        var index = await this.GetIndexAsync(cancellationToken).ConfigureAwait(false);
         await this.gate.WaitAsync(cancellationToken).ConfigureAwait(false);
 
         try
         {
+            // Inside the gate for the same reason as a push: a change made to an index a Reload has
+            // already dropped is a change nobody sees.
+            var index = await this.LoadIndexAsync(cancellationToken).ConfigureAwait(false);
             NuGetPackage? current;
 
             lock (index)
@@ -251,32 +282,38 @@ public sealed class DiskNuGetPackageStore : INuGetPackageStore
 
         try
         {
-            if (this.index is { } raced)
-                return raced;
+            return await this.LoadIndexAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            this.gate.Release();
+        }
+    }
 
-            var built = new Dictionary<string, Dictionary<NuGetVersion, NuGetPackage>>(StringComparer.OrdinalIgnoreCase);
+    /// <summary>The index, read from disk if a Reload dropped it. Only called with the gate held.</summary>
+    internal async ValueTask<Dictionary<string, Dictionary<NuGetVersion, NuGetPackage>>> LoadIndexAsync(CancellationToken cancellationToken)
+    {
+        if (Volatile.Read(ref this.index) is { } loaded)
+            return loaded;
 
-            foreach (var idDirectory in Directory.EnumerateDirectories(this.root))
+        var built = new Dictionary<string, Dictionary<NuGetVersion, NuGetPackage>>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var idDirectory in Directory.EnumerateDirectories(this.root))
+        {
+            foreach (var versionDirectory in Directory.EnumerateDirectories(idDirectory))
             {
-                foreach (var versionDirectory in Directory.EnumerateDirectories(idDirectory))
+                if (await ReadAsync(versionDirectory, cancellationToken).ConfigureAwait(false) is { } package)
                 {
-                    if (await ReadAsync(versionDirectory, cancellationToken).ConfigureAwait(false) is not { } package)
-                        continue;
-
                     if (!built.TryGetValue(package.Id, out var versions))
                         built[package.Id] = versions = [];
 
                     versions[package.Version] = package;
                 }
             }
+        }
 
-            Volatile.Write(ref this.index, built);
-            return built;
-        }
-        finally
-        {
-            this.gate.Release();
-        }
+        Volatile.Write(ref this.index, built);
+        return built;
     }
 
     /// <summary>
@@ -329,6 +366,24 @@ public sealed class DiskNuGetPackageStore : INuGetPackageStore
     {
         await using var file = File.OpenRead(path);
         return Convert.ToBase64String(await SHA512.HashDataAsync(file, cancellationToken).ConfigureAwait(false));
+    }
+
+    static string TempPath(string directory) => Path.Combine(directory, "." + Guid.NewGuid().ToString("n") + ".tmp");
+
+    static async ValueTask WriteAtomicallyAsync(string path, byte[] contents, CancellationToken cancellationToken)
+    {
+        var temp = TempPath(Path.GetDirectoryName(path)!);
+
+        try
+        {
+            await File.WriteAllBytesAsync(temp, contents, cancellationToken).ConfigureAwait(false);
+            File.Move(temp, path, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(temp))
+                File.Delete(temp);
+        }
     }
 
     static ValueTask<Stream?> Open(string path)

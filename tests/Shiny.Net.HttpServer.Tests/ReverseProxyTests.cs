@@ -414,6 +414,222 @@ public class ReverseProxyTests
         Assert.Equal("up", await edge.Client.GetStringAsync("/api/who", Token));
     }
 
+    /// <summary>
+    /// A reload used to unmap every proxy route and map them back one at a time, and a request in
+    /// between got a 404. Every change to the route table is watched here, and the route has to be in
+    /// every table the reload publishes.
+    /// </summary>
+    [Fact]
+    public async Task A_reload_never_publishes_a_table_without_the_routes_it_keeps()
+    {
+        await using var a = await Named("a");
+        await using var b = await Named("b");
+
+        var (root, provider) = Config(new Dictionary<string, string?>
+        {
+            ["ReverseProxy:Routes:api:ClusterId"] = "backend",
+            ["ReverseProxy:Routes:api:Match:Path"] = "/api/{**rest}",
+            ["ReverseProxy:Clusters:backend:Destinations:only:Address"] = $"http://127.0.0.1:{a.Port}"
+        });
+
+        ReverseProxyRuntime? runtime = null;
+
+        await using var edge = await TestServer.StartAsync(server =>
+            runtime = server.MapReverseProxy(root.GetSection("ReverseProxy")));
+
+        using var _ = runtime;
+
+        var router = edge.Server.Router;
+        var tables = 0;
+        var missing = 0;
+
+        router.Changed += (_, _) =>
+        {
+            tables++;
+
+            if (router.Find("GET", "/api/{*rest}") is null)
+                missing++;
+        };
+
+        provider.Set("ReverseProxy:Clusters:backend:Destinations:only:Address", $"http://127.0.0.1:{b.Port}");
+        provider.Set("ReverseProxy:Routes:extra:ClusterId", "backend");
+        provider.Set("ReverseProxy:Routes:extra:Match:Path", "/extra/{**rest}");
+        root.Reload();
+
+        Assert.True(tables > 0);
+        Assert.Equal(0, missing);
+        Assert.Equal("b", await edge.Client.GetStringAsync("/api/who", Token));
+        Assert.Equal("b", await edge.Client.GetStringAsync("/extra/who", Token));
+    }
+
+    /// <summary>
+    /// The loader used to write each carried cluster's settings as it parsed them, so a file that
+    /// failed further down left the live cluster half reconfigured while the reload claimed the old
+    /// configuration stayed in force.
+    /// </summary>
+    [Fact]
+    public async Task A_reload_that_fails_leaves_the_live_clusters_untouched()
+    {
+        await using var a = await Named("a");
+        await using var b = await Named("b");
+
+        var (root, provider) = Config(new Dictionary<string, string?>
+        {
+            ["ReverseProxy:Routes:api:ClusterId"] = "backend",
+            ["ReverseProxy:Routes:api:Match:Path"] = "/api/{**rest}",
+            ["ReverseProxy:Clusters:backend:Destinations:only:Address"] = $"http://127.0.0.1:{a.Port}"
+        });
+
+        ReverseProxyRuntime? runtime = null;
+
+        await using var edge = await TestServer.StartAsync(server =>
+            runtime = server.MapReverseProxy(root.GetSection("ReverseProxy")));
+
+        using var _ = runtime;
+
+        var cluster = runtime!.Current.Clusters["backend"];
+        var reloaded = false;
+        runtime.Reloaded += (_, _) => reloaded = true;
+
+        provider.Set("ReverseProxy:Clusters:backend:Destinations:only:Address", $"http://127.0.0.1:{b.Port}");
+        provider.Set("ReverseProxy:Clusters:backend:HttpRequest:ActivityTimeout", "7");
+
+        // A route with no ClusterId fails the load after the cluster above has been read.
+        provider.Set("ReverseProxy:Routes:broken:Match:Path", "/broken/{**rest}");
+        root.Reload();
+
+        Assert.False(reloaded);
+        Assert.Equal($"http://127.0.0.1:{a.Port}/", cluster.Destinations.Single().Address.ToString());
+        Assert.NotEqual(TimeSpan.FromSeconds(7), cluster.Forwarding.Timeout);
+        Assert.Equal("a", await edge.Client.GetStringAsync("/api/who", Token));
+    }
+
+    /// <summary>A cluster dropped from the configuration used to keep its probe loop running for good.</summary>
+    [Fact]
+    public async Task A_reload_disposes_the_clusters_it_drops()
+    {
+        await using var a = await Named("a");
+
+        var kept = new Dictionary<string, string?>
+        {
+            ["ReverseProxy:Routes:api:ClusterId"] = "backend",
+            ["ReverseProxy:Routes:api:Match:Path"] = "/api/{**rest}",
+            ["ReverseProxy:Clusters:backend:Destinations:only:Address"] = $"http://127.0.0.1:{a.Port}"
+        };
+
+        // A key cannot be taken out of the in-memory provider, so this one swaps its data whole.
+        var provider = new SwappableProvider(new Dictionary<string, string?>(kept)
+        {
+            ["ReverseProxy:Routes:old:ClusterId"] = "retired",
+            ["ReverseProxy:Routes:old:Match:Path"] = "/old/{**rest}",
+            ["ReverseProxy:Clusters:retired:HealthCheck:Active:Enabled"] = "true",
+            ["ReverseProxy:Clusters:retired:HealthCheck:Active:Interval"] = "60",
+            ["ReverseProxy:Clusters:retired:Destinations:only:Address"] = $"http://127.0.0.1:{a.Port}"
+        });
+        var root = new ConfigurationBuilder().Add(new SwappableSource(provider)).Build();
+
+        ReverseProxyRuntime? runtime = null;
+
+        await using var edge = await TestServer.StartAsync(server =>
+            runtime = server.MapReverseProxy(root.GetSection("ReverseProxy")));
+
+        using var _ = runtime;
+
+        var retired = runtime!.Current.Clusters["retired"];
+        var backend = runtime.Current.Clusters["backend"];
+        Assert.NotNull(retired.ProbeLoop);
+
+        provider.Swap(kept);
+        root.Reload();
+
+        Assert.True(retired.IsDisposed);
+        Assert.False(backend.IsDisposed);
+        await retired.ProbeLoop!.WaitAsync(TimeSpan.FromSeconds(5), Token);
+
+        Assert.Equal(HttpStatusCode.NotFound, (await edge.Client.GetAsync("/old/who", Token)).StatusCode);
+        Assert.Equal("a", await edge.Client.GetStringAsync("/api/who", Token));
+    }
+
+    sealed class SwappableProvider(Dictionary<string, string?> initial) : ConfigurationProvider
+    {
+        public override void Load() => this.Data = new Dictionary<string, string?>(this.current, StringComparer.OrdinalIgnoreCase);
+
+        Dictionary<string, string?> current = initial;
+
+        public void Swap(Dictionary<string, string?> data) => this.current = data;
+    }
+
+    sealed class SwappableSource(SwappableProvider provider) : IConfigurationSource
+    {
+        public IConfigurationProvider Build(IConfigurationBuilder builder) => provider;
+    }
+
+    /// <summary>
+    /// The probe loop used to read the cancellation source when it ran rather than when it was
+    /// started, so a stop that beat the thread pool to it threw a NullReferenceException inside the
+    /// loop, and a stop and a start ran two loops on the second token. The loops are held back here
+    /// until they have been stopped.
+    /// </summary>
+    [Fact]
+    public async Task A_probe_loop_that_starts_after_a_stop_ends_quietly()
+    {
+        using var cluster = new ProxyCluster("held");
+        cluster.HealthCheck.Active.Enabled = true;
+        var destination = cluster.AddDestination("dead", "http://127.0.0.1:1");
+
+        var gates = new List<TaskCompletionSource>();
+        cluster.RunProbeLoop = loop =>
+        {
+            var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            gates.Add(gate);
+
+            return gate.Task.ContinueWith(_ => loop(), TaskScheduler.Default).Unwrap();
+        };
+
+        cluster.StartProbing();
+        var first = cluster.ProbeLoop!;
+        cluster.StopProbing();
+
+        cluster.StartProbing();
+        var second = cluster.ProbeLoop!;
+
+        // The first loop runs while the second start is live, and must still end on its own token.
+        gates[0].SetResult();
+        await first.WaitAsync(TimeSpan.FromSeconds(5), Token);
+
+        cluster.StopProbing();
+        gates[1].SetResult();
+        await second.WaitAsync(TimeSpan.FromSeconds(5), Token);
+
+        Assert.Equal(DestinationHealth.Unknown, destination.ActiveHealth);
+    }
+
+    /// <summary>
+    /// Disposing a cluster used to dispose the probe client under probes still using it, and the
+    /// ObjectDisposedException that followed faulted the loop with nobody observing it.
+    /// </summary>
+    [Fact]
+    public async Task Disposing_a_cluster_mid_probe_ends_the_loop_cleanly()
+    {
+        var cluster = new ProxyCluster("disposed");
+        cluster.HealthCheck.Active.Enabled = true;
+        var destination = cluster.AddDestination("dead", "http://127.0.0.1:1");
+
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        cluster.RunProbeLoop = loop => gate.Task.ContinueWith(_ => loop(), TaskScheduler.Default).Unwrap();
+
+        cluster.StartProbing();
+        var loop = cluster.ProbeLoop!;
+
+        cluster.Dispose();
+        gate.SetResult();
+
+        await loop.WaitAsync(TimeSpan.FromSeconds(5), Token);
+
+        Assert.True(cluster.IsDisposed);
+        Assert.Equal(DestinationHealth.Unknown, destination.ActiveHealth);
+    }
+
     [Fact]
     public async Task An_encoded_query_the_transforms_did_not_touch_is_forwarded_byte_for_byte()
     {

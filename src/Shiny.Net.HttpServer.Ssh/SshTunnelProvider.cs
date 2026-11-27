@@ -41,7 +41,15 @@ public sealed class SshTunnelProvider : ITunnelProvider
     // and hands what arrives on it to the server. The app never binds a port of its own, and only
     // processes on this machine can reach the loopback one.
     readonly SocketConnectionListener listener;
-    readonly CancellationTokenSource stopping = new();
+
+    // Guards the connection fields together with the run they belong to. A connect that was in
+    // flight when the tunnel stopped - ForwardedPortRemote.Start cannot be cancelled, and the stop
+    // only waits so long for the supervisor - comes back after Disconnect has run. Without this it
+    // would publish a client and a forward nobody will ever tear down, and announce itself connected
+    // after the stop.
+    readonly Lock sync = new();
+    CancellationTokenSource stopping = new();
+    int run;
 
     SshClient? client;
     ForwardedPortRemote? forwardedPort;
@@ -112,11 +120,29 @@ public sealed class SshTunnelProvider : ITunnelProvider
         if (this.client is not null)
             throw new InvalidOperationException("The tunnel is already connected.");
 
+        int current;
+        CancellationToken stopped;
+
+        lock (this.sync)
+        {
+            // A fresh source per run: the previous one was cancelled by the last unbind, and a
+            // supervisor started on it would never reconnect anything.
+            if (this.stopping.IsCancellationRequested)
+            {
+                this.stopping.Dispose();
+                this.stopping = new CancellationTokenSource();
+            }
+
+            current = this.run;
+            stopped = this.stopping.Token;
+        }
+
         await this.listener.BindAsync(cancellationToken).ConfigureAwait(false);
 
         try
         {
-            await this.ConnectAsync(cancellationToken).ConfigureAwait(false);
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, stopped);
+            await this.ConnectAsync(current, linked.Token).ConfigureAwait(false);
         }
         catch
         {
@@ -125,7 +151,7 @@ public sealed class SshTunnelProvider : ITunnelProvider
         }
 
         if (this.options.AutoReconnect)
-            this.supervisor = Task.Run(() => this.SuperviseAsync(this.stopping.Token), CancellationToken.None);
+            this.supervisor = Task.Run(() => this.SuperviseAsync(current, stopped), CancellationToken.None);
     }
 
     public async ValueTask<IConnection?> AcceptAsync(CancellationToken cancellationToken = default)
@@ -140,8 +166,18 @@ public sealed class SshTunnelProvider : ITunnelProvider
 
     public async ValueTask UnbindAsync(CancellationToken cancellationToken = default)
     {
-        if (!this.stopping.IsCancellationRequested)
-            await this.stopping.CancelAsync().ConfigureAwait(false);
+        CancellationTokenSource stopping;
+
+        lock (this.sync)
+        {
+            // Ends this run: whatever a connect still in flight hands back from now on belongs to a
+            // run that is over, and is torn down rather than published.
+            this.run++;
+            stopping = this.stopping;
+        }
+
+        if (!stopping.IsCancellationRequested)
+            await stopping.CancelAsync().ConfigureAwait(false);
 
         await this.listener.UnbindAsync(cancellationToken).ConfigureAwait(false);
 
@@ -172,13 +208,15 @@ public sealed class SshTunnelProvider : ITunnelProvider
         this.stopping.Dispose();
     }
 
-    async Task ConnectAsync(CancellationToken cancellationToken)
+    async Task ConnectAsync(int current, CancellationToken cancellationToken)
     {
         var connectionInfo = this.options.CreateConnectionInfo();
         var sshClient = new SshClient(connectionInfo) { KeepAliveInterval = this.options.KeepAliveInterval };
 
         sshClient.HostKeyReceived += this.OnHostKeyReceived;
         sshClient.ErrorOccurred += this.OnErrorOccurred;
+
+        ForwardedPortRemote? port = null;
 
         try
         {
@@ -187,7 +225,7 @@ public sealed class SshTunnelProvider : ITunnelProvider
             var local = this.listener.BoundEndPoint
                 ?? throw new InvalidOperationException("The loopback listener is not bound.");
 
-            var port = new ForwardedPortRemote(
+            port = new ForwardedPortRemote(
                 this.options.RemoteBindAddress,
                 (uint)this.options.RemotePort,
                 local.Address.ToString(),
@@ -203,13 +241,16 @@ public sealed class SshTunnelProvider : ITunnelProvider
             // permitopen restriction shows up.
             await Task.Run(port.Start, cancellationToken).ConfigureAwait(false);
 
-            this.client = sshClient;
-            this.forwardedPort = port;
+            // Start ignores the token once it is running, so a stop may have come and gone while it
+            // waited. The catch below tears this connection down in that case.
+            if (!this.TryAdopt(current, sshClient, port))
+                throw new OperationCanceledException("The tunnel stopped while the forward was being set up.");
+
             this.RemotePort = (int)port.BoundPort;
 
             this.PublicUrl = this.options.PublicUrl
                 ?? (this.options.CaptureUrlFromSession
-                    ? await this.CaptureUrlAsync(sshClient, cancellationToken).ConfigureAwait(false)
+                    ? await this.CaptureUrlAsync(current, sshClient, cancellationToken).ConfigureAwait(false)
                     // Deriving the address is only honest for a forward whose public face you
                     // already know. A hosted tunnel picks the address itself, so guessing one there
                     // hands the app a link that cannot work — worse than admitting there isn't one.
@@ -232,16 +273,87 @@ public sealed class SshTunnelProvider : ITunnelProvider
                     this.PublicUrl
                 );
 
+            // Checked once more: the URL capture can take a while, and a stop in the meantime has
+            // already disconnected this client. Reporting it connected now would be a lie.
+            if (!this.IsCurrent(current))
+                throw new OperationCanceledException("The tunnel stopped while the forward was being set up.");
+
             this.ConnectivityChanged?.Invoke(this, true);
         }
         catch
         {
-            sshClient.HostKeyReceived -= this.OnHostKeyReceived;
-            sshClient.ErrorOccurred -= this.OnErrorOccurred;
-            sshClient.Dispose();
-
+            this.Release(sshClient, port);
             throw;
         }
+    }
+
+    /// <summary>
+    /// Publishes a freshly connected client and forward as the tunnel's own, unless the run that
+    /// started connecting them has been stopped since - in which case the caller tears them down.
+    /// </summary>
+    internal bool TryAdopt(int current, SshClient sshClient, ForwardedPortRemote port)
+    {
+        lock (this.sync)
+        {
+            if (current != this.run)
+                return false;
+
+            this.client = sshClient;
+            this.forwardedPort = port;
+
+            return true;
+        }
+    }
+
+    /// <summary>The run a connect belongs to, captured before it starts. Exposed so a test can stop one mid-connect.</summary>
+    internal int CurrentRun
+    {
+        get
+        {
+            lock (this.sync)
+                return this.run;
+        }
+    }
+
+    bool IsCurrent(int current)
+    {
+        lock (this.sync)
+            return current == this.run;
+    }
+
+    /// <summary>
+    /// Tears down a client and forward from a connect that failed or was overtaken by a stop. If they
+    /// were already published, they are taken back first, so Disconnect does not dispose them twice.
+    /// </summary>
+    void Release(SshClient sshClient, ForwardedPortRemote? port)
+    {
+        lock (this.sync)
+        {
+            if (ReferenceEquals(this.client, sshClient))
+            {
+                this.client = null;
+                this.forwardedPort = null;
+            }
+        }
+
+        try
+        {
+            if (port is not null)
+            {
+                if (port.IsStarted)
+                    port.Stop();
+
+                port.Dispose();
+            }
+        }
+        catch (Exception ex)
+        {
+            this.logger.LogDebug(ex, "Stopping an abandoned SSH forward threw; it is going away regardless");
+        }
+
+        sshClient.HostKeyReceived -= this.OnHostKeyReceived;
+        sshClient.ErrorOccurred -= this.OnErrorOccurred;
+        sshClient.Dispose();
     }
 
     /// <summary>
@@ -251,7 +363,7 @@ public sealed class SshTunnelProvider : ITunnelProvider
     /// tunnel, and without this the app would look fine while being unreachable.
     /// </para>
     /// </summary>
-    async Task SuperviseAsync(CancellationToken cancellationToken)
+    async Task SuperviseAsync(int current, CancellationToken cancellationToken)
     {
         var delay = this.options.ReconnectDelay;
 
@@ -273,7 +385,7 @@ public sealed class SshTunnelProvider : ITunnelProvider
                 this.Disconnect();
 
                 await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
-                await this.ConnectAsync(cancellationToken).ConfigureAwait(false);
+                await this.ConnectAsync(current, cancellationToken).ConfigureAwait(false);
 
                 delay = this.options.ReconnectDelay;
             }
@@ -302,12 +414,12 @@ public sealed class SshTunnelProvider : ITunnelProvider
     /// stays open afterwards, because some providers tear the forward down when it closes.
     /// </para>
     /// </summary>
-    async Task<string?> CaptureUrlAsync(SshClient sshClient, CancellationToken cancellationToken)
+    async Task<string?> CaptureUrlAsync(int current, SshClient sshClient, CancellationToken cancellationToken)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(this.options.UrlCaptureTimeout);
 
-        var capture = Task.Run(() => this.ReadUrlAsync(sshClient, timeout.Token), CancellationToken.None);
+        var capture = Task.Run(() => this.ReadUrlAsync(current, sshClient, timeout.Token), CancellationToken.None);
 
         // Once abandoned below, nobody is left to await this — and a blocking SSH call that throws
         // after that would surface as an unobserved exception rather than the warning it deserves.
@@ -348,10 +460,28 @@ public sealed class SshTunnelProvider : ITunnelProvider
     }
 
     /// <summary>Opens the session channel and reads until the URL turns up or the token trips.</summary>
-    async Task<string?> ReadUrlAsync(SshClient sshClient, CancellationToken cancellationToken)
+    async Task<string?> ReadUrlAsync(int current, SshClient sshClient, CancellationToken cancellationToken)
     {
         var shell = sshClient.CreateShellStreamNoTerminal(bufferSize: 4096);
-        this.session = shell;
+
+        var adopted = false;
+
+        lock (this.sync)
+        {
+            // Opening the channel blocks, so the tunnel may have stopped meanwhile - and Disconnect,
+            // having already run, would never close a session published now.
+            if (current == this.run)
+            {
+                this.session = shell;
+                adopted = true;
+            }
+        }
+
+        if (!adopted)
+        {
+            shell.Dispose();
+            return null;
+        }
 
         var buffer = new byte[1024];
         var text = new StringBuilder();
@@ -393,9 +523,22 @@ public sealed class SshTunnelProvider : ITunnelProvider
 
     void Disconnect()
     {
-        var port = Interlocked.Exchange(ref this.forwardedPort, null);
-        var sshClient = Interlocked.Exchange(ref this.client, null);
-        var shell = Interlocked.Exchange(ref this.session, null);
+        ForwardedPortRemote? port;
+        SshClient? sshClient;
+        ShellStream? shell;
+
+        // Under the lock so it cannot interleave with TryAdopt and take the client of one connect
+        // and the forward of another.
+        lock (this.sync)
+        {
+            port = this.forwardedPort;
+            sshClient = this.client;
+            shell = this.session;
+
+            this.forwardedPort = null;
+            this.client = null;
+            this.session = null;
+        }
 
         try
         {

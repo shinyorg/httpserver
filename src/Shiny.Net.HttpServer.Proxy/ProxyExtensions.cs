@@ -12,24 +12,34 @@ public sealed class ProxyRouteMetadata
     }
 
     internal ProxyRouteMetadata(IReadOnlyList<ProxyCluster> clusters, IReadOnlyList<string> routeIds)
-    {
-        this.Clusters = clusters;
-        this.RouteIds = routeIds;
-    }
+        => this.state = new(clusters, routeIds);
+
+    // One reference, swapped whole, so a reader never sees the clusters of one reload beside the
+    // route ids of another.
+    volatile State state;
 
     /// <summary>
     /// Every cluster this endpoint can reach. More than one when several configured routes share a
     /// template and are told apart by host or method.
     /// </summary>
-    public IReadOnlyList<ProxyCluster> Clusters { get; }
+    public IReadOnlyList<ProxyCluster> Clusters => this.state.Clusters;
 
     /// <summary>The configured route ids behind this endpoint. Empty when it was mapped in code.</summary>
-    public IReadOnlyList<string> RouteIds { get; }
+    public IReadOnlyList<string> RouteIds => this.state.RouteIds;
+
+    /// <summary>
+    /// Points the metadata at what a reload now sends this endpoint to. The endpoint itself stays in
+    /// the route table across a reload that keeps its method and template, so its metadata moves with it.
+    /// </summary>
+    internal void Update(IReadOnlyList<ProxyCluster> clusters, IReadOnlyList<string> routeIds)
+        => this.state = new(clusters, routeIds);
+
+    sealed record State(IReadOnlyList<ProxyCluster> Clusters, IReadOnlyList<string> RouteIds);
 
     public ProxyCluster Cluster => this.Clusters[0];
 
     /// <summary>The route's id when it came from configuration, null when it was mapped in code.</summary>
-    public string? RouteId => this.RouteIds.Count > 0 ? this.RouteIds[0] : null;
+    public string? RouteId => this.state.RouteIds is { Count: > 0 } ids ? ids[0] : null;
 }
 
 /// <summary>

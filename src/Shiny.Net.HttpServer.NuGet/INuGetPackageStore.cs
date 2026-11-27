@@ -26,6 +26,21 @@ public interface INuGetPackageStore
     /// </summary>
     ValueTask<bool> AddAsync(NuGetPackage package, Stream nupkg, ReadOnlyMemory<byte> manifest, CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Stores a version over one that is already there, for a feed with
+    /// <see cref="NuGetFeedOptions.AllowOverwrite"/> on. Returns false when nothing was stored.
+    /// <para>
+    /// The default deletes and then adds, which leaves a moment where the version is missing and a
+    /// restore running alongside gets a 404. Override it to swap the package in one step, as
+    /// <see cref="DiskNuGetPackageStore"/> does.
+    /// </para>
+    /// </summary>
+    async ValueTask<bool> ReplaceAsync(NuGetPackage package, Stream nupkg, ReadOnlyMemory<byte> manifest, CancellationToken cancellationToken)
+    {
+        await this.DeleteAsync(package.Id, package.Version, cancellationToken).ConfigureAwait(false);
+        return await this.AddAsync(package, nupkg, manifest, cancellationToken).ConfigureAwait(false);
+    }
+
     /// <summary>The <c>.nupkg</c>, or null when there is no such version.</summary>
     ValueTask<Stream?> OpenPackageAsync(string id, NuGetVersion version, CancellationToken cancellationToken);
 

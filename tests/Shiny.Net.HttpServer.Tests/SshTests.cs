@@ -523,3 +523,47 @@ public class QuickTunnelNotificationTests(SshdFixture sshd) : IClassFixture<Sshd
         Assert.Null(tunnel.PublicUrl);
     }
 }
+
+/// <summary>
+/// A connect that outlives the stop that should have ended it. ForwardedPortRemote.Start cannot be
+/// cancelled and the stop only waits so long for the supervisor, so a connect could come back after
+/// Disconnect had run and publish a client and forward nothing would tear down. The connect itself
+/// needs a server; deciding whether to keep what it built does not, and that is what is driven here.
+/// </summary>
+public class SshStopRaceTests
+{
+    static SshTunnelOptions Options() => new()
+    {
+        Host = "tunnel.example.com",
+        Username = "tunnel",
+        Password = "unused",
+        AcceptAnyHostKey = true
+    };
+
+    [Fact]
+    public async Task A_connect_that_finishes_after_a_stop_is_not_adopted()
+    {
+        await using var provider = new SshTunnelProvider(Options());
+
+        var run = provider.CurrentRun;
+        await provider.UnbindAsync(TestContext.Current.CancellationToken);
+
+        using var client = new SshClient("127.0.0.1", "tunnel", "unused");
+        using var port = new ForwardedPortRemote("127.0.0.1", 0, "127.0.0.1", 1);
+
+        Assert.False(provider.TryAdopt(run, client, port));
+        Assert.False(provider.IsConnected);
+    }
+
+    [Fact]
+    public async Task A_connect_in_the_current_run_is_adopted()
+    {
+        await using var provider = new SshTunnelProvider(Options());
+
+        // Not disposed here: disposing the provider tears down what it adopted.
+        var client = new SshClient("127.0.0.1", "tunnel", "unused");
+        var port = new ForwardedPortRemote("127.0.0.1", 0, "127.0.0.1", 1);
+
+        Assert.True(provider.TryAdopt(provider.CurrentRun, client, port));
+    }
+}

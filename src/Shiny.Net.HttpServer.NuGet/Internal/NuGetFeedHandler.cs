@@ -513,10 +513,11 @@ sealed class NuGetFeedHandler
                 if (!this.options.AllowOverwrite)
                     throw new NuGetFeedException(StatusCodes.Status409Conflict, $"{package.Id} {package.Version.ToNormalizedString()} already exists.");
 
-                await this.store.DeleteAsync(package.Id, package.Version, context.RequestAborted).ConfigureAwait(false);
+                // One step rather than a delete and an add, so a restore running alongside never
+                // sees the version missing.
                 file.Position = 0;
 
-                if (!await this.store.AddAsync(package, file, manifest, context.RequestAborted).ConfigureAwait(false))
+                if (!await this.store.ReplaceAsync(package, file, manifest, context.RequestAborted).ConfigureAwait(false))
                     throw new NuGetFeedException(StatusCodes.Status409Conflict, $"{package.Id} {package.Version.ToNormalizedString()} was pushed by someone else at the same time.");
             }
 
