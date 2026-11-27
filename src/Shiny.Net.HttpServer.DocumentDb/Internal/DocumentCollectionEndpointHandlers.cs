@@ -313,21 +313,29 @@ static class DocumentCollectionEndpointHandlers
 
     static async Task<IResult> Delete(HttpContext http, string id, string name, DocumentCollectionEndpointOptions options)
     {
-        // The delete is the scoped query itself, so this one IS safe alongside a scope: the scope and the id are
-        // one statement's WHERE clause. Checking the scope with a read and then removing by id leaves a window in
-        // which another writer can move the document out of the caller's scope and still have it deleted.
-        // Built here rather than through Build: a list's sort and paging have no business on a DELETE.
-        var query = Collection(http, name, options).Query();
+        // Deletes resolve through the scoped query first, so this one IS safe alongside a scope. The check and the
+        // remove are held under the document's write lock - the one every write to it through this server takes -
+        // so a replace or patch cannot move the document out of the caller's scope between them and still have it
+        // deleted. Removed by id, not by a bulk delete, so the store's interceptors and change feed see it as before.
+        var store = Store(http, options);
 
-        foreach (var clause in await Scope(http, options).ConfigureAwait(false))
-            query = query.Where(clause);
-
-        var removed = await query
-            .Where(IdClause(options.IdProperty, id))
-            .ExecuteDelete(http.RequestAborted)
+        using var held = await DocumentWriteLocks
+            .AcquireAsync(store, name, id, http.RequestAborted)
             .ConfigureAwait(false);
 
-        return removed == 0 ? NotFound(id) : Results.NoContent();
+        var query = await Build(http, name, options, Request(http, options)).ConfigureAwait(false);
+
+        var match = await query
+            .Where(IdClause(options.IdProperty, id))
+            .FirstOrDefault(http.RequestAborted)
+            .ConfigureAwait(false);
+
+        if (match is null)
+            return NotFound(id);
+
+        await store.Collection(name, options.IdProperty).Remove(id, http.RequestAborted).ConfigureAwait(false);
+
+        return Results.NoContent();
     }
 
     /// <summary>
