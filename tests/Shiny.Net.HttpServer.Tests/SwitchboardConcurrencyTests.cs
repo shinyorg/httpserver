@@ -7,6 +7,7 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Shiny.Net.HttpServer.Switchboard;
+using Shiny.Net.HttpServer.Switchboard.Client;
 using Shiny.Net.HttpServer.Switchboard.Internal;
 using SwitchboardFixtures;
 
@@ -282,6 +283,91 @@ namespace Shiny.Net.HttpServer.Tests
             var line = NewLine();
 
             Assert.False(line.TryCloseDetached(Environment.TickCount64, 1_000));
+        }
+    }
+
+    /// <summary>The .NET client's own start, stop and reconnect against each other.</summary>
+    public class SwitchboardLineConcurrencyTests
+    {
+        static CancellationToken Token => TestContext.Current.CancellationToken;
+
+        static Task<TestServer> StartAsync(Action<SwitchboardOptions>? configure = null)
+            => TestServer.StartAsync(
+                app => app.MapSwitchboard<TestBoard>("/board"),
+                builder =>
+                {
+                    builder.Services.AddSingleton<LifecycleProbe>();
+                    builder.AddSwitchboard(o =>
+                    {
+                        o.HeartbeatInterval = TimeSpan.FromSeconds(30);
+                        configure?.Invoke(o);
+                    });
+                }
+            );
+
+        static SwitchboardLine Line(TestServer server, Action<SwitchboardLineBuilder>? configure = null)
+        {
+            var builder = new SwitchboardLineBuilder()
+                .WithUrl(new Uri(server.Client.BaseAddress!, "/board"), o => o.HttpVersion = HttpVersion.Version11)
+                .WithJson(SwitchboardFixtureJson.Default);
+
+            configure?.Invoke(builder);
+            return builder.Build();
+        }
+
+        [Fact]
+        public async Task A_stop_that_lands_while_starting_leaves_the_line_closed()
+        {
+            await using var server = await StartAsync();
+            await using var line = Line(server);
+
+            var closed = new ConcurrentQueue<LineCloseReason>();
+            line.Closed += (_, e) => closed.Enqueue(e.Reason);
+            string? lineId = null;
+
+            // The stream is open and the server has named the line; the start has not yet gone Connected.
+            line.AfterConnectForTests = async () =>
+            {
+                lineId = line.LineId;
+                await line.StopAsync(Token);
+            };
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => line.StartAsync(Token));
+
+            Assert.Equal(LineState.Disconnected, line.State);
+            Assert.Equal([LineCloseReason.ClientClosed], closed);
+
+            // And the server was told, rather than left to sweep a line nobody is reading.
+            var probe = server.Server.Services!.GetRequiredService<LifecycleProbe>();
+            await probe.WaitForAsync(e => e.StartsWith($"disconnected:{lineId}:ClientClosed", StringComparison.Ordinal), Token);
+
+            // Nothing is left half-open: the line starts again cleanly.
+            line.AfterConnectForTests = null;
+            await line.StartAsync(Token);
+            Assert.Equal(3, await line.InvokeAsync<int>("Add", 1, 2));
+        }
+
+        [Fact]
+        public async Task Calls_on_a_new_line_are_numbered_from_one()
+        {
+            // An hour to wait for a missing number: a call numbered off the old line's count would hang here.
+            await using var server = await StartAsync(o => o.InvocationOrderingTimeout = TimeSpan.FromHours(1));
+            await using var line = Line(server, b => b.WithAutomaticReconnect(TimeSpan.Zero));
+
+            var reconnected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            line.Reconnected += (_, _) => reconnected.TrySetResult();
+
+            await line.StartAsync(Token);
+            for (var i = 0; i < 5; i++)
+                await line.InvokeAsync("Nothing");
+
+            var board = server.Server.Services!.GetRequiredService<IOperator<TestBoard>>();
+            await board.Lines.HangUpAllAsync("going away", allowReconnect: true);
+            await reconnected.Task.WaitAsync(TimeSpan.FromSeconds(10), Token);
+
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(Token);
+            timeout.CancelAfter(TimeSpan.FromSeconds(10));
+            Assert.Equal(3, await line.InvokeCoreAsync<int>("Add", [1, 2], timeout.Token));
         }
     }
 }
