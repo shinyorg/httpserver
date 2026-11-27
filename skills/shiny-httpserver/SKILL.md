@@ -1299,6 +1299,7 @@ Tier 3: `[Idempotent]` (Required = true by default, `ExpirationSeconds`), `[Disa
 `[ContentDigest(RequireRequestDigest = true)]`, `[DisableContentDigest]`.
 
 - Idempotency handles POST/PATCH only. A replay carries `Idempotent-Replayed: true`. Same key with a different body → 422, still running → 409, 5xx/exceptions are not stored. Keep idempotent responses small and non-streamed or they cannot be replayed.
+- A custom `IIdempotencyStore` (shared store behind a load balancer) must make `TryReserveAsync` atomic, and should implement the owner-aware overloads (`TryReserveAsync(key, fingerprint, owner, lease, ct)`, `CompleteAsync(key, owner, record, ct)` returning false when the claim moved on, `ReleaseAsync(key, owner, ct)`). Store the owner with the claim and act only when it matches, so a request that overran `InFlightTimeout` cannot release or overwrite the retry's claim.
 - Content digests: the request body is verified as it streams, and the final read throws on a mismatch, which becomes a 400 problem. Response digests are sent when asked (`Want-Content-Digest`), as a header up to 64KB and as a trailer beyond that. HTTP/1.1 with a declared Content-Length cannot trail. Use `DigestFields.Compute(...)` to set one by hand.
 
 ## OAuth loopback sign-in (desktop and CLI)
