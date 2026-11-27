@@ -466,12 +466,18 @@ sealed class StreamReceiver
                 // window keeps the sender from running dry while a batch is in flight.
                 if (pending >= Interlocked.Read(ref this.window) / 2 && Volatile.Read(ref this.stopped) == 0)
                 {
+                    // The delivered bytes leave the count before the window moves. The frame loop checks arrivals
+                    // against both at once, and a sender may still be spending credit it already holds: lowering the
+                    // window first, with the count still including what was just delivered, made a legitimate frame
+                    // look like an overrun and reset the stream. In this order every frame the sender can send is
+                    // within the window at every instant - a shrink is never more than half of what was delivered.
+                    Interlocked.Add(ref this.outstanding, -pending);
+
                     var now = System.Diagnostics.Stopwatch.GetTimestamp();
                     var resize = this.Resize(now - lastGrant, pending);
                     grown += resize;
                     lastGrant = now;
 
-                    Interlocked.Add(ref this.outstanding, -pending);
                     await this.grant(pending + resize).ConfigureAwait(false);
                     pending = 0;
                 }
