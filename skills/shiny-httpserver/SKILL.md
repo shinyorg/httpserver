@@ -2158,7 +2158,7 @@ await app.RunTunnelAsync(provider, logger, ct);
   frames that older ends ignore, so any mix of old and new relay/client works. Each request gets its own
   window, so one stalled download or unread upload no longer stalls the tunnel. Leave the defaults
   unless asked: windows start at `StreamWindowSize` (256 KiB) and grow toward `MaxStreamWindowSize`
-  (16 MiB) within `TunnelWindowBudget` (64 MiB). On a shared relay with many tunnels, lower
+  (8 MiB) within `TunnelWindowBudget` (64 MiB). On a shared relay with many tunnels, lower
   `MaxStreamsPerTunnel` (512) to bound memory: worst case per tunnel is streams × starting window +
   budget. A public connection beyond the limit gets a 503, and kept-alive connections count while open.
   `PublicWriteTimeout` (60s) disconnects a public client that stops reading.

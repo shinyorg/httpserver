@@ -212,6 +212,11 @@ public sealed class RelayServer : IAsyncDisposable
 
             if (this.options.TunnelWindowBudget < 0)
                 throw new ArgumentOutOfRangeException(nameof(RelayServerOptions.TunnelWindowBudget), this.options.TunnelWindowBudget, "Must not be negative.");
+
+            // Required with flow control: it is what frees a stream whose public client stopped reading. Without it the
+            // stream's window, its slot and the request loop that would close it all wait on that client for ever.
+            if (this.options.PublicWriteTimeout <= TimeSpan.Zero || this.options.PublicWriteTimeout == Timeout.InfiniteTimeSpan)
+                throw new ArgumentOutOfRangeException(nameof(RelayServerOptions.PublicWriteTimeout), this.options.PublicWriteTimeout, "Must be a positive, finite time while flow control is on.");
         }
 
         this.controlListener = new SocketConnectionListener(

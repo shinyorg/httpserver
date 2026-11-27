@@ -22,7 +22,12 @@ sealed class TunnelSession(
     RelayServerOptions options
 ) : IAsyncDisposable
 {
+    // Two views of the same streams. `streams` is what the frame loop routes to, and loses a stream as soon as it ends
+    // from either side. `owned` is every stream whose request loop has not closed it yet - it is that loop's, and only
+    // its close removes it, so the close always finds the stream and waits out a response write still in progress
+    // before the connection is disposed underneath it.
     readonly ConcurrentDictionary<uint, PublicStream> streams = new();
+    readonly ConcurrentDictionary<uint, PublicStream> owned = new();
 
     // What this relay declared, or null with flow control turned off; and what the client declared, once it has.
     readonly TunnelSettings? local = options.EnableFlowControl
@@ -152,6 +157,7 @@ sealed class TunnelSession(
         if (flow)
             stream.Receive = this.CreateReceiver(streamId, stream);
 
+        this.owned[streamId] = stream;
         this.streams[streamId] = stream;
 
         try
@@ -166,8 +172,9 @@ sealed class TunnelSession(
         catch
         {
             // Never announced, so nothing else will close it.
-            if (this.streams.TryRemove(KeyValuePair.Create(streamId, stream)))
-                this.Retire(stream);
+            this.owned.TryRemove(streamId, out _);
+            this.streams.TryRemove(KeyValuePair.Create(streamId, stream));
+            this.Retire(stream);
 
             throw;
         }
@@ -252,7 +259,9 @@ sealed class TunnelSession(
     /// <summary>Sends request bytes down a stream, split across frames when they do not fit in one.</summary>
     public async ValueTask SendAsync(uint streamId, ReadOnlyMemory<byte> payload, CancellationToken cancellationToken)
     {
-        var window = this.streams.TryGetValue(streamId, out var stream) ? stream.Send : null;
+        // Looked up among the streams the request loop still owns: one the client has already closed keeps its
+        // (closed) window, so the rest of its body is dropped here rather than sent with no window at all.
+        var window = this.owned.TryGetValue(streamId, out var stream) ? stream.Send : null;
 
         while (!payload.IsEmpty)
         {
@@ -276,7 +285,7 @@ sealed class TunnelSession(
     /// <summary>Sends request bytes straight from a pipe buffer. Must already fit in one frame.</summary>
     public async ValueTask SendAsync(uint streamId, ReadOnlySequence<byte> payload, CancellationToken cancellationToken)
     {
-        if (!this.streams.TryGetValue(streamId, out var stream) || stream.Send is not { } window)
+        if (!this.owned.TryGetValue(streamId, out var stream) || stream.Send is not { } window)
         {
             await channel.SendAsync(TunnelFrameType.Data, streamId, payload, cancellationToken).ConfigureAwait(false);
             return;
@@ -301,9 +310,12 @@ sealed class TunnelSession(
     /// </summary>
     public async ValueTask DetachStreamAsync(uint streamId)
     {
-        if (!this.streams.TryRemove(streamId, out var stream))
+        if (!this.owned.TryRemove(streamId, out var stream))
             return;
 
+        // Found even when the stream already ended from the client's side or was reset: whatever is still writing to
+        // the public connection - a response tail being delivered - is waited out here, under the gate.
+        this.streams.TryRemove(KeyValuePair.Create(streamId, stream));
         stream.Receive?.Abort();
         stream.Send?.Close();
 
@@ -511,16 +523,17 @@ sealed class TunnelSession(
         if (Interlocked.Exchange(ref this.disposed, 1) != 0)
             return;
 
-        foreach (var streamId in this.streams.Keys)
+        // Every stream still open, routed or draining. Aborting the connection is what makes its request loop end and
+        // close it, which removes it from `owned` the ordinary way.
+        foreach (var stream in this.owned.Values.Concat(this.streams.Values).Distinct())
         {
-            if (this.streams.TryRemove(streamId, out var stream))
-            {
-                stream.Receive?.Abort();
-                stream.Send?.Close();
-                stream.Connection.Abort();
-                this.Retire(stream);
-            }
+            stream.Receive?.Abort();
+            stream.Send?.Close();
+            stream.Connection.Abort();
+            this.Retire(stream);
         }
+
+        this.streams.Clear();
 
         await channel.DisposeAsync().ConfigureAwait(false);
         await control.DisposeAsync().ConfigureAwait(false);

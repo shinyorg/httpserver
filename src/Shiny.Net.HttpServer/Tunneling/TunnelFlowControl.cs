@@ -302,16 +302,18 @@ sealed class StreamWindowBudget(long capacity)
     /// <summary>Room left, for diagnostics and tests.</summary>
     public long Remaining => Interlocked.Read(ref this.remaining);
 
-    public bool TryTake(long amount)
+    /// <summary>Takes as much of <paramref name="wanted"/> as there is room for; returns what was taken.</summary>
+    public long TakeUpTo(long wanted)
     {
         while (true)
         {
             var current = Interlocked.Read(ref this.remaining);
-            if (current < amount)
-                return false;
+            var taken = Math.Min(current, wanted);
+            if (taken <= 0)
+                return 0;
 
-            if (Interlocked.CompareExchange(ref this.remaining, current - amount, current) == current)
-                return true;
+            if (Interlocked.CompareExchange(ref this.remaining, current - taken, current) == current)
+                return taken;
         }
     }
 
@@ -335,6 +337,7 @@ sealed class StreamWindowBudget(long capacity)
 /// </summary>
 sealed class StreamReceiver
 {
+    readonly int initialWindow;
     readonly int maxWindow;
     readonly Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask<bool>> deliver;
     readonly Func<int, ValueTask> grant;
@@ -377,6 +380,7 @@ sealed class StreamReceiver
     )
     {
         this.window = window;
+        this.initialWindow = window;
         this.maxWindow = Math.Max(window, maxWindow);
         this.deliver = deliver;
         this.grant = grant;
@@ -463,12 +467,12 @@ sealed class StreamReceiver
                 if (pending >= Interlocked.Read(ref this.window) / 2 && Volatile.Read(ref this.stopped) == 0)
                 {
                     var now = System.Diagnostics.Stopwatch.GetTimestamp();
-                    var extra = this.Grow(now - lastGrant);
-                    grown += extra;
+                    var resize = this.Resize(now - lastGrant, pending);
+                    grown += resize;
                     lastGrant = now;
 
                     Interlocked.Add(ref this.outstanding, -pending);
-                    await this.grant(pending + extra).ConfigureAwait(false);
+                    await this.grant(pending + resize).ConfigureAwait(false);
                     pending = 0;
                 }
             }
@@ -492,6 +496,35 @@ sealed class StreamReceiver
     }
 
     /// <summary>
+    /// Grows the window while it is the bottleneck, and shrinks a grown one once it is not. Returns the change, which is
+    /// added to - or, shrinking, withheld from - the grant that is about to go out for <paramref name="delivered"/>.
+    /// <para>
+    /// Shrinking can only happen this way: credit already granted is the sender's to spend, so the window comes down
+    /// by granting back less than was delivered. When half the window took two round trips or more to go through, the
+    /// destination or the sender is the limit and the window is bigger than it needs to be; giving the room back to
+    /// the tunnel's budget lets a transfer that is window-bound grow instead. A stream that falls idle keeps its window
+    /// - the sender could still use all of it - until it closes, or is busy again and slower.
+    /// </para>
+    /// </summary>
+    int Resize(long elapsed, int delivered)
+    {
+        var current = Interlocked.Read(ref this.window);
+        if (current > this.initialWindow
+            && this.roundTrip?.Estimate is { } estimate
+            && elapsed >= 2 * estimate.TotalSeconds * System.Diagnostics.Stopwatch.Frequency)
+        {
+            // Lowered before the smaller grant goes out, so the sender can never be ahead of it. At most half of what
+            // was delivered, so the stream always gets credit back.
+            var shrink = (int)Math.Min(current - this.initialWindow, delivered / 2);
+            Interlocked.Add(ref this.window, -shrink);
+            this.budget?.Return(shrink);
+            return -shrink;
+        }
+
+        return this.Grow(elapsed);
+    }
+
+    /// <summary>
     /// Grows the window when half of it was delivered in less than a round trip - the sender is waiting on credit, not
     /// the destination on data - within the cap and the tunnel's budget. Returns the bytes it grew by, which go out
     /// with the grant. The window is raised before the credit, so the sender can never be ahead of it.
@@ -502,11 +535,12 @@ sealed class StreamReceiver
         if (current >= this.maxWindow || this.roundTrip is not { } roundTrip)
             return 0;
 
+        // Every time, not only before the first sample: the round trip changes - a phone moving between networks -
+        // and the estimator itself decides how often a fresh sample is worth a Ping.
+        this.sampleRoundTrip?.Invoke();
+
         if (roundTrip.Estimate is not { } estimate)
-        {
-            this.sampleRoundTrip?.Invoke();
             return 0;
-        }
 
         var roundTripTicks = estimate.TotalSeconds * System.Diagnostics.Stopwatch.Frequency;
         if (elapsed >= roundTripTicks)
@@ -517,7 +551,12 @@ sealed class StreamReceiver
         // only doubled, which on a fresh stream took a round trip per doubling to reach a fast link's speed.
         var factor = Math.Clamp(roundTripTicks / Math.Max(1, elapsed), 2, 8);
         var growth = (int)Math.Min(current * (factor - 1), this.maxWindow - current);
-        if (this.budget is not null && !this.budget.TryTake(growth))
+
+        // As much of it as the tunnel has room for: a budget nearly spent still lets a window grow a little.
+        if (this.budget is not null)
+            growth = (int)this.budget.TakeUpTo(growth);
+
+        if (growth <= 0)
             return 0;
 
         Interlocked.Add(ref this.window, growth);

@@ -71,6 +71,17 @@ public class TunnelFlowControlTests
 
             Assert.NotNull(provider.PublicUrl);
 
+            // Registered is not negotiated: the relay reads the client's Settings on its frame loop, which starts after
+            // the acknowledgement. A first request before that would open a stream without flow control.
+            if (relaySettings.EnableFlowControl && agentSettings.EnableFlowControl)
+            {
+                var host = $"{Subdomain}.localhost";
+                while (relay.FindSession(host)?.FlowControlNegotiated != true && DateTime.UtcNow < deadline)
+                    await Task.Delay(10);
+
+                Assert.True(relay.FindSession(host)?.FlowControlNegotiated);
+            }
+
             return new Fixture
             {
                 Relay = relay,
@@ -400,5 +411,33 @@ public class TunnelFlowControlTests
         var session = fixture.Relay.FindSession(fixture.Host)!;
         await Wait.UntilAsync(() => session.FlowStreams == 0, Token);
         Assert.Equal(0, session.FlowStreams);
+    }
+
+    [Fact]
+    public async Task Window_growth_is_given_back_as_streams_end()
+    {
+        await using var fixture = await Fixture.StartAsync(app => app.MapPost("/upload", async ctx =>
+        {
+            await ctx.Request.Body.CopyToAsync(Stream.Null, ctx.RequestAborted);
+            await ctx.Response.WriteAsync("ok");
+        }));
+
+        // Each upload on a connection of its own that closes after the response, so each stream ends - and with it
+        // whatever room its window grew into.
+        for (var i = 0; i < 6; i++)
+        {
+            using var client = new HttpClient { BaseAddress = fixture.Client.BaseAddress };
+            client.DefaultRequestHeaders.ConnectionClose = true;
+
+            var request = fixture.Request(HttpMethod.Post, "/upload");
+            request.Content = new ByteArrayContent(Random(4 * 1024 * 1024, i));
+            var response = await client.SendAsync(request, Token);
+            Assert.Equal("ok", await response.Content.ReadAsStringAsync(Token));
+        }
+
+        var full = new RelayTunnelOptions().TunnelWindowBudget;
+        await Wait.UntilAsync(() => fixture.Provider.WindowBudgetRemaining == full && fixture.Provider.FlowStreams == 0, Token);
+        Assert.Equal(full, fixture.Provider.WindowBudgetRemaining);
+        Assert.Equal(0, fixture.Provider.FlowStreams);
     }
 }

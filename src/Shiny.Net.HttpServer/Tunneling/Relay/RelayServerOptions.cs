@@ -101,9 +101,11 @@ public sealed class RelayServerOptions
 
     /// <summary>
     /// How far one stream's window may grow while its public client keeps up - which is what carries a large transfer
-    /// at full speed over a long round trip (a stream moves at most one window per round trip). 16 MiB by default.
+    /// at full speed over a long round trip: a stream moves at most one window per round trip, so 8 MiB is ~160 MB/s at
+    /// 50 ms. A stream keeps what it grew into, charged to <see cref="TunnelWindowBudget"/>, until it slows down or
+    /// closes. 8 MiB by default.
     /// </summary>
-    public int MaxStreamWindowSize { get; set; } = 16 * 1024 * 1024;
+    public int MaxStreamWindowSize { get; set; } = 8 * 1024 * 1024;
 
     /// <summary>
     /// Room, across all of one tunnel's streams, for windows to grow beyond <see cref="StreamWindowSize"/>. Growth stops

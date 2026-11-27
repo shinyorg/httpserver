@@ -576,7 +576,10 @@ public sealed class RelayTunnelProvider : ITunnelProvider
             return;
         }
 
-        // Whatever of the request is still queued reaches the app first, then the app sees its end.
+        // The relay has given this stream's place back; so does this end, to keep the two counts in step. Whatever of
+        // the request is still queued reaches the app first - a client that sent its request and half-closed is still
+        // owed an answer to all of it - then the app sees its end.
+        this.Retire(stream);
         receiver.Complete();
         _ = receiver.Completion.ContinueWith(
             static (_, state) => ((DuplexPipeConnection)state!).TransportWriter.Complete(),
@@ -652,6 +655,10 @@ public sealed class RelayTunnelProvider : ITunnelProvider
             // This stream's entry only: after a reconnect the id can belong to a new stream already.
             this.streams.TryRemove(KeyValuePair.Create(streamId, stream));
             stream.Send?.Close();
+
+            // The app has closed its side, so nothing more of the request will be read. Ending the receiver is what
+            // returns the room its window grew into; left waiting, a stream whose app closed first kept it for good.
+            stream.Receive?.Abort();
             this.Retire(stream);
 
             if (tunnel is not null)

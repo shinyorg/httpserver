@@ -360,8 +360,10 @@ public class TunnelFlowControlUnitTests
 
         await FeedAsync(receiver, sender, 4L * 1024 * 1024);
 
-        // Room for one window's worth of growth: it doubled, once, and took all of it.
+        // Room for one window's worth of growth: it grew, by no more than that, and took all of it.
+        Assert.True(receiver.Window > Initial, $"The window never grew from {receiver.Window}.");
         Assert.True(receiver.Window <= 2 * Initial, $"The window grew to {receiver.Window}.");
+        Assert.Equal(0, budget.Remaining);
 
         receiver.Complete();
         await receiver.Completion.WaitAsync(TimeSpan.FromSeconds(10), Token);
@@ -416,5 +418,47 @@ public class TunnelFlowControlUnitTests
         Assert.False(roundTrip.TryBeginSample());
         roundTrip.OnPong();
         Assert.Equal(first, roundTrip.Estimate);
+    }
+
+    [Fact]
+    public async Task A_grown_window_shrinks_back_once_it_is_no_longer_the_bottleneck()
+    {
+        const int Initial = 64 * 1024;
+        var roundTrip = RoundTripOf(TimeSpan.FromMilliseconds(100));
+        var sender = new StreamSendWindow(Initial);
+        var budget = new StreamWindowBudget(64L * 1024 * 1024);
+        var slow = false;
+
+        var receiver = new StreamReceiver(
+            Initial,
+            async (_, ct) =>
+            {
+                // Fast at first, so the window grows; then far slower than a round trip, so it has no need to be big.
+                if (Volatile.Read(ref slow))
+                    await Task.Delay(roundTrip.Estimate!.Value * 3, ct);
+                return true;
+            },
+            increment =>
+            {
+                sender.Add(increment);
+                return ValueTask.CompletedTask;
+            },
+            maxWindow: 4 * 1024 * 1024,
+            roundTrip,
+            budget
+        );
+
+        await FeedAsync(receiver, sender, 8L * 1024 * 1024);
+        await Wait.UntilAsync(() => receiver.Outstanding < receiver.Window / 2, Token);
+        var grown = receiver.Window;
+        Assert.True(grown > Initial, $"The window never grew from {grown}.");
+
+        Volatile.Write(ref slow, true);
+        await FeedAsync(receiver, sender, 2L * 1024 * 1024);
+        receiver.Complete();
+        await receiver.Completion.WaitAsync(TimeSpan.FromSeconds(60), Token);
+
+        Assert.True(receiver.Window < grown, $"The window stayed at {receiver.Window}.");
+        Assert.Equal(64L * 1024 * 1024, budget.Remaining);
     }
 }
