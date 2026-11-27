@@ -93,14 +93,13 @@ static class DocumentCollectionEndpointHandlers
     static ApiResponse Problem(int status)
         => new() { StatusCode = status, Type = typeof(ProblemDetails), ContentType = "application/problem+json" };
 
-    static IJsonDocumentCollection Collection(HttpContext http, string name, DocumentCollectionEndpointOptions options)
-    {
-        var store = options.StoreName is null
+    static IDocumentStore Store(HttpContext http, DocumentCollectionEndpointOptions options)
+        => options.StoreName is null
             ? http.RequestServices.GetRequiredService<IDocumentStore>()
             : http.RequestServices.GetRequiredKeyedService<IDocumentStore>(options.StoreName);
 
-        return store.Collection(name, options.IdProperty);
-    }
+    static IJsonDocumentCollection Collection(HttpContext http, string name, DocumentCollectionEndpointOptions options)
+        => Store(http, options).Collection(name, options.IdProperty);
 
     static async Task<IResult> Guard(HttpContext http, Func<Task<IResult>> handler)
     {
@@ -270,7 +269,15 @@ static class DocumentCollectionEndpointHandlers
     {
         AssertUnscoped(options, patch ? "patched" : "replaced");
 
-        var collection = Collection(http, name, options);
+        var store = Store(http, options);
+        var collection = store.Collection(name, options.IdProperty);
+
+        // Every write to this document through this server takes the same lock — not only the JSON Patch that
+        // needs it — so a replace or merge cannot land between a JSON Patch's read and its write-back and be
+        // overwritten by a result computed from the body it replaced.
+        using var held = await DocumentWriteLocks
+            .AcquireAsync(store, name, id, http.RequestAborted)
+            .ConfigureAwait(false);
 
         if (patch && http.Request.IsJsonPatch())
         {
@@ -306,20 +313,21 @@ static class DocumentCollectionEndpointHandlers
 
     static async Task<IResult> Delete(HttpContext http, string id, string name, DocumentCollectionEndpointOptions options)
     {
-        // Deletes resolve through the scoped query first, so this one IS safe alongside a scope.
-        var query = await Build(http, name, options, Request(http, options)).ConfigureAwait(false);
+        // The delete is the scoped query itself, so this one IS safe alongside a scope: the scope and the id are
+        // one statement's WHERE clause. Checking the scope with a read and then removing by id leaves a window in
+        // which another writer can move the document out of the caller's scope and still have it deleted.
+        // Built here rather than through Build: a list's sort and paging have no business on a DELETE.
+        var query = Collection(http, name, options).Query();
 
-        var match = await query
+        foreach (var clause in await Scope(http, options).ConfigureAwait(false))
+            query = query.Where(clause);
+
+        var removed = await query
             .Where(IdClause(options.IdProperty, id))
-            .FirstOrDefault(http.RequestAborted)
+            .ExecuteDelete(http.RequestAborted)
             .ConfigureAwait(false);
 
-        if (match is null)
-            return NotFound(id);
-
-        await Collection(http, name, options).Remove(id, http.RequestAborted).ConfigureAwait(false);
-
-        return Results.NoContent();
+        return removed == 0 ? NotFound(id) : Results.NoContent();
     }
 
     /// <summary>

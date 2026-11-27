@@ -58,7 +58,8 @@ sealed class DocumentServer : IAsyncDisposable
         Action<DocumentEndpointOptions<Order>>? configure = null,
         Action<HttpServer>? mapExtra = null,
         Action<DocumentResourceBuilder>? compose = null,
-        bool secured = false
+        bool secured = false,
+        IDocumentInterceptor? interceptor = null
     )
     {
         var fixture = new DocumentServer();
@@ -98,6 +99,9 @@ sealed class DocumentServer : IAsyncDisposable
                     o.DatabaseProvider = new SqliteDatabaseProvider(database);
                     o.JsonSerializerOptions = OrderJson.Default.Options;
                     o.ConfigureDocument<Order>(cfg => cfg.MapVersionProperty(x => x.Version));
+
+                    if (interceptor != null)
+                        o.AddInterceptor(interceptor);
                 });
             }
         );

@@ -455,9 +455,10 @@ static class DocumentEndpointHandlers<T> where T : class
 
         await store.Update(incoming, typeInfo, http.RequestAborted).ConfigureAwait(false);
 
-        var saved = await store.Get(id, typeInfo, http.RequestAborted).ConfigureAwait(false);
-        if (saved != null)
-            SetETag(http, store, saved);
+        // The store stamps the version it wrote onto the instance it was handed, so the ETag comes from this
+        // write. Reading the document back instead can pick up another client's newer write, and an ETag for a
+        // version this caller never saw would let its next If-Match overwrite that change unseen.
+        SetETag(http, store, incoming);
 
         return Results.NoContent();
     }
@@ -482,23 +483,36 @@ static class DocumentEndpointHandlers<T> where T : class
         // store's own merge deliberately treats a null as "leave alone" — it has to, because a serialized T
         // carries nulls for every unset member — but over HTTP an explicit null is the caller's word, and it
         // means remove. Doing the merge here keeps that promise on every provider, and gives JSON Patch the
-        // same If-Match before and the same scope check after.
+        // same If-Match and the same scope check as a replace.
         var current = JsonNode.Parse(Serialize(existing, typeInfo))!.AsObject();
         var merged = await PatchBody.ApplyAsync(http, current).ConfigureAwait(false);
 
-        var collection = store.Collection(typeof(T));
-        merged[collection.IdProperty] ??= id;
+        merged[store.Collection(typeof(T)).IdProperty] ??= id;
 
-        await collection.Update(merged, patch: false, http.RequestAborted).ConfigureAwait(false);
+        var patched = merged.Deserialize(DocumentEncryption.PlaintextView(Require(typeInfo)))
+            ?? throw new BadRequestException("The patch must leave a document behind.");
 
-        var saved = await store.Get(id, typeInfo, http.RequestAborted).ConfigureAwait(false);
-        if (saved is null || !scope.Contains(saved))
+        // The scope is checked against the patched document BEFORE it is written. Checking the stored result
+        // afterwards answered 400 for a write that had already committed — the document out of the caller's
+        // scope, and the caller told nothing happened.
+        if (!scope.Contains(patched))
             return Results.Problem(
                 StatusCodes.Status400BadRequest,
-                detail: "The patch would move the document outside the scope this endpoint enforces."
+                detail: "The patch would move the document outside the scope this endpoint enforces and was not saved."
             );
 
-        SetETag(http, store, saved);
+        // Written through the typed Update, the same compare-and-swap a replace gets: the version compared is
+        // pinned here rather than left to whatever the patch did to the version member — the one the caller saw
+        // when If-Match was supplied, otherwise the one this read returned — so a write that lands between the
+        // read and this update is a 412, never silently undone.
+        if (version != null)
+            version.SetVersion(patched, ifMatch ?? version.GetVersion(existing));
+
+        await store.Update(patched, typeInfo, http.RequestAborted).ConfigureAwait(false);
+
+        // The store stamps the version it wrote onto the instance: the ETag is this write's, not whatever a
+        // second read would find after another client got in.
+        SetETag(http, store, patched);
 
         return Results.NoContent();
     }
@@ -517,6 +531,18 @@ static class DocumentEndpointHandlers<T> where T : class
         var version = Version(store, http);
         if (ifMatch != null && version != null && version.GetVersion(existing) != ifMatch)
             return Precondition(version.GetVersion(existing));
+
+        // Remove has no version condition, so on its own a write that lands between the check above and the
+        // delete is deleted unseen. A conditional update of the document we just read — same body, version
+        // compared by the store — closes that window: if anything else got in it is a 412, and once it commits
+        // the document carries a version no client has been handed, so no If-Match can slip in before the
+        // delete. The store has no conditional delete that keeps per-document interceptors and the change feed
+        // in the loop, which is why this is a guarded update and not a filtered ExecuteDelete.
+        if (ifMatch != null && version != null)
+        {
+            version.SetVersion(existing, ifMatch.Value);
+            await store.Update(existing, typeInfo, http.RequestAborted).ConfigureAwait(false);
+        }
 
         await store.Remove<T>(id, http.RequestAborted).ConfigureAwait(false);
 
