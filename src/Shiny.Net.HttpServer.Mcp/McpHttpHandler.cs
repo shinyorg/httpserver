@@ -89,11 +89,11 @@ sealed class McpHttpHandler(McpHttpSessionManager sessions, ILoggerFactory? logg
             return;
         }
 
+        // Comes back with this request already registered against it, so it cannot be reclaimed under us.
         var (session, owned) = await this.ResolveSessionAsync(context, message).ConfigureAwait(false);
         if (session is null)
             return;
 
-        session.Enter();
         try
         {
             // Set before the first write and never after: the response starts on that write, and a
@@ -139,7 +139,7 @@ sealed class McpHttpHandler(McpHttpSessionManager sessions, ILoggerFactory? logg
 
         if (sessionId is not null)
         {
-            if (sessions.TryGet(sessionId, out var existing))
+            if (sessions.TryAcquire(sessionId, out var existing))
                 return (existing, false);
 
             // 404 rather than 400: the spec has clients treat it as "start over with a fresh
@@ -158,7 +158,7 @@ sealed class McpHttpHandler(McpHttpSessionManager sessions, ILoggerFactory? logg
         // the server can speak down.
         if (message is JsonRpcRequest request && request.Method == RequestMethods.Initialize)
         {
-            var created = sessions.Create();
+            var created = await sessions.CreateAsync().ConfigureAwait(false);
             if (created is null)
             {
                 await WriteErrorAsync(
@@ -216,7 +216,7 @@ sealed class McpHttpHandler(McpHttpSessionManager sessions, ILoggerFactory? logg
         }
 
         var sessionId = context.Request.Headers.GetFirst(SessionIdHeader);
-        if (sessionId is null || !sessions.TryGet(sessionId, out var session))
+        if (sessionId is null || !sessions.TryAcquire(sessionId, out var session))
         {
             await WriteErrorAsync(
                 context,
@@ -226,7 +226,6 @@ sealed class McpHttpHandler(McpHttpSessionManager sessions, ILoggerFactory? logg
             return;
         }
 
-        session.Enter();
         try
         {
             context.Response.ContentType = EventStream;

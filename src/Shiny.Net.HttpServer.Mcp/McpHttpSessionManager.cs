@@ -23,6 +23,9 @@ sealed class McpHttpSessionManager : IAsyncDisposable
     readonly IOptionsFactory<McpServerOptions> serverOptions;
     readonly ILoggerFactory loggerFactory;
     readonly ILogger<McpHttpSessionManager> logger;
+    // Create and DisposeAsync take this, so a session is either tracked before shutdown starts — and
+    // disposed by it — or never tracked; not added after DisposeAsync has looked, to run on forever.
+    readonly object lifetime = new();
     Task? sweeper;
     bool disposed;
 
@@ -44,15 +47,20 @@ sealed class McpHttpSessionManager : IAsyncDisposable
 
     public int Count => this.sessions.Count;
 
-    public bool TryGet(string sessionId, out McpHttpSession session)
-        => this.sessions.TryGetValue(sessionId, out session!);
+    /// <summary>
+    /// Finds a session and registers a request against it, as one step: false when there is no such
+    /// session or it is being reclaimed. On true, the caller calls <see cref="McpHttpSession.Exit"/>.
+    /// </summary>
+    public bool TryAcquire(string sessionId, out McpHttpSession session)
+        => this.sessions.TryGetValue(sessionId, out session!) && session.TryEnter();
 
     /// <summary>
-    /// Creates a tracked session, or null when <see cref="McpHttpOptions.MaxSessions"/> is reached.
+    /// Creates a tracked session with a request already registered against it (the initialize that asked
+    /// for it), or null when <see cref="McpHttpOptions.MaxSessions"/> is reached.
     /// </summary>
-    public McpHttpSession? Create()
+    public async ValueTask<McpHttpSession?> CreateAsync()
     {
-        ObjectDisposedException.ThrowIf(this.disposed, this);
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref this.disposed), this);
 
         // Racy against concurrent initializes by exactly the width of the check, which is fine: the
         // limit is a guard rail, not an accounting boundary, and paying for a lock on every
@@ -64,8 +72,26 @@ sealed class McpHttpSessionManager : IAsyncDisposable
         }
 
         var session = this.CreateCore(stateless: false);
-        this.sessions[session.Id] = session;
-        this.EnsureSweeper();
+        session.TryEnter();
+
+        bool tracked;
+        lock (this.lifetime)
+        {
+            tracked = !this.disposed;
+            if (tracked)
+            {
+                this.sessions[session.Id] = session;
+                this.EnsureSweeper();
+            }
+        }
+
+        if (!tracked)
+        {
+            // Shutdown started while this was being built; nothing would ever dispose it.
+            session.Exit();
+            await session.DisposeAsync().ConfigureAwait(false);
+            throw new ObjectDisposedException(nameof(McpHttpSessionManager));
+        }
 
         this.logger.LogDebug("MCP session {SessionId} opened ({Count} open)", session.Id, this.sessions.Count);
         return session;
@@ -80,7 +106,14 @@ sealed class McpHttpSessionManager : IAsyncDisposable
     /// arrives without a session has by definition not initialized.
     /// </para>
     /// </summary>
-    public McpHttpSession CreateTransient() => this.CreateCore(stateless: true);
+    public McpHttpSession CreateTransient()
+    {
+        var session = this.CreateCore(stateless: true);
+
+        // Nobody else can see it, so this cannot be refused.
+        session.TryEnter();
+        return session;
+    }
 
     McpHttpSession CreateCore(bool stateless)
     {
@@ -121,6 +154,7 @@ sealed class McpHttpSessionManager : IAsyncDisposable
         return true;
     }
 
+    // Called under the lifetime lock, so DisposeAsync either sees the sweeper or stops one from starting.
     void EnsureSweeper()
     {
         // Started on the first session rather than at construction: an app that registers the
@@ -128,8 +162,8 @@ sealed class McpHttpSessionManager : IAsyncDisposable
         if (this.sweeper is not null)
             return;
 
-        lock (this.sessions)
-            this.sweeper ??= Task.Run(() => this.SweepLoopAsync(this.stopping.Token), CancellationToken.None);
+        var token = this.stopping.Token;
+        this.sweeper = Task.Run(() => this.SweepLoopAsync(token), CancellationToken.None);
     }
 
     async Task SweepLoopAsync(CancellationToken cancellationToken)
@@ -140,13 +174,15 @@ sealed class McpHttpSessionManager : IAsyncDisposable
         {
             while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
             {
+                // Claiming is what makes it safe: a claimed session refuses every request from then on, and
+                // the removal is of this exact session, never one that replaced it under the same id.
                 foreach (var entry in this.sessions)
                 {
-                    if (!entry.Value.IsIdle(this.Options.IdleSessionTimeout))
-                        continue;
-
-                    this.logger.LogInformation("Reclaiming idle MCP session {SessionId}", entry.Key);
-                    await this.RemoveAsync(entry.Key).ConfigureAwait(false);
+                    if (entry.Value.TryClaimIdle(this.Options.IdleSessionTimeout) && this.sessions.TryRemove(entry))
+                    {
+                        this.logger.LogInformation("Reclaiming idle MCP session {SessionId}", entry.Key);
+                        await entry.Value.DisposeAsync().ConfigureAwait(false);
+                    }
                 }
             }
         }
@@ -162,14 +198,20 @@ sealed class McpHttpSessionManager : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        if (this.disposed)
-            return;
+        Task? sweeping;
 
-        this.disposed = true;
+        lock (this.lifetime)
+        {
+            if (this.disposed)
+                return;
+
+            this.disposed = true;
+            sweeping = this.sweeper;
+        }
 
         await this.stopping.CancelAsync().ConfigureAwait(false);
 
-        if (this.sweeper is { } running)
+        if (sweeping is { } running)
         {
             try
             {

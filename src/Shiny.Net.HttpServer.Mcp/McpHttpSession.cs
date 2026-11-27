@@ -60,38 +60,95 @@ sealed class McpHttpSession : IAsyncDisposable
     /// <summary>Marks the session as in use, deferring idle collection.</summary>
     public void Touch() => Volatile.Write(ref this.lastActivity, Environment.TickCount64);
 
-    /// <summary>Registers a request as in flight against this session.</summary>
-    public void Enter()
+    // Requests in flight, or negative once the session is closing: the sweeper claiming an idle session
+    // and a request entering it are one compare-and-swap on the same field, so exactly one of them wins.
+    // Looking the session up and then entering it as two steps let the sweeper dispose it in between,
+    // and the request then ran against a disposed transport.
+
+    /// <summary>
+    /// Registers a request as in flight against this session. False when the session is closing — the
+    /// caller treats it as gone, the same as an id it never knew.
+    /// </summary>
+    public bool TryEnter()
     {
-        Interlocked.Increment(ref this.inFlight);
-        this.Touch();
+        var current = Volatile.Read(ref this.inFlight);
+
+        while (current >= 0)
+        {
+            var seen = Interlocked.CompareExchange(ref this.inFlight, current + 1, current);
+            if (seen == current)
+            {
+                this.Touch();
+                return true;
+            }
+
+            current = seen;
+        }
+
+        return false;
     }
 
-    /// <summary>Releases a request registered by <see cref="Enter"/>.</summary>
+    /// <summary>Releases a request registered by <see cref="TryEnter"/>.</summary>
     public void Exit()
     {
-        Interlocked.Decrement(ref this.inFlight);
+        // Touched before the count drops, so a sweeper that sees no request in flight also sees this one
+        // as just finished rather than as long quiet.
         this.Touch();
+        Interlocked.Decrement(ref this.inFlight);
     }
 
     /// <summary>
-    /// Whether nothing has touched this session for <paramref name="timeout"/>. Measured against
-    /// <see cref="Environment.TickCount64"/> rather than the wall clock, so a device sleeping,
-    /// waking, or having its time corrected by NTP cannot make sessions expire early or never.
+    /// Claims the session for reclaiming if nothing has touched it for <paramref name="timeout"/> and no
+    /// request is in flight. Once this returns true no request can enter it, so the caller disposes it.
     /// <para>
-    /// A session with a request still open is never idle, however long it has been quiet. An SSE
-    /// stream sitting silently for an hour waiting for the server to say something is the healthy
-    /// case, not an abandoned session, and reclaiming it would cut the client off mid-conversation.
+    /// Measured against <see cref="Environment.TickCount64"/> rather than the wall clock, so a device
+    /// sleeping, waking, or having its time corrected by NTP cannot make sessions expire early or never.
+    /// A session with a request still open is never idle, however long it has been quiet. An SSE stream
+    /// sitting silently for an hour waiting for the server to say something is the healthy case, not an
+    /// abandoned session, and reclaiming it would cut the client off mid-conversation.
     /// </para>
     /// </summary>
-    public bool IsIdle(TimeSpan timeout)
-        => Volatile.Read(ref this.inFlight) == 0 &&
-           Environment.TickCount64 - Volatile.Read(ref this.lastActivity) > (long)timeout.TotalMilliseconds;
+    public bool TryClaimIdle(TimeSpan timeout)
+    {
+        if (!this.QuietFor(timeout))
+            return false;
+
+        if (Interlocked.CompareExchange(ref this.inFlight, int.MinValue, 0) != 0)
+            return false;
+
+        // A whole request can start and finish between the look at the clock and the claim; it touched
+        // the session on the way, so look again, and hand the session back if it was just used.
+        if (this.QuietFor(timeout))
+            return true;
+
+        Interlocked.CompareExchange(ref this.inFlight, 0, int.MinValue);
+        return false;
+    }
+
+    bool QuietFor(TimeSpan timeout)
+        => Environment.TickCount64 - Volatile.Read(ref this.lastActivity) > (long)timeout.TotalMilliseconds;
+
+    /// <summary>Refuses every request from now on. Those already in flight finish against the closing session.</summary>
+    void MarkClosing()
+    {
+        var current = Volatile.Read(ref this.inFlight);
+
+        while (current >= 0)
+        {
+            var seen = Interlocked.CompareExchange(ref this.inFlight, current + int.MinValue, current);
+            if (seen == current)
+                return;
+
+            current = seen;
+        }
+    }
 
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref this.disposed, 1) == 1)
             return;
+
+        this.MarkClosing();
 
         // Order matters: disposing the transport completes its message channel, which is what lets
         // RunAsync return on its own. Cancelling first would be the blunt version of the same thing
