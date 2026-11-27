@@ -25,7 +25,9 @@ sealed class BoardRuntime : IAsyncDisposable
     readonly IServiceProvider services;
     readonly IUserIdProvider userIds;
     readonly ILogger logger;
-    readonly object sweeperGate = new();
+    // Open and DisposeAsync take this, so a line is either published before shutdown starts — and closed
+    // by it — or refused; never added after DisposeAsync has looked, to outlive the board.
+    readonly object lifetime = new();
     readonly ISwitchboardFilter[] filters;
     readonly string name;
     Task? sweeper;
@@ -73,10 +75,14 @@ sealed class BoardRuntime : IAsyncDisposable
 
     public Line? FindByToken(string token) => this.byToken.GetValueOrDefault(token);
 
-    /// <summary>Creates and tracks a new line for a connect request. Null when <see cref="SwitchboardOptions.MaxLines"/> is reached.</summary>
+    /// <summary>
+    /// Creates and tracks a new line for a connect request. Null when <see cref="SwitchboardOptions.MaxLines"/>
+    /// is reached. The line comes back with its whole invocation gate held (see <see cref="Line.HoldGateForConnect"/>);
+    /// the caller releases it once <c>OnConnectedAsync</c> has run, or the connect has failed.
+    /// </summary>
     public Line? Open(HttpContext context)
     {
-        ObjectDisposedException.ThrowIf(this.disposed != 0, this);
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref this.disposed) != 0, this);
 
         // Racy by the width of the check, which is fine: the limit is a guard rail, not an
         // accounting boundary, and making it exact would put a lock on every connect.
@@ -102,9 +108,18 @@ sealed class BoardRuntime : IAsyncDisposable
             context.Connection.RemoteIpAddress
         );
 
-        this.byId[line.Id] = line;
-        this.byToken[line.Token] = line;
-        this.EnsureSweeper();
+        // Before the line is published: nothing can be waiting on the gate yet, so holding it cannot block.
+        line.HoldGateForConnect();
+
+        lock (this.lifetime)
+        {
+            ObjectDisposedException.ThrowIf(this.disposed != 0, this);
+
+            this.byId[line.Id] = line;
+            this.byToken[line.Token] = line;
+            this.EnsureSweeper();
+        }
+
         SwitchboardMetrics.LineOpened(this.name);
 
         this.logger.LogDebug("Line {LineId} opened on {Board} ({Count} open)", line.Id, this.Descriptor.BoardType.Name, this.byId.Count);
@@ -153,6 +168,13 @@ sealed class BoardRuntime : IAsyncDisposable
         if (!line.TryClose(data))
             return false;
 
+        this.OnClosed(line, reason, message, exception);
+        return true;
+    }
+
+    /// <summary>The bookkeeping after a line has been marked closed, by whichever path won.</summary>
+    void OnClosed(Line line, DisconnectReason reason, string? message, Exception? exception)
+    {
         this.byId.TryRemove(line.Id, out _);
         this.byToken.TryRemove(line.Token, out _);
         line.CancelClosed();
@@ -170,26 +192,32 @@ sealed class BoardRuntime : IAsyncDisposable
             TaskContinuationOptions.ExecuteSynchronously,
             TaskScheduler.Default
         );
-
-        return true;
     }
 
     async Task FinalizeAsync(Line line, DisconnectContext disconnect)
     {
-        // OnDisconnectedAsync never overlaps a call on the same line: every in-flight call has seen
-        // LineClosed by now, and this waits for them to let go of the gate — briefly, because a call
-        // that ignores cancellation must not be able to hold up the disconnect forever.
-        var acquired = 0;
-        try
+        // OnDisconnectedAsync never overlaps a call or OnConnectedAsync on the same line: every in-flight
+        // call has seen LineClosed by now, and this waits for them to let go of the gate — and for a stream,
+        // which let go of it once its headers were out, to finish its body — briefly, because a call that
+        // ignores cancellation must not be able to hold up the disconnect forever.
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var acquired = await line.AcquireWholeGateAsync(timeout.Token).ConfigureAwait(false);
+        var settled = acquired == line.MaxParallelInvocations;
+
+        if (settled)
         {
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-            for (; acquired < line.MaxParallelInvocations; acquired++)
-                await line.Gate.WaitAsync(timeout.Token).ConfigureAwait(false);
+            try
+            {
+                await line.CallsDrained().WaitAsync(timeout.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                settled = false;
+            }
         }
-        catch (OperationCanceledException)
-        {
+
+        if (!settled)
             this.logger.LogWarning("Line {LineId} still had a call running 10 seconds after closing", line.Id);
-        }
 
         try
         {
@@ -339,6 +367,7 @@ sealed class BoardRuntime : IAsyncDisposable
 
     // ---- resume window ----
 
+    // Called under the lifetime lock, so DisposeAsync either sees the sweeper or stops one from starting.
     void EnsureSweeper()
     {
         // Started with the first line rather than at construction: an app that maps a switchboard and
@@ -346,8 +375,8 @@ sealed class BoardRuntime : IAsyncDisposable
         if (this.sweeper is not null || this.Options.ResumeWindow <= TimeSpan.Zero)
             return;
 
-        lock (this.sweeperGate)
-            this.sweeper ??= Task.Run(() => this.SweepLoopAsync(this.stopping.Token), CancellationToken.None);
+        var token = this.stopping.Token;
+        this.sweeper = Task.Run(() => this.SweepLoopAsync(token), CancellationToken.None);
     }
 
     async Task SweepLoopAsync(CancellationToken cancellationToken)
@@ -366,10 +395,12 @@ sealed class BoardRuntime : IAsyncDisposable
                 // corrected cannot make a line expire early or never.
                 var now = Environment.TickCount64;
 
+                // The line decides under its own lock, so a resume landing between a look at DetachedAt and
+                // the close cannot be closed out from under its client.
                 foreach (var line in this.byId.Values)
                 {
-                    if (line.DetachedAt is { } detachedAt && now - detachedAt >= windowMs)
-                        this.Close(line, DisconnectReason.Dropped, null, allowReconnect: false);
+                    if (line.TryCloseDetached(now, windowMs))
+                        this.OnClosed(line, DisconnectReason.Dropped, null, null);
                 }
             }
         }
@@ -384,12 +415,20 @@ sealed class BoardRuntime : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref this.disposed, 1) != 0)
-            return;
+        Task? sweeping;
+
+        lock (this.lifetime)
+        {
+            if (this.disposed != 0)
+                return;
+
+            this.disposed = 1;
+            sweeping = this.sweeper;
+        }
 
         await this.stopping.CancelAsync().ConfigureAwait(false);
 
-        if (this.sweeper is { } running)
+        if (sweeping is { } running)
         {
             try
             {
