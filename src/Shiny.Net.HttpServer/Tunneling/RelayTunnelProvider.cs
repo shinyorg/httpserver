@@ -327,19 +327,35 @@ public sealed class RelayTunnelProvider : ITunnelProvider
         {
             while (tunnel is not null)
             {
-                var result = await reader.ReadAsync(connection.Aborted).ConfigureAwait(false);
-                var buffer = result.Buffer;
+                // Read with the provider's token, not the connection's: disposing the connection cancels that one, and
+                // a read cancelled after the app's last bytes arrived but before they were collected dropped the end
+                // of the response. A disposed or aborted connection completes the pipe, which ends the loop anyway.
+                var result = await reader.ReadAsync(this.stopping.Token).ConfigureAwait(false);
 
-                while (!buffer.IsEmpty)
-                {
-                    var chunk = buffer.Slice(0, Math.Min(buffer.Length, TunnelProtocol.MaxPayloadLength));
-                    await tunnel.SendAsync(TunnelFrameType.Data, streamId, chunk, this.stopping.Token)
-                        .ConfigureAwait(false);
-
-                    buffer = buffer.Slice(chunk.End);
-                }
-
+                // Copied out and handed back before any await: the frame waits its turn on a write gate every stream
+                // shares, and pipe memory held across that wait can be returned to the pool by an abort on another
+                // thread and rented by another stream - whose bytes would then go out in this stream's frame.
+                var length = (int)result.Buffer.Length;
+                var pending = System.Buffers.ArrayPool<byte>.Shared.Rent(Math.Max(length, 1));
+                result.Buffer.CopyTo(pending);
                 reader.AdvanceTo(result.Buffer.End);
+
+                try
+                {
+                    var offset = 0;
+                    while (offset < length)
+                    {
+                        var take = Math.Min(length - offset, TunnelProtocol.MaxPayloadLength);
+                        await tunnel.SendAsync(TunnelFrameType.Data, streamId, pending.AsMemory(offset, take), this.stopping.Token)
+                            .ConfigureAwait(false);
+
+                        offset += take;
+                    }
+                }
+                finally
+                {
+                    System.Buffers.ArrayPool<byte>.Shared.Return(pending);
+                }
 
                 if (result.IsCompleted || result.IsCanceled)
                     break;
@@ -350,7 +366,8 @@ public sealed class RelayTunnelProvider : ITunnelProvider
         }
         finally
         {
-            this.streams.TryRemove(streamId, out _);
+            // This stream's entry only: after a reconnect the id can belong to a new stream already.
+            this.streams.TryRemove(KeyValuePair.Create(streamId, connection));
 
             if (tunnel is not null)
             {

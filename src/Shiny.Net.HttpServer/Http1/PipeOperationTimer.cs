@@ -17,8 +17,11 @@ sealed class PipeOperationTimer : IDisposable
 {
     readonly Action cancel;
     readonly Timer timer;
+    readonly object gate = new();
     volatile bool expired;
     bool armed;
+    bool disposed;
+    long deadline;
 
     public PipeOperationTimer(Action cancel)
     {
@@ -34,24 +37,64 @@ sealed class PipeOperationTimer : IDisposable
         if (timeout <= TimeSpan.Zero || timeout == Timeout.InfiniteTimeSpan)
             return;
 
-        this.armed = true;
-        this.timer.Change(timeout, Timeout.InfiniteTimeSpan);
+        lock (this.gate)
+        {
+            if (this.disposed)
+                return;
+
+            this.armed = true;
+            this.deadline = Environment.TickCount64 + (long)timeout.TotalMilliseconds;
+            this.timer.Change(timeout, Timeout.InfiniteTimeSpan);
+        }
     }
 
     public void Stop()
     {
-        if (!this.armed)
-            return;
+        lock (this.gate)
+        {
+            if (!this.armed)
+                return;
 
-        this.armed = false;
-        this.timer.Change(Timeout.Infinite, Timeout.Infinite);
+            this.armed = false;
+            this.timer.Change(Timeout.Infinite, Timeout.Infinite);
+        }
     }
 
-    public void Dispose() => this.timer.Dispose();
-
-    void Fire()
+    public void Dispose()
     {
-        this.expired = true;
-        this.cancel();
+        lock (this.gate)
+        {
+            this.disposed = true;
+            this.armed = false;
+        }
+
+        this.timer.Dispose();
+    }
+
+    /// <summary>
+    /// A timer callback can already be queued when <see cref="Stop"/> runs - on a busy thread pool, well after the
+    /// operation it was meant for has finished. Acting on it then would mark a healthy connection expired and cancel
+    /// whatever read or flush happened to come next, or, once the pipe is completed, throw on a timer thread and take
+    /// the process down. So it only counts while still armed and past the deadline of the current arming.
+    /// </summary>
+    internal void Fire()
+    {
+        lock (this.gate)
+        {
+            if (!this.armed || this.disposed || Environment.TickCount64 < this.deadline)
+                return;
+
+            this.armed = false;
+            this.expired = true;
+        }
+
+        try
+        {
+            this.cancel();
+        }
+        catch (Exception ex) when (ex is ObjectDisposedException or InvalidOperationException)
+        {
+            // The pipe finished underneath the timer; there is nothing left to cancel.
+        }
     }
 }

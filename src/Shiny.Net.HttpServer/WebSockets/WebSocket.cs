@@ -53,7 +53,7 @@ public sealed class WebSocket : IAsyncDisposable
     readonly long maxMessageLength;
     readonly CancellationTokenSource keepAliveStopped = new();
 
-    bool closeSent;
+    int closeSent;
     bool closeReceived;
     int disposed;
     int pendingPings;
@@ -79,7 +79,7 @@ public sealed class WebSocket : IAsyncDisposable
     public IDictionary<string, object?> Items { get; } = new Dictionary<string, object?>(StringComparer.Ordinal);
 
     /// <summary>True until a close frame has been both sent and received.</summary>
-    public bool IsOpen => !this.closeSent || !this.closeReceived;
+    public bool IsOpen => Volatile.Read(ref this.closeSent) == 0 || !this.closeReceived;
 
     /// <summary>How the peer closed, once it has.</summary>
     public WebSocketCloseResult? CloseResult { get; private set; }
@@ -197,7 +197,7 @@ public sealed class WebSocket : IAsyncDisposable
     {
         ObjectDisposedException.ThrowIf(this.disposed != 0, this);
 
-        if (this.closeSent)
+        if (Volatile.Read(ref this.closeSent) != 0)
             throw new InvalidOperationException("The socket has already been closed.");
 
         if (this.PerMessageDeflate && payload.Length >= this.CompressionThreshold)
@@ -230,10 +230,10 @@ public sealed class WebSocket : IAsyncDisposable
         CancellationToken cancellationToken = default
     )
     {
-        if (this.closeSent || this.disposed != 0)
+        // Claimed atomically: the receive loop echoing the peer's close and the app closing at the same moment would
+        // otherwise both send one, and RFC 6455 allows exactly one close frame.
+        if (this.disposed != 0 || Interlocked.Exchange(ref this.closeSent, 1) != 0)
             return;
-
-        this.closeSent = true;
 
         var reason = description is { Length: > 0 } ? Encoding.UTF8.GetBytes(description) : [];
         var payload = new byte[2 + reason.Length];
@@ -458,7 +458,7 @@ public sealed class WebSocket : IAsyncDisposable
 
                 while (await timer.WaitForNextTickAsync(token).ConfigureAwait(false))
                 {
-                    if (this.disposed != 0 || this.closeSent)
+                    if (this.disposed != 0 || Volatile.Read(ref this.closeSent) != 0)
                         return;
 
                     if (Interlocked.Increment(ref this.pendingPings) > missedPingsBeforeClosing)
@@ -487,7 +487,26 @@ public sealed class WebSocket : IAsyncDisposable
         await this.keepAliveStopped.CancelAsync().ConfigureAwait(false);
         this.keepAliveStopped.Dispose();
 
-        this.writeGate.Dispose();
+        // Wait out a write already under way - a broadcast, a keep-alive ping - before the transport goes: disposing it
+        // completes the same PipeWriter that write is flushing, from another thread. Bounded, because a peer that has
+        // stopped reading can hold a flush for ever; past that the connection is aborted instead, which a stuck
+        // flush survives. The gate is never disposed, so a writer arriving late fails on the closed socket, not on it.
+        if (await this.writeGate.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false))
+        {
+            try
+            {
+                await this.connection.DisposeAsync().ConfigureAwait(false);
+            }
+            finally
+            {
+                // Released so a writer that arrives late gets through to the closed transport and fails there.
+                this.writeGate.Release();
+            }
+
+            return;
+        }
+
+        this.connection.Abort();
         await this.connection.DisposeAsync().ConfigureAwait(false);
     }
 }

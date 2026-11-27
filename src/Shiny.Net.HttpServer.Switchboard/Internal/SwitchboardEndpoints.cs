@@ -41,7 +41,12 @@ static class SwitchboardEndpoints
         var attachment = line.Attach(null, context.Request.Protocol, context.Connection.RemoteIpAddress)!;
         var stream = await StartStreamAsync(context, board, line).ConfigureAwait(false);
         if (stream is null)
+        {
+            // Detached, so the sweeper can expire it once the resume window passes. Left attached, a line whose
+            // stream never started was never swept: it held a MaxLines slot for good and OnDisconnectedAsync never ran.
+            line.Detach(attachment.Generation);
             return;
+        }
 
         var connected = JsonSerializer.Serialize(
             new ConnectedPayload(
@@ -100,7 +105,12 @@ static class SwitchboardEndpoints
 
         var stream = await StartStreamAsync(context, board, line).ConfigureAwait(false);
         if (stream is null)
+        {
+            // Detached, so the sweeper can expire it once the resume window passes. Left attached, a line whose
+            // stream never started was never swept: it held a MaxLines slot for good and OnDisconnectedAsync never ran.
+            line.Detach(attachment.Generation);
             return;
+        }
 
         SwitchboardMetrics.LineResumed(board.Name, attachment.Missed);
         var resumed = JsonSerializer.Serialize(new ResumedPayload(line.Id, attachment.Missed), SwitchboardProtocolJson.Default.ResumedPayload);

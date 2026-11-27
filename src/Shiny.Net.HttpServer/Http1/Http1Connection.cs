@@ -253,12 +253,17 @@ sealed class Http1Connection : IRequestBodySource
             catch (OperationCanceledException) when (timeoutSource.IsCancellationRequested)
             {
                 if (sawAnyBytes)
-                    // Mid-request stall: tell the client why before hanging up.
+                {
+                    // Mid-request stall: tell the client why before hanging up - and linger, since a client
+                    // trickling its headers is still sending, and closing over that resets away the 408.
                     await this.TryWriteErrorResponseAsync(
                         StatusCodes.Status408RequestTimeout,
                         "Request timed out while reading headers.",
                         connectionToken
                     ).ConfigureAwait(false);
+
+                    this.LingerOnClose = true;
+                }
 
                 return ReadHeadResult.ConnectionClosed;
             }
@@ -459,7 +464,10 @@ sealed class Http1Connection : IRequestBodySource
         finally
         {
             this.requestAborted = null;
-            requestAborted.Cancel();
+
+            // Quietly: an app callback on RequestAborted that throws here would otherwise escape as a connection
+            // error and reset a response that has already been delivered.
+            TryCancel(requestAborted);
         }
     }
 
@@ -523,17 +531,7 @@ sealed class Http1Connection : IRequestBodySource
         }
     }
 
-    static void TryCancel(CancellationTokenSource? source)
-    {
-        try
-        {
-            source?.Cancel();
-        }
-        catch (ObjectDisposedException)
-        {
-            // The request finished while this was on its way; there is nothing left to cancel.
-        }
-    }
+    static void TryCancel(CancellationTokenSource? source) => HttpContext.CancelQuietly(source);
 
     /// <summary>
     /// Watches the input while the handler runs, once nothing of the request is left to read, so a

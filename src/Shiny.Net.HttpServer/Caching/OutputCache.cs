@@ -73,16 +73,27 @@ public sealed class MemoryOutputCacheStore(long maxBytes = 8 * 1024 * 1024) : IO
         if (!entry.IsExpired(DateTimeOffset.UtcNow))
             return new ValueTask<OutputCacheEntry?>(entry);
 
-        this.Drop(key);
+        this.Drop(key, entry);
         return new ValueTask<OutputCacheEntry?>((OutputCacheEntry?)null);
     }
 
     public ValueTask SetAsync(string key, OutputCacheEntry entry, CancellationToken cancellationToken)
     {
-        this.Drop(key);
-
-        this.entries[key] = entry;
-        Interlocked.Add(ref this.size, entry.Body.Length);
+        // One atomic replace, with the count moved by exactly what left and what arrived. Dropping first and then
+        // writing let two stores for one key both find nothing to drop, and the bytes of the one overwritten were
+        // never taken off - the count crept up until every store emptied the whole cache.
+        OutputCacheEntry? replaced = null;
+        this.entries.AddOrUpdate(
+            key,
+            static (_, added) => added,
+            (_, existing, added) =>
+            {
+                replaced = existing;
+                return added;
+            },
+            entry
+        );
+        Interlocked.Add(ref this.size, entry.Body.Length - (replaced?.Body.Length ?? 0));
 
         this.Trim();
 
@@ -108,6 +119,16 @@ public sealed class MemoryOutputCacheStore(long maxBytes = 8 * 1024 * 1024) : IO
         return true;
     }
 
+    /// <summary>Drops <paramref name="entry"/> only if it is still the one stored, so a fresh replacement survives.</summary>
+    bool Drop(string key, OutputCacheEntry entry)
+    {
+        if (!this.entries.TryRemove(KeyValuePair.Create(key, entry)))
+            return false;
+
+        Interlocked.Add(ref this.size, -entry.Body.Length);
+        return true;
+    }
+
     void Trim()
     {
         if (this.SizeInBytes <= maxBytes)
@@ -118,7 +139,7 @@ public sealed class MemoryOutputCacheStore(long maxBytes = 8 * 1024 * 1024) : IO
         foreach (var pair in this.entries)
         {
             if (pair.Value.IsExpired(now))
-                this.Drop(pair.Key);
+                this.Drop(pair.Key, pair.Value);
         }
 
         while (this.SizeInBytes > maxBytes)
@@ -131,7 +152,7 @@ public sealed class MemoryOutputCacheStore(long maxBytes = 8 * 1024 * 1024) : IO
                     oldest = pair;
             }
 
-            if (oldest.Value is null || !this.Drop(oldest.Key))
+            if (oldest.Value is null || !this.Drop(oldest.Key, oldest.Value))
                 return;
         }
     }

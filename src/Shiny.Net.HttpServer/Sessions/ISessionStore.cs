@@ -77,16 +77,20 @@ public sealed class InMemorySessionStore(TimeProvider? timeProvider = null) : IS
 
         if (entry.ExpiresAt <= this.clock.GetUtcNow())
         {
-            this.sessions.TryRemove(sessionId, out _);
+            // Only the entry that was found expired: a save that landed since keeps its session.
+            this.sessions.TryRemove(KeyValuePair.Create(sessionId, entry));
             return ValueTask.FromResult<SessionData?>(null);
         }
 
-        return ValueTask.FromResult<SessionData?>(entry.Data);
+        // A copy per request. Handing every request the same instance let two parallel requests for one session
+        // write the same Dictionary at once, and made a write visible to the others before it was committed.
+        return ValueTask.FromResult<SessionData?>(new SessionData(entry.Data.Values));
     }
 
     public ValueTask SaveAsync(string sessionId, SessionData data, TimeSpan idleTimeout, CancellationToken cancellationToken)
     {
-        this.sessions[sessionId] = new Entry(data, this.clock.GetUtcNow() + idleTimeout);
+        // Copied for the same reason: the caller keeps its instance and may go on changing it.
+        this.sessions[sessionId] = new Entry(new SessionData(data.Values), this.clock.GetUtcNow() + idleTimeout);
         this.EvictIfOverCapacity();
 
         return ValueTask.CompletedTask;
@@ -94,8 +98,11 @@ public sealed class InMemorySessionStore(TimeProvider? timeProvider = null) : IS
 
     public ValueTask RefreshAsync(string sessionId, TimeSpan idleTimeout, CancellationToken cancellationToken)
     {
-        if (this.sessions.TryGetValue(sessionId, out var entry))
-            this.sessions[sessionId] = entry with { ExpiresAt = this.clock.GetUtcNow() + idleTimeout };
+        // Compare-and-swap: a plain write-back of what was read would undo a save that landed in between.
+        while (this.sessions.TryGetValue(sessionId, out var entry)
+            && !this.sessions.TryUpdate(sessionId, entry with { ExpiresAt = this.clock.GetUtcNow() + idleTimeout }, entry))
+        {
+        }
 
         return ValueTask.CompletedTask;
     }
@@ -114,7 +121,7 @@ public sealed class InMemorySessionStore(TimeProvider? timeProvider = null) : IS
 
         foreach (var (id, entry) in this.sessions)
         {
-            if (entry.ExpiresAt <= now && this.sessions.TryRemove(id, out _))
+            if (entry.ExpiresAt <= now && this.sessions.TryRemove(KeyValuePair.Create(id, entry)))
                 removed++;
         }
 

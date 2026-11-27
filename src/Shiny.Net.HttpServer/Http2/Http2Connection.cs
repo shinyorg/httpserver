@@ -60,13 +60,19 @@ sealed class Http2Connection
 
     /// <summary>Ends the read loop. Everything on the connection stops with it.</summary>
     readonly CancellationTokenSource shutdown = new();
+
+    /// <summary>Streams still in the table whose response has ended; see the concurrency check in StartStreamAsync.</summary>
+    int endedStreams;
+
+    /// <summary>Orders "is a new stream accepted" against "the drain's GOAWAY names the last accepted stream".</summary>
+    readonly object streamIdGate = new();
     readonly CancellationToken closing;
 
     /// <summary>Part of every stream's RequestAborted: cancelled when the server stops or the connection ends.</summary>
     readonly CancellationTokenSource streamsAborted = new();
 
     /// <summary>Fires the idle and request-header timeouts; re-armed as the connection changes state.</summary>
-    readonly CancellationTokenSource timeout = new();
+    CancellationTokenSource timeout = new();
     readonly object timeoutGate = new();
 
     // A header block can span HEADERS + CONTINUATION, and nothing may interleave between them, so
@@ -262,27 +268,54 @@ sealed class Http2Connection
     async Task ReadFramesAsync(CancellationToken cancellationToken)
     {
         var input = this.connection.Input;
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, this.timeout.Token);
+        var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, this.timeout.Token);
+        try
+        {
+            await this.ReadFramesAsync(input, cancellationToken, linked).ConfigureAwait(false);
+        }
+        finally
+        {
+            // Whichever linked source is current: a stale expiry swaps it.
+            this.currentLinked?.Dispose();
+            linked.Dispose();
+        }
+    }
+
+    CancellationTokenSource? currentLinked;
+
+    async Task ReadFramesAsync(PipeReader input, CancellationToken cancellationToken, CancellationTokenSource linked)
+    {
         var reading = true;
 
         while (reading)
         {
             this.ArmTimeout();
 
-            ReadResult result;
-            try
+            ReadResult? read = null;
+            while (read is null)
             {
-                result = await input.ReadAsync(linked.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (this.timeout.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
-            {
-                // A block left incomplete is a client that stalled or is stalling on purpose; a
-                // connection with nothing open is one nobody is using. Either way it goes.
-                if (this.continuationStream != 0)
-                    throw new Http2ConnectionException(Http2ErrorCode.ProtocolError, "Request headers timed out.");
+                try
+                {
+                    read = await input.ReadAsync((this.currentLinked ?? linked).Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (this.timeout.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+                {
+                    // A block left incomplete is a client that stalled or is stalling on purpose; a
+                    // connection with nothing open is one nobody is using. Either way it goes.
+                    if (this.continuationStream != 0)
+                        throw new Http2ConnectionException(Http2ErrorCode.ProtocolError, "Request headers timed out.");
 
-                return;
+                    if (this.streams.IsEmpty)
+                        return;
+
+                    // Stale: the idle timer came due just as a stream was accepted, and a fired source cannot be
+                    // re-armed. Closing now would drop a request already being served, after the GOAWAY told the
+                    // client it was processed - so the timeout starts over and the read carries on.
+                    this.RenewTimeout(cancellationToken);
+                }
             }
+
+            var result = read.Value;
 
             var buffer = result.Buffer;
 
@@ -351,6 +384,20 @@ sealed class Http2Connection
         }
     }
 
+    void RenewTimeout(CancellationToken cancellationToken)
+    {
+        CancellationTokenSource old;
+        lock (this.timeoutGate)
+        {
+            old = this.timeout;
+            this.timeout = new CancellationTokenSource();
+        }
+
+        old.Dispose();
+        this.currentLinked?.Dispose();
+        this.currentLinked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, this.timeout.Token);
+    }
+
     static TimeSpan Remaining(TimeSpan limit, long elapsedMilliseconds)
     {
         // CancelAfter takes at most int.MaxValue milliseconds; anything that long is "never".
@@ -370,7 +417,9 @@ sealed class Http2Connection
         if (this.closed)
             return;
 
-        this.draining = true;
+        lock (this.streamIdGate)
+            this.draining = true;
+
         _ = this.TryGoAwayAsync(Http2ErrorCode.NoError, "Server is shutting down.").AsTask();
 
         // Open streams are left to finish; how long they get is the server's ShutdownTimeout, which
@@ -385,14 +434,9 @@ sealed class Http2Connection
         if (this.closed)
             return;
 
-        try
-        {
-            this.streamsAborted.Cancel();
-            this.shutdown.Cancel();
-        }
-        catch (ObjectDisposedException)
-        {
-        }
+        // Quietly: these run the app's RequestAborted callbacks inline, on the stopping thread.
+        HttpContext.CancelQuietly(this.streamsAborted);
+        HttpContext.CancelQuietly(this.shutdown);
     }
 
     /// <summary>Unparks the read loop once a drain has nothing left to wait for.</summary>
@@ -760,6 +804,28 @@ sealed class Http2Connection
     /// client sees RST_STREAM. Aborted first, so the stream is closed before the reset is queued and
     /// nothing of the response can follow it out.
     /// </summary>
+    /// <summary>
+    /// <see cref="HttpContext.Abort"/> on HTTP/2: this stream is reset with CANCEL, as HTTP/3 does. Aborting the
+    /// connection instead took every other request multiplexed on it down too - and a late Abort on a finished stream
+    /// did the same to a connection it no longer had anything to do with.
+    /// </summary>
+    void AbortStream(Http2Stream stream)
+    {
+        if (stream.State == Http2StreamState.Closed)
+            return;
+
+        // The stream is aborted synchronously, before the reset's first await, so RequestAborted is already
+        // cancelled when this returns. Only the RST_STREAM write itself is left running.
+        _ = this.ResetStreamAsync(stream, Http2ErrorCode.Cancel, "Aborted by the application.", CancellationToken.None)
+            .AsTask()
+            .ContinueWith(
+                static t => _ = t.Exception,
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default
+            );
+    }
+
     async ValueTask ResetStreamAsync(Http2Stream stream, Http2ErrorCode code, string reason, CancellationToken cancellationToken)
     {
         this.logger.LogDebug("Resetting HTTP/2 stream {StreamId} ({Code}): {Reason}", stream.Id, code, reason);
@@ -796,7 +862,19 @@ sealed class Http2Connection
             return;
 
         stream.AdjustReceiveWindow(increment);
-        await this.SendWindowUpdateAsync(stream.Id, (int)increment, cancellationToken).ConfigureAwait(false);
+
+        // The state is checked again under the writer's lock, as for DATA: the stream can be reset between the check
+        // above and this write, and nothing may follow our RST_STREAM out.
+        var payload = new byte[4];
+        BinaryPrimitives.WriteUInt32BigEndian(payload, (uint)increment);
+        await this.writer.WriteAsync(
+            w =>
+            {
+                if (stream.State == Http2StreamState.Open)
+                    Http2Frame.Write(w, Http2FrameType.WindowUpdate, Http2FrameFlags.None, stream.Id, payload);
+            },
+            cancellationToken
+        ).ConfigureAwait(false);
     }
 
     /// <summary>Gives connection credit back, in chunks, for bytes that have left the buffer.</summary>
@@ -860,10 +938,16 @@ sealed class Http2Connection
 
         // After GOAWAY, in either direction, nothing new starts. Streams above the id we put in our
         // GOAWAY are ignored (RFC 9113 §6.8); the client knows to retry them elsewhere.
-        if (this.draining || this.remoteGoAway)
-            return;
+        // Checked and recorded under the same lock BeginDrain sets draining under: otherwise a stream could pass the
+        // check, a drain's GOAWAY go out naming the stream before it as the last one processed, and this one then run
+        // anyway - a request the client was told to retry elsewhere, executed twice.
+        lock (this.streamIdGate)
+        {
+            if (this.draining || this.remoteGoAway)
+                return;
 
-        this.lastStreamId = streamId;
+            this.lastStreamId = streamId;
+        }
 
         if (!withinLimit)
         {
@@ -873,7 +957,15 @@ sealed class Http2Connection
 
         // The table holds every stream whose handler is still running, reset or not, so this is
         // the number of handlers the client has us running - the thing the limit is there to cap.
-        if (this.localSettings.MaxConcurrentStreams is { } max && this.streams.Count >= max)
+        // Streams whose response has already ended are left out: the client saw END_STREAM, counts
+        // that stream as closed (RFC 9113 §5.1.2) and may open the next one at once, while the
+        // handler is still unwinding here. Refusing those - and counting it as abuse - turned a
+        // compliant client running at the limit into REFUSED_STREAM and then ENHANCE_YOUR_CALM. A
+        // stream the client reset is not "ended" and still counts, so resets cannot buy it more
+        // running handlers; the hard ceiling bounds handlers that unwind slowly after ending.
+        if (this.localSettings.MaxConcurrentStreams is { } max
+            && (this.streams.Count >= 2L * max
+                || this.streams.Count - Volatile.Read(ref this.endedStreams) >= max))
         {
             await this.SendRstStreamAsync(streamId, Http2ErrorCode.RefusedStream, cancellationToken).ConfigureAwait(false);
 
@@ -977,6 +1069,7 @@ sealed class Http2Connection
     {
         var context = new HttpContext();
         Http2ResponseBodyControl? output = null;
+        var ended = false;
 
         try
         {
@@ -984,7 +1077,7 @@ sealed class Http2Connection
             context.RequestAborted = aborted.Token;
 
             this.ApplyConnectionInfo(context);
-            context.AbortAction = HttpContext.CancelThenAbort(aborted, this.connection.Abort);
+            context.AbortAction = HttpContext.CancelThenAbort(aborted, () => this.AbortStream(stream));
 
             if (!Http2RequestMapper.TryApply(context, fields, stream, out var error))
             {
@@ -1001,6 +1094,14 @@ sealed class Http2Connection
 
             await this.RunPipelineAsync(context).ConfigureAwait(false);
             await output.CompleteAsync(context.RequestAborted).ConfigureAwait(false);
+
+            // END_STREAM is out: the client may treat the slot as free from here.
+            if (stream.State != Http2StreamState.Closed)
+            {
+                ended = true;
+                Interlocked.Increment(ref this.endedStreams);
+            }
+
             await this.StopUnreadBodyAsync(stream).ConfigureAwait(false);
         }
         catch (Exception ex) when (IsDisconnect(ex))
@@ -1036,6 +1137,9 @@ sealed class Http2Connection
         finally
         {
             this.streams.TryRemove(stream.Id, out _);
+
+            if (ended)
+                Interlocked.Decrement(ref this.endedStreams);
 
             // Nothing will read the rest of the body now. Whatever was buffered and never read still
             // holds connection credit, and the client cannot send anything else until it is back.
@@ -1429,7 +1533,11 @@ sealed class Http2Connection
             var reason = System.Text.Encoding.UTF8.GetBytes(message);
             var payload = new byte[8 + reason.Length];
 
-            BinaryPrimitives.WriteUInt32BigEndian(payload, this.lastStreamId);
+            uint last;
+            lock (this.streamIdGate)
+                last = this.lastStreamId;
+
+            BinaryPrimitives.WriteUInt32BigEndian(payload, last);
             BinaryPrimitives.WriteUInt32BigEndian(payload.AsSpan(4), (uint)code);
             reason.CopyTo(payload, 8);
 
@@ -1446,14 +1554,8 @@ sealed class Http2Connection
     {
         this.closed = true;
 
-        try
-        {
-            this.shutdown.Cancel();
-            this.streamsAborted.Cancel();
-        }
-        catch (ObjectDisposedException)
-        {
-        }
+        HttpContext.CancelQuietly(this.shutdown);
+        HttpContext.CancelQuietly(this.streamsAborted);
 
         var handlers = new List<Task>();
 

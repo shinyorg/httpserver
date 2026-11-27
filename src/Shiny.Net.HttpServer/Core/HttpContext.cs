@@ -92,17 +92,36 @@ public sealed class HttpContext
     {
         try
         {
-            requestAborted.Cancel();
-        }
-        catch (ObjectDisposedException)
-        {
-            // The request already finished; there is nothing left to cancel.
+            CancelQuietly(requestAborted);
         }
         finally
         {
             abort();
         }
     };
+
+    /// <summary>
+    /// Cancels <paramref name="source"/> without letting the app's callbacks escape. <see cref="CancellationTokenSource.Cancel()"/>
+    /// runs every callback registered on the token inline and rethrows their failures as an
+    /// <see cref="AggregateException"/> - and the server cancels from read loops, timers and teardown, where one
+    /// handler's <c>RequestAborted.Register</c> that throws would kill other requests or, on a timer thread, the
+    /// process. The source is cancelled either way; only the callback's own failure is dropped.
+    /// </summary>
+    internal static void CancelQuietly(CancellationTokenSource? source)
+    {
+        try
+        {
+            source?.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // Already finished; there is nothing left to cancel.
+        }
+        catch (AggregateException)
+        {
+            // A callback the app registered on the token threw. Its exception belongs to the app, not to us.
+        }
+    }
 
     /// <summary>
     /// The raw transport, for handlers that take the connection over entirely — a WebSocket

@@ -449,6 +449,12 @@ sealed class Http1OutputProducer : IResponseBodyControl, IInformationalResponseW
 
         this.completed = true;
 
+        // After a 101 the transport belongs to the protocol that took over, which writes and flushes it itself -
+        // a WebSocket's keep-alive may be flushing it this moment from another thread, and a second flush on the same
+        // PipeWriter can send its bytes twice. There is no HTTP response left to finish.
+        if (this.IsUpgrade)
+            return;
+
         // Anything still staged has to go out before the terminating chunk.
         await this.bodyWriter.FlushAsync(cancellationToken).ConfigureAwait(false);
 

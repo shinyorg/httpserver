@@ -518,11 +518,14 @@ public sealed class RelayServer : IAsyncDisposable
             return;
         }
 
-        var streamId = await session.OpenStreamAsync(connection, token).ConfigureAwait(false);
         var clientIp = (connection.RemoteEndPoint as IPEndPoint)?.Address.ToString();
+        uint streamId = 0;
 
         try
         {
+            // Inside the try: a session closing at this moment throws here, and the public connection must still
+            // be disposed rather than left hanging.
+            streamId = await session.OpenStreamAsync(connection, token).ConfigureAwait(false);
             var current = head.Value;
 
             while (true)
@@ -532,6 +535,9 @@ public sealed class RelayServer : IAsyncDisposable
                 // the connection is pinned and a switch is refused rather than silently misrouted.
                 if (!string.Equals(current.Host, host, StringComparison.OrdinalIgnoreCase))
                 {
+                    // Detached first: the session may still be forwarding the previous response to this connection,
+                    // and two writers on one PipeWriter can send that response twice.
+                    await session.DetachStreamAsync(streamId).ConfigureAwait(false);
                     await WriteErrorAsync(
                         connection,
                         421,
@@ -578,7 +584,10 @@ public sealed class RelayServer : IAsyncDisposable
         }
         finally
         {
-            await session.CloseStreamAsync(streamId).ConfigureAwait(false);
+            // Closed - and so detached - before the dispose, so no response write is still running into it.
+            if (streamId != 0)
+                await session.CloseStreamAsync(streamId).ConfigureAwait(false);
+
             await connection.DisposeAsync().ConfigureAwait(false);
         }
     }

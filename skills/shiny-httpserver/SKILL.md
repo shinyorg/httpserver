@@ -731,7 +731,8 @@ the OS pick; read it back from `server.ListenUrl`.
   `InvalidOperationException`. Never copy request input into a header unchecked and expect it to go
   out; writing a body on a 204/304 throws too.
 - `RequestAborted` fires when an HTTP/1.1 client hangs up (once its body is read) and on
-  `ctx.Abort()`. A handler exception such as `FileNotFoundException` or an `HttpClient`
+  `ctx.Abort()`, before `Abort()` returns. `Abort()` ends only that request: HTTP/1.1 closes the
+  connection, HTTP/2 and HTTP/3 reset just that stream. A handler exception such as `FileNotFoundException` or an `HttpClient`
   `TaskCanceledException` is a 500 through the exception-handler chain, not a silent close.
 
 ### Behind a TCP load balancer: PROXY protocol

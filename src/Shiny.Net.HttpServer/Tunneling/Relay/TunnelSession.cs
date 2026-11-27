@@ -15,7 +15,21 @@ sealed class TunnelSession(
     TunnelChannel channel
 ) : IAsyncDisposable
 {
-    readonly ConcurrentDictionary<uint, IConnection> streams = new();
+    readonly ConcurrentDictionary<uint, PublicStream> streams = new();
+
+    /// <summary>
+    /// One public connection multiplexed over the tunnel. Its output is written from two places - this session's
+    /// control loop forwarding the app's response, and the relay's request loop answering a 421 or closing - and a
+    /// <see cref="System.IO.Pipelines.PipeWriter"/> is not safe to use from two threads: a flush that starts while
+    /// another is still finishing re-sends the segment the first one already sent, so a client could read the
+    /// previous response a second time as the answer to its next request. Every write goes through the gate.
+    /// </summary>
+    sealed class PublicStream(IConnection connection)
+    {
+        public IConnection Connection { get; } = connection;
+        public SemaphoreSlim Gate { get; } = new(1, 1);
+        public bool Live { get; set; } = true;
+    }
     uint nextStreamId;
     int disposed;
     int closeReason = -1;
@@ -77,7 +91,7 @@ sealed class TunnelSession(
     public async ValueTask<uint> OpenStreamAsync(IConnection publicConnection, CancellationToken cancellationToken)
     {
         var streamId = Interlocked.Increment(ref this.nextStreamId);
-        this.streams[streamId] = publicConnection;
+        this.streams[streamId] = new PublicStream(publicConnection);
 
         await channel.SendAsync(
             TunnelFrameType.Open,
@@ -106,9 +120,23 @@ sealed class TunnelSession(
     public ValueTask SendAsync(uint streamId, ReadOnlySequence<byte> payload, CancellationToken cancellationToken)
         => channel.SendAsync(TunnelFrameType.Data, streamId, payload, cancellationToken);
 
+    /// <summary>
+    /// Stops forwarding the app's response to the public connection and waits out any write already under way, so
+    /// the caller then owns the connection's output alone - to answer it itself, or to dispose it.
+    /// </summary>
+    public async ValueTask DetachStreamAsync(uint streamId)
+    {
+        if (!this.streams.TryRemove(streamId, out var stream))
+            return;
+
+        await stream.Gate.WaitAsync().ConfigureAwait(false);
+        stream.Live = false;
+        stream.Gate.Release();
+    }
+
     public async ValueTask CloseStreamAsync(uint streamId)
     {
-        this.streams.TryRemove(streamId, out _);
+        await this.DetachStreamAsync(streamId).ConfigureAwait(false);
 
         try
         {
@@ -131,18 +159,13 @@ sealed class TunnelSession(
         switch (type)
         {
             case TunnelFrameType.Data:
-                if (this.streams.TryGetValue(streamId, out var connection))
-                {
-                    foreach (var segment in payload)
-                        connection.Output.Write(segment.Span);
-
-                    await connection.Output.FlushAsync(cancellationToken).ConfigureAwait(false);
-                }
+                if (this.streams.TryGetValue(streamId, out var stream))
+                    await this.ForwardAsync(streamId, stream, payload, cancellationToken).ConfigureAwait(false);
                 return;
 
             case TunnelFrameType.CloseStream:
                 if (this.streams.TryRemove(streamId, out var closing))
-                    closing.Abort();
+                    await EndGracefullyAsync(closing).ConfigureAwait(false);
                 return;
 
             case TunnelFrameType.Ping:
@@ -154,6 +177,56 @@ sealed class TunnelSession(
         }
     }
 
+    async ValueTask ForwardAsync(uint streamId, PublicStream stream, ReadOnlySequence<byte> payload, CancellationToken cancellationToken)
+    {
+        await stream.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            // Re-checked under the gate: the relay may have detached the stream to answer it itself.
+            if (!stream.Live)
+                return;
+
+            foreach (var segment in payload)
+                stream.Connection.Output.Write(segment.Span);
+
+            await stream.Connection.Output.FlushAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or ObjectDisposedException or System.Net.Sockets.SocketException)
+        {
+            // One public client resetting mid-download is that client's problem. Letting it escape would end the
+            // control loop and with it every other stream on the tunnel.
+            stream.Live = false;
+            this.streams.TryRemove(KeyValuePair.Create(streamId, stream));
+            stream.Connection.Abort();
+        }
+        finally
+        {
+            stream.Gate.Release();
+        }
+    }
+
+    /// <summary>
+    /// The app closed its side. Rather than a reset - which discards whatever the socket has yet to send, so a slow
+    /// client lost the end of its response - the relay's request loop is told to stop, and it closes the connection
+    /// the ordinary way once the response has gone.
+    /// </summary>
+    static async ValueTask EndGracefullyAsync(PublicStream stream)
+    {
+        await stream.Gate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            stream.Live = false;
+            stream.Connection.Input.CancelPendingRead();
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException)
+        {
+        }
+        finally
+        {
+            stream.Gate.Release();
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref this.disposed, 1) != 0)
@@ -161,8 +234,8 @@ sealed class TunnelSession(
 
         foreach (var streamId in this.streams.Keys)
         {
-            if (this.streams.TryRemove(streamId, out var connection))
-                connection.Abort();
+            if (this.streams.TryRemove(streamId, out var stream))
+                stream.Connection.Abort();
         }
 
         await channel.DisposeAsync().ConfigureAwait(false);

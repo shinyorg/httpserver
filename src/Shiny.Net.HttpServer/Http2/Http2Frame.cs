@@ -214,7 +214,15 @@ sealed class Http2FrameWriter(
         // Once is enough: the connection is going.
         Interlocked.Exchange(ref this.flushStarted, 0);
         this.watchdog?.Dispose();
-        onStalled!();
+
+        // On a timer thread, where anything that escapes ends the process.
+        try
+        {
+            onStalled!();
+        }
+        catch (Exception ex) when (ex is ObjectDisposedException or InvalidOperationException or AggregateException or IOException)
+        {
+        }
     }
 
     /// <summary>

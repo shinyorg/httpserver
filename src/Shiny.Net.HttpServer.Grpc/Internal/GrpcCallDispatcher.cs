@@ -82,6 +82,7 @@ sealed class GrpcCallDispatcher(
         using var deadlineSource = new CancellationTokenSource();
         using var callSource = CancellationTokenSource.CreateLinkedTokenSource(http.RequestAborted, deadlineSource.Token);
 
+        var started = System.Diagnostics.Stopwatch.GetTimestamp();
         if (deadline is { } timeout)
             deadlineSource.CancelAfter(timeout);
 
@@ -128,7 +129,11 @@ sealed class GrpcCallDispatcher(
             status = ex.StatusCode;
             statusMessage = ex.StatusMessage ?? ex.Message;
         }
-        catch (OperationCanceledException) when (deadlineSource.IsCancellationRequested)
+        // By the clock as well as the token: the timer that cancels it is a callback, and on a busy machine it can
+        // still be queued when a call cancelled at its deadline unwinds - which then reported Unknown.
+        catch (OperationCanceledException) when (
+            deadlineSource.IsCancellationRequested
+            || (deadline is { } limit && !http.RequestAborted.IsCancellationRequested && System.Diagnostics.Stopwatch.GetElapsedTime(started) >= limit))
         {
             status = GrpcStatusCode.DeadlineExceeded;
             statusMessage = "The call did not complete before its deadline.";

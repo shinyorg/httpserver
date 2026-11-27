@@ -265,6 +265,12 @@ sealed class Http2RequestBodyStream(Http2Stream stream, HttpRequest request) : S
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
+            // The deadline is a timer callback, and on a busy machine it can run after the data it was waiting for
+            // has arrived but before this read's continuation got a thread - the cancellation then wins a race the
+            // client did not lose. Bytes in the pipe mean the body did arrive in time.
+            if (this.reader.TryRead(out var arrived))
+                return arrived;
+
             throw new BadHttpRequestException(
                 $"The request body was not received within {limit.TotalSeconds:0.#}s.",
                 StatusCodes.Status408RequestTimeout

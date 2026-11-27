@@ -479,7 +479,10 @@ public sealed class HttpServer : IAsyncDisposable
         }
 
         this.stopping.Dispose();
-        this.lifecycle.Dispose();
+
+        // The lifecycle gate is not disposed either. A listener-fault recovery runs on its own and can be waiting on it
+        // right now: the release above hands it the gate, and disposing straight after made that recovery's own
+        // release throw on a thread nobody observes. It never handed out a wait handle, so there is nothing to free.
 
         // The connection limit is deliberately not disposed. A connection abandoned by the stop —
         // its handler ignoring every cancellation — still gives its slot back when it finally ends,
@@ -666,8 +669,14 @@ public sealed class HttpServer : IAsyncDisposable
         this.SetState(HttpServerState.Stopping, reason, cause);
         this.logger.LogInformation("Shutting down");
 
-        this.networkWatcher?.Dispose();
-        this.networkWatcher = null;
+        // Kept through a rebind the watcher itself started: disposing it cancels the very token the rebind runs on,
+        // which cut the drain short - aborting every request in flight - and made a bind retry on a network still
+        // coming up give up at once, leaving the server stopped for good.
+        if (reason != HttpServerStateReason.NetworkChanged)
+        {
+            this.networkWatcher?.Dispose();
+            this.networkWatcher = null;
+        }
 
         foreach (var connectionListener in this.listeners)
             await connectionListener.UnbindAsync(cancellationToken).ConfigureAwait(false);
@@ -1235,15 +1244,27 @@ public sealed class HttpServer : IAsyncDisposable
         }
         finally
         {
-            // A stopping server does not wait on clients: the drain and the abort both cut the linger short.
-            if (linger && connection is ILingeringClose lingering && !drainToken.IsCancellationRequested)
+            // The slot is given back whatever the linger or the dispose does: a transport whose dispose throws would
+            // otherwise lower the connection limit for good, one connection at a time.
+            try
             {
-                using var stop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, drainToken);
-                await lingering.LingerAsync(LingerTimeout, stop.Token).ConfigureAwait(false);
-            }
+                // A stopping server does not wait on clients: the drain and the abort both cut the linger short.
+                if (linger && connection is ILingeringClose lingering && !drainToken.IsCancellationRequested)
+                {
+                    using var stop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, drainToken);
+                    await lingering.LingerAsync(LingerTimeout, stop.Token).ConfigureAwait(false);
+                }
 
-            await connection.DisposeAsync().ConfigureAwait(false);
-            this.connectionLimit?.Release();
+                await connection.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                this.logger.LogDebug(ex, "Closing connection {ConnectionId} failed", connection.ConnectionId);
+            }
+            finally
+            {
+                this.connectionLimit?.Release();
+            }
         }
     }
 

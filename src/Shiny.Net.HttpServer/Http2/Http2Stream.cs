@@ -38,7 +38,8 @@ sealed class Http2Stream
     long pendingCredit;
     long unread;
     bool readerDone;
-    volatile Http2StreamState state = Http2StreamState.Idle;
+    bool writerDone;
+    int state = (int)Http2StreamState.Idle;
 
     public Http2Stream(uint id, int initialSendWindow, int initialReceiveWindow)
     {
@@ -56,11 +57,25 @@ sealed class Http2Stream
 
     public uint Id { get; }
 
-    /// <summary>Read by the response writer and the handler while the read loop moves it.</summary>
+    /// <summary>
+    /// Read by the response writer and the handler while the read loop moves it. Closed is final: the read loop can
+    /// decide to half-close a stream a handler is resetting at that moment, and a plain write would reopen it - and
+    /// with it the guards that keep frames from following our own RST_STREAM.
+    /// </summary>
     public Http2StreamState State
     {
-        get => this.state;
-        set => this.state = value;
+        get => (Http2StreamState)Volatile.Read(ref this.state);
+        set
+        {
+            int current;
+            do
+            {
+                current = Volatile.Read(ref this.state);
+                if (current == (int)Http2StreamState.Closed)
+                    return;
+            }
+            while (Interlocked.CompareExchange(ref this.state, (int)value, current) != current);
+        }
     }
 
     /// <summary>How many body bytes we may still send. Adjusted by WINDOW_UPDATE from the peer.</summary>
@@ -132,19 +147,22 @@ sealed class Http2Stream
     /// </summary>
     public bool TryWriteBody(ReadOnlySequence<byte> body)
     {
+        // The read loop writes here while a handler thread may be resetting the stream, which completes the
+        // writer: both happen under the gate, and a write after completion is turned away rather than thrown.
         lock (this.bodyGate)
         {
-            if (this.readerDone)
+            if (this.readerDone || this.writerDone)
                 return false;
 
             foreach (var segment in body)
                 this.requestBody.Writer.Write(segment.Span);
 
             this.unread += body.Length;
+
+            // The pipe never pauses, so this completes synchronously; all it does is wake the reader.
+            this.requestBody.Writer.FlushAsync().GetAwaiter().GetResult();
         }
 
-        // The pipe never pauses, so this completes synchronously; all it does is wake the reader.
-        this.requestBody.Writer.FlushAsync().GetAwaiter().GetResult();
         return true;
     }
 
@@ -174,20 +192,24 @@ sealed class Http2Stream
         return leftover;
     }
 
-    public void CompleteRequestBody(Exception? error = null) => this.requestBody.Writer.Complete(error);
+    public void CompleteRequestBody(Exception? error = null)
+    {
+        lock (this.bodyGate)
+        {
+            if (this.writerDone)
+                return;
+
+            this.writerDone = true;
+            this.requestBody.Writer.Complete(error);
+        }
+    }
 
     public void Abort(Exception? reason = null)
     {
-        try
-        {
-            this.Aborted.Cancel();
-        }
-        catch (ObjectDisposedException)
-        {
-        }
-
-        this.requestBody.Writer.Complete(reason);
+        // Closed first, so the read loop stops handing this stream frames as soon as possible.
         this.State = Http2StreamState.Closed;
+        HttpContext.CancelQuietly(this.Aborted);
+        this.CompleteRequestBody(reason);
 
         // Wake anything parked on the send window, so a writer notices the reset rather than
         // waiting for credit that is never coming.
