@@ -29,6 +29,22 @@ public partial class HttpServerLifecycleTask(
     // hoped over. See ServerTransitionRunner for why a single attempt is the bug being fixed.
     readonly ServerTransitionRunner transitions = new(options, logger);
 
+    // Puts the lifecycle transitions and the rebinds in a line - see ServerLifecycleCoordinator for
+    // the overlap that leaves an app in the foreground with its server off. Built on first use
+    // rather than in a field initializer, which cannot reach this instance's IsInForeground.
+    ServerLifecycleCoordinator? coordinator;
+
+    ServerLifecycleCoordinator Coordinator => LazyInitializer.EnsureInitialized(ref this.coordinator, () => new(
+        server,
+        options,
+        this.transitions,
+        logger,
+        () => this.IsInForeground,
+        SupportsBackgroundExecution,
+        this.StartBackgroundExecution,
+        this.StopBackgroundExecution
+    ));
+
     // The addresses as of the last time a connectivity event was acted on. Seeded on the first
     // event rather than in the constructor: this task is created at app startup, and an address set
     // read before the app has finished launching is not the one the running server is bound to.
@@ -40,8 +56,6 @@ public partial class HttpServerLifecycleTask(
     readonly CancellationTokenSource settleStopped = new();
     Task? settling;
 
-    bool stoppedByLifecycle;
-    bool restoreOnForeground;
     bool subscribed;
 
     public override void Start()
@@ -68,86 +82,21 @@ public partial class HttpServerLifecycleTask(
     {
         // The lifecycle callbacks are synchronous and run on the platform's main thread; the
         // server's are not. Anything that faults here has nobody to report to, so it is caught.
+        //
+        // The transition applied is whichever one the app is in when the coordinator gets to it,
+        // not necessarily the one this callback was for - so a background and a foreground a moment
+        // apart cannot be applied out of order, or on top of each other.
         _ = Task.Run(async () =>
         {
             try
             {
-                if (backgrounding)
-                    await this.OnBackgroundingAsync().ConfigureAwait(false);
-                else
-                    await this.OnForegroundingAsync().ConfigureAwait(false);
+                await this.Coordinator.ApplyAsync().ConfigureAwait(false);
             }
             catch (Exception ex)
             {
                 logger.LogError(ex, "Failed to apply the {State} transition to the server", backgrounding ? "background" : "foreground");
             }
         });
-    }
-
-    async Task OnBackgroundingAsync()
-    {
-        switch (options.BackgroundMode)
-        {
-            case BackgroundServerMode.Stop when server.IsRunning:
-                logger.LogInformation("Stopping the server for the background");
-
-                // Anything still retrying its way back up is abandoned first. It is trying to bind
-                // a listener for an app that has just decided it does not want one, and a rebind
-                // that lands after this stop leaves a socket open with nothing watching it.
-                this.transitions.Cancel();
-
-                await server.StopAsync().ConfigureAwait(false);
-                this.stoppedByLifecycle = true;
-                break;
-
-            case BackgroundServerMode.KeepAlive when server.IsRunning:
-                this.StartBackgroundExecution();
-                this.TrackForRestore(true);
-                break;
-        }
-    }
-
-    // Not async: everything it does either completes synchronously or is handed to the retry runner,
-    // which owns the outcome and the logging from there. Kept returning a Task so the two lifecycle
-    // halves read the same way at the call site.
-    Task OnForegroundingAsync()
-    {
-        this.StopBackgroundExecution();
-
-        if (this.restoreOnForeground)
-        {
-            this.restoreOnForeground = false;
-
-            // Restarted, not started. The server object was never told anything happened, so it
-            // still reports Running - and StartAsync, being idempotent, would agree with it and do
-            // nothing, leaving the dead listener dead. RestartAsync unbinds and binds again, which
-            // is also the right call if the suspension took the socket but the server survived, and
-            // is harmless if it was in fact stopped underneath us.
-            logger.LogInformation("Restarting the server after the background suspension");
-
-            // Through the runner, because this resume is the same hole as a connectivity change: the
-            // first thing an app does on resume is race the OS for a network that is still coming
-            // back, and a single refused bind here strands the user on a screen that says the server
-            // is on. The flag is already cleared, so nothing else will try again if this does not.
-            this.transitions.Run("Restart after the background suspension", server.RestartAsync);
-            return Task.CompletedTask;
-        }
-
-        if (!this.stoppedByLifecycle && !options.AlwaysStartOnForeground)
-            return Task.CompletedTask;
-
-        if (server.IsRunning)
-            return Task.CompletedTask;
-
-        logger.LogInformation("Starting the server for the foreground");
-
-        // Cleared before the start rather than after it. The retry owns getting the listener up from
-        // here, and a flag left set would have the next foreground transition queue a second start
-        // behind the one already trying.
-        this.stoppedByLifecycle = false;
-        this.transitions.Run("Start for the foreground", server.StartAsync);
-
-        return Task.CompletedTask;
     }
 
     /// <summary>
@@ -174,13 +123,7 @@ public partial class HttpServerLifecycleTask(
     /// it is a separate and more opinionated choice than restoring what was already on.
     /// </para>
     /// </remarks>
-    void TrackForRestore(bool running)
-    {
-        if (SupportsBackgroundExecution)
-            return;
-
-        this.restoreOnForeground = running;
-    }
+    void TrackForRestore(bool running) => this.Coordinator.TrackForRestore(running);
 
     /// <summary>
     /// Keeps the background execution in step with the server itself.
@@ -284,7 +227,7 @@ public partial class HttpServerLifecycleTask(
             try
             {
                 await Task.Delay(options.ConnectivityChangeDebounce, this.settleStopped.Token).ConfigureAwait(false);
-                this.RebindIfTheAddressesMoved();
+                await this.Coordinator.TryRebindAsync(this.AddressesMovedSoRebind).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -302,13 +245,13 @@ public partial class HttpServerLifecycleTask(
     /// The decision the connectivity event is only a trigger for: rebind if, and only if, the
     /// device's addresses actually moved and something is bound to an address that can go stale.
     /// </summary>
-    void RebindIfTheAddressesMoved()
+    /// <remarks>
+    /// Asked by the coordinator from inside its gate, once it has checked the server is still meant
+    /// to be serving: the settle outlives the event, so the server may have been stopped - by the
+    /// user, by a backgrounding - while it was waiting.
+    /// </remarks>
+    bool AddressesMovedSoRebind()
     {
-        // The settle outlives the event, so the server may have been stopped - by the user, by a
-        // backgrounding - while it was waiting.
-        if (!server.IsRunning)
-            return;
-
         // The same signature the core's own NetworkChangeWatcher diffs, deliberately: two answers
         // to "did the device move" that can disagree is worse than the InternalsVisibleTo that
         // sharing this costs.
@@ -320,7 +263,7 @@ public partial class HttpServerLifecycleTask(
         // somehow not so, the safe direction is to record and wait rather than to rebind a listener
         // on no evidence at all.
         if (previous is null)
-            return;
+            return false;
 
         if (current == previous)
         {
@@ -329,7 +272,7 @@ public partial class HttpServerLifecycleTask(
                 connectivity.Access,
                 connectivity.ConnectionTypes
             );
-            return;
+            return false;
         }
 
         if (!ConnectivityRebindDecision.AnyEndpointCanGoStale(server.Options.ResolveEndpoints()))
@@ -338,7 +281,7 @@ public partial class HttpServerLifecycleTask(
                 "Addresses changed to {Addresses} but every listener is on a wildcard or loopback address; no rebind needed",
                 current.Length == 0 ? "(none)" : current
             );
-            return;
+            return false;
         }
 
         // Restarted rather than left alone, because the listener is bound to an address the
@@ -351,14 +294,9 @@ public partial class HttpServerLifecycleTask(
             current.Length == 0 ? "(none)" : current
         );
 
-        // The single most likely way this package leaves a phone with a dead server, and the reason
-        // the retry runner exists. RestartAsync unbinds first and then binds, so a bind refused on a
-        // half-up network - the new interface not routable yet, the old port not released yet -
-        // leaves the server Stopped. Nothing else here is watching for that, so waiting for "the
-        // next connectivity change" is waiting for an event that may not come until the user walks
-        // somewhere else. It is retried as the network settles, and if it still will not come up the
-        // give-up is an Error carrying the bind exception rather than a warning nobody collects.
-        this.transitions.Run("Rebind after a connectivity change", server.RestartAsync);
+        // The restart itself is the coordinator's, so it goes through the retry runner from inside
+        // the same gate a background stop takes.
+        return true;
     }
 
     /// <summary>
@@ -442,6 +380,7 @@ public partial class HttpServerLifecycleTask(
         this.settleStopped.Cancel();
         this.settleStopped.Dispose();
 
+        this.coordinator?.Dispose();
         this.transitions.Dispose();
 
         GC.SuppressFinalize(this);

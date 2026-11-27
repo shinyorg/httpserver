@@ -160,7 +160,10 @@ public sealed class DirectoryAcmeCertificateStore : IAcmeCertificateStore
         CreateDirectory(directory);
 
         var target = System.IO.Path.Combine(directory, fileName);
-        var temporary = target + ".tmp";
+        // Unique per write. With one fixed name, a second writer for the same file - two processes on
+        // a shared store, two managers pointed at one directory - fails to open it while the first
+        // holds it, and its cleanup then deletes the first writer's half-written file out from under it.
+        var temporary = $"{target}.{Guid.NewGuid():N}.tmp";
 
         var options = new FileStreamOptions
         {

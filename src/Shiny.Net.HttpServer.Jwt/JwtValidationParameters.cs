@@ -10,17 +10,33 @@ namespace Shiny.Net.HttpServer.Jwt;
 /// </summary>
 public sealed class JwtValidationParameters
 {
+    // Snapshot lists, because these are read by every request and changed - a key rotated in, an
+    // issuer added - while the server is serving. See SnapshotList for what a plain list did.
+    readonly SnapshotList<JwtSigningKey> signingKeys = new();
+    readonly SnapshotList<string> validIssuers = new();
+    readonly SnapshotList<string> validAudiences = new();
+
     /// <summary>
     /// Keys the signature is checked against. More than one supports rotation: a token signed with
     /// the previous key keeps validating until it expires.
+    /// <para>
+    /// Safe to change while requests are being validated: each validation works from the keys as
+    /// they were when it started.
+    /// </para>
     /// </summary>
-    public IList<JwtSigningKey> SigningKeys { get; } = [];
+    public IList<JwtSigningKey> SigningKeys => this.signingKeys;
 
-    /// <summary>Issuers to accept. Required unless <see cref="ValidateIssuer"/> is turned off.</summary>
-    public IList<string> ValidIssuers { get; } = [];
+    /// <summary>Issuers to accept. Required unless <see cref="ValidateIssuer"/> is turned off. Safe to change while serving.</summary>
+    public IList<string> ValidIssuers => this.validIssuers;
 
-    /// <summary>Audiences to accept. Required unless <see cref="ValidateAudience"/> is turned off.</summary>
-    public IList<string> ValidAudiences { get; } = [];
+    /// <summary>Audiences to accept. Required unless <see cref="ValidateAudience"/> is turned off. Safe to change while serving.</summary>
+    public IList<string> ValidAudiences => this.validAudiences;
+
+    internal JwtSigningKey[] SigningKeySnapshot => this.signingKeys.Snapshot;
+
+    internal string[] ValidIssuerSnapshot => this.validIssuers.Snapshot;
+
+    internal string[] ValidAudienceSnapshot => this.validAudiences.Snapshot;
 
     public bool ValidateSignature { get; set; } = true;
 

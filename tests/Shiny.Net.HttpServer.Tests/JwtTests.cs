@@ -420,3 +420,72 @@ public class JwtValidationTests
         Assert.Throws<InvalidOperationException>(() => new JwtTokenGenerator(verifyOnly).Create(Descriptor()));
     }
 }
+
+/// <summary>
+/// Key rotation while the server is validating. The keys used to be a plain list, so a rotation
+/// that landed while a request was looping over them threw "collection was modified" out of the
+/// validator and the request failed with a 500.
+/// </summary>
+public class JwtKeyRotationTests
+{
+    static JwtTokenDescriptor Descriptor() => new()
+    {
+        Issuer = "shiny",
+        Subject = "user-1",
+        Audiences = { "shiny-app" },
+        Lifetime = TimeSpan.FromMinutes(30)
+    };
+
+    /// <summary>
+    /// Rotates a key into the parameters from inside Verify - so the change lands in the middle of the
+    /// validator's loop over the keys every time, rather than when a thread race happens to line up.
+    /// </summary>
+    sealed class RotatingKey(JwtSigningKey inner, Action rotate) : JwtSigningKey
+    {
+        public override JwtAlgorithm Algorithm => inner.Algorithm;
+        public override bool CanSign => false;
+        public override byte[] Sign(ReadOnlySpan<byte> data) => throw new NotSupportedException();
+
+        public override bool Verify(ReadOnlySpan<byte> data, ReadOnlySpan<byte> signature)
+        {
+            rotate();
+            return false;
+        }
+    }
+
+    [Fact]
+    public void A_key_rotated_in_mid_validation_does_not_fail_the_request()
+    {
+        using var current = JwtSigningKey.CreateSecret();
+        using var retired = JwtSigningKey.CreateSecret();
+        using var incoming = JwtSigningKey.CreateSecret();
+
+        var parameters = new JwtValidationParameters
+        {
+            ValidIssuers = { "shiny" },
+            ValidAudiences = { "shiny-app" }
+        };
+        parameters.SigningKeys.Add(new RotatingKey(retired, () => parameters.SigningKeys.Add(incoming)));
+        parameters.SigningKeys.Add(current);
+
+        var token = new JwtTokenGenerator(current).Create(Descriptor());
+        var result = new JwtTokenValidator(parameters).Validate(token);
+
+        // The validation that was running finishes against the keys it started with, and the
+        // rotation is there for the next one.
+        Assert.True(result.IsValid, result.Error);
+        Assert.Equal(3, parameters.SigningKeys.Count);
+        Assert.Same(incoming, parameters.SigningKeys[2]);
+    }
+
+    [Fact]
+    public void The_lists_can_be_changed_while_they_are_being_read()
+    {
+        var parameters = new JwtValidationParameters { ValidIssuers = { "a", "b" } };
+
+        foreach (var issuer in parameters.ValidIssuers)
+            parameters.ValidIssuers.Remove(issuer);
+
+        Assert.Empty(parameters.ValidIssuers);
+    }
+}

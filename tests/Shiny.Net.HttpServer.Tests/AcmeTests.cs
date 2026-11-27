@@ -436,6 +436,166 @@ public class AcmeTests
         _ = server;
     }
 
+    // ---- concurrency ----
+
+    /// <summary>
+    /// The renewal loop and an EnsureCertificateAsync at startup both find no certificate and both
+    /// decide to order. Each order counts against the CA's duplicate certificate limit, so the second
+    /// must notice the first's certificate once it gets the semaphore, rather than ordering again.
+    /// </summary>
+    [Fact]
+    public async Task The_loop_and_EnsureCertificateAsync_deciding_together_order_once()
+    {
+        await using var ca = await FakeAcmeCa.StartAsync();
+        var store = new GatedStore(new DirectoryAcmeCertificateStore(TempDirectory()));
+
+        // Every look at the store is held, so all three decide "nothing stored" before any order lands.
+        var release = store.HoldLoads();
+        await using var host = await AcmeHost.StartAsync(ca, o => o.Store = store);
+
+        var first = host.Manager.EnsureCertificateAsync(Token);
+        var second = host.Manager.EnsureCertificateAsync(Token);
+        await WaitFor(() => store.LoadsHeld >= 3);
+        release.SetResult();
+
+        var a = await first;
+        var b = await second;
+        await host.Manager.StopRenewalAsync();
+
+        Assert.Equal(1, ca.CertificatesIssued);
+        Assert.Equal(a.Thumbprint, b.Thumbprint);
+        Assert.Equal(a.Thumbprint, host.Manager.Certificate!.Thumbprint);
+    }
+
+    /// <summary>
+    /// A load reads the store outside the issuing semaphore. One that read the old certificate before an
+    /// issue saved the new one used to install the old one over it once it finished.
+    /// </summary>
+    [Fact]
+    public async Task A_load_that_finishes_after_an_issue_does_not_put_the_old_certificate_back()
+    {
+        await using var ca = await FakeAcmeCa.StartAsync();
+        var store = new GatedStore(new DirectoryAcmeCertificateStore(TempDirectory()));
+        await using var host = await AcmeHost.StartAsync(ca, o => o.Store = store);
+        await host.WaitForCertificatesAsync(1);
+        await host.Manager.StopRenewalAsync();
+
+        var release = store.HoldLoads();
+        var load = host.Manager.LoadAsync(Token);
+        await WaitFor(() => store.LoadsHeld >= 1);
+
+        var renewed = await host.Manager.RenewAsync(Token);
+        release.SetResult();
+        var loaded = await load;
+
+        Assert.Equal(ca.Issued[1].Thumbprint, renewed.Thumbprint);
+        Assert.Equal(renewed.Thumbprint, host.Manager.Certificate!.Thumbprint);
+        Assert.Equal(renewed.Thumbprint, loaded!.Thumbprint);
+    }
+
+    /// <summary>
+    /// Disposing with an explicit order in flight used to dispose the account - and its HTTP client -
+    /// under the order. It is cancelled and waited for instead, and reported as the dispose it is
+    /// rather than as a failed order.
+    /// </summary>
+    [Fact]
+    public async Task Disposing_cancels_an_order_in_flight_rather_than_disposing_the_account_under_it()
+    {
+        await using var ca = await FakeAcmeCa.StartAsync();
+        var store = new GatedStore(new DirectoryAcmeCertificateStore(TempDirectory()));
+        await using var host = await AcmeHost.StartAsync(ca, o => o.Store = store);
+        await host.WaitForCertificatesAsync(1);
+        await host.Manager.StopRenewalAsync();
+
+        var failures = 0;
+        host.Manager.IssuanceFailed += (_, _) => Interlocked.Increment(ref failures);
+
+        store.HoldSaves();
+        var renew = host.Manager.RenewAsync(Token);
+        await WaitFor(() => store.SavesHeld >= 1);
+
+        await host.Manager.DisposeAsync();
+
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => renew);
+        Assert.Equal(0, failures);
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => host.Manager.RenewAsync(Token));
+        Assert.Throws<ObjectDisposedException>(() => host.Manager.StartRenewal());
+    }
+
+    /// <summary>
+    /// Registry entries share one challenge responder and may cover the same name. Two orders
+    /// validating it at once used to share one slot: the second overwrote (and disposed) the first's
+    /// certificate, and the first's cleanup then removed the second's.
+    /// </summary>
+    [Fact]
+    public void Two_tls_alpn_challenges_for_one_name_do_not_remove_each_other()
+    {
+        var responder = new AcmeChallengeResponder();
+
+        var first = responder.AddTlsAlpn(Domain, "first.thumb");
+        var second = responder.AddTlsAlpn(Domain, "second.thumb");
+        Assert.Same(second, responder.PendingTlsAlpn(Domain));
+
+        responder.RemoveTlsAlpn(Domain, first);
+        Assert.Same(second, responder.PendingTlsAlpn(Domain));
+
+        responder.RemoveTlsAlpn(Domain, second);
+        Assert.Null(responder.PendingTlsAlpn(Domain));
+    }
+
+    /// <summary>A store whose certificate reads and writes a test can hold at the point the race needs them held.</summary>
+    sealed class GatedStore(IAcmeCertificateStore inner) : IAcmeCertificateStore
+    {
+        TaskCompletionSource? loads;
+        TaskCompletionSource? saves;
+        int loadsHeld;
+        int savesHeld;
+
+        public int LoadsHeld => Volatile.Read(ref this.loadsHeld);
+        public int SavesHeld => Volatile.Read(ref this.savesHeld);
+
+        /// <summary>Holds every certificate load from now on, after it has read the store, until the result is set.</summary>
+        public TaskCompletionSource HoldLoads()
+        {
+            var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            Volatile.Write(ref this.loads, gate);
+            return gate;
+        }
+
+        /// <summary>Holds every certificate save from now on; only cancellation lets one go.</summary>
+        public void HoldSaves() => Volatile.Write(ref this.saves, new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously));
+
+        public Task<AcmeAccountData?> LoadAccountAsync(string directoryUrl, CancellationToken cancellationToken)
+            => inner.LoadAccountAsync(directoryUrl, cancellationToken);
+
+        public Task SaveAccountAsync(string directoryUrl, AcmeAccountData account, CancellationToken cancellationToken)
+            => inner.SaveAccountAsync(directoryUrl, account, cancellationToken);
+
+        public async Task<byte[]?> LoadCertificateAsync(string directoryUrl, string name, CancellationToken cancellationToken)
+        {
+            var read = await inner.LoadCertificateAsync(directoryUrl, name, cancellationToken);
+
+            if (Volatile.Read(ref this.loads) is { } gate)
+            {
+                Interlocked.Increment(ref this.loadsHeld);
+                await gate.Task.WaitAsync(cancellationToken);
+            }
+
+            return read;
+        }
+
+        public async Task SaveCertificateAsync(string directoryUrl, string name, byte[] pkcs12, CancellationToken cancellationToken)
+        {
+            if (Volatile.Read(ref this.saves) is { } gate)
+            {
+                Interlocked.Increment(ref this.savesHeld);
+                await gate.Task.WaitAsync(cancellationToken);
+            }
+
+            await inner.SaveCertificateAsync(directoryUrl, name, pkcs12, cancellationToken);
+        }
+    }
+
     // ---- helpers ----
 
     static AcmeCertificateManager Standalone(FakeAcmeCa ca, Action<AcmeOptions>? configure = null)

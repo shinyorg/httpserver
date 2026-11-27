@@ -34,7 +34,19 @@ public sealed class AcmeCertificateManager : IAsyncDisposable
     readonly SemaphoreSlim issuing = new(1, 1);
     readonly object loopLock = new();
 
+    // Cancels an order still in flight when the manager is disposed, so the dispose can wait for it to
+    // unwind before the account it is signing with goes away.
+    readonly CancellationTokenSource disposing = new();
+
+    // Guards every write of `current` together with `issueCount`, so a load can tell whether an issue or
+    // an import landed while it was reading the store.
+    readonly object installLock = new();
+
     volatile AcmeIssuedCertificate? current;
+
+    // Bumped by every issue and import. A caller that decided to order compares it after taking the
+    // issuing semaphore, and a load compares it before installing what it read.
+    long issueCount;
     IReadOnlyList<AcmeIdentifier>? identifiers;
     CancellationTokenSource? loopStopping;
     Task? loop;
@@ -147,6 +159,9 @@ public sealed class AcmeCertificateManager : IAsyncDisposable
     /// </summary>
     public async Task<X509Certificate2> EnsureCertificateAsync(CancellationToken cancellationToken = default)
     {
+        // Taken before looking, so an order the renewal loop places while this decides is not followed
+        // by a second one for the same names - both count against the CA's duplicate certificate limit.
+        var observed = Interlocked.Read(ref this.issueCount);
         var certificate = this.current ?? await this.LoadStoredAsync(cancellationToken).ConfigureAwait(false);
 
         if (certificate is not null)
@@ -156,7 +171,7 @@ public sealed class AcmeCertificateManager : IAsyncDisposable
                 return certificate.Certificate;
         }
 
-        return (await this.IssueAsync(cancellationToken).ConfigureAwait(false)).Certificate;
+        return (await this.IssueAsync(observed, cancellationToken).ConfigureAwait(false)).Certificate;
     }
 
     /// <summary>
@@ -164,7 +179,7 @@ public sealed class AcmeCertificateManager : IAsyncDisposable
     /// compromise, a changed name list, or a CA's revocation notice.
     /// </summary>
     public async Task<X509Certificate2> RenewAsync(CancellationToken cancellationToken = default)
-        => (await this.IssueAsync(cancellationToken).ConfigureAwait(false)).Certificate;
+        => (await this.IssueAsync(null, cancellationToken).ConfigureAwait(false)).Certificate;
 
     /// <summary>
     /// Starts the background loop that obtains and renews the certificate. Idempotent. <c>UseAcme</c> calls
@@ -173,10 +188,13 @@ public sealed class AcmeCertificateManager : IAsyncDisposable
     /// </summary>
     public void StartRenewal()
     {
-        ObjectDisposedException.ThrowIf(this.disposed != 0, this);
-
         lock (this.loopLock)
         {
+            // Checked inside the lock: the dispose marks itself disposed before it takes this lock to
+            // stop the loop, so a start checked outside could pass, lose the lock to that stop, and then
+            // start a loop nothing will ever stop.
+            ObjectDisposedException.ThrowIf(this.disposed != 0, this);
+
             if (this.loop is { IsCompleted: false })
                 return;
 
@@ -227,8 +245,14 @@ public sealed class AcmeCertificateManager : IAsyncDisposable
         await this.StopRenewalAsync().ConfigureAwait(false);
         AcmeMetrics.Untrack(this);
 
-        // An in-flight explicit order still holds the semaphore; let it finish rather than dispose it
-        // out from under the order.
+        // An explicit order may still be in flight, holding the semaphore and signing with the account.
+        // Disposing the account under it fails the order with whatever its HTTP client throws once
+        // disposed, so the order is cancelled and waited for first. The semaphore is released again
+        // rather than disposed: a caller arriving after this finds the manager disposed on the way in.
+        await this.disposing.CancelAsync().ConfigureAwait(false);
+        await this.issuing.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        this.issuing.Release();
+
         if (this.ownsAccount)
             this.account.Dispose();
     }
@@ -237,7 +261,11 @@ public sealed class AcmeCertificateManager : IAsyncDisposable
     /// Takes over the certificate another manager was serving, without an event: the registry uses it
     /// when an entry's names change, so the old certificate keeps serving until the new one is issued.
     /// </summary>
-    internal void Adopt(AcmeIssuedCertificate certificate) => this.current ??= certificate;
+    internal void Adopt(AcmeIssuedCertificate certificate)
+    {
+        lock (this.installLock)
+            this.current ??= certificate;
+    }
 
     /// <summary>
     /// Saves a certificate obtained elsewhere under this manager's storage name and serves it, so the
@@ -260,6 +288,8 @@ public sealed class AcmeCertificateManager : IAsyncDisposable
         await this.issuing.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            ObjectDisposedException.ThrowIf(this.disposed != 0, this);
+
             await this.Store.SaveCertificateAsync(this.Options.DirectoryUrl, this.StorageName, pkcs12, cancellationToken).ConfigureAwait(false);
             this.renewalWindow = null;
             this.Install(imported, "imported");
@@ -289,6 +319,7 @@ public sealed class AcmeCertificateManager : IAsyncDisposable
 
             try
             {
+                var observed = Interlocked.Read(ref this.issueCount);
                 var certificate = this.current ?? await this.LoadStoredAsync(cancellationToken).ConfigureAwait(false);
 
                 if (certificate is null)
@@ -301,7 +332,7 @@ public sealed class AcmeCertificateManager : IAsyncDisposable
                         continue;
                     }
 
-                    await this.IssueAsync(cancellationToken).ConfigureAwait(false);
+                    await this.IssueAsync(observed, cancellationToken).ConfigureAwait(false);
                     failures = 0;
                     continue;
                 }
@@ -325,7 +356,7 @@ public sealed class AcmeCertificateManager : IAsyncDisposable
                             certificate.NotAfter
                         );
 
-                        await this.IssueAsync(cancellationToken).ConfigureAwait(false);
+                        await this.IssueAsync(observed, cancellationToken).ConfigureAwait(false);
                         failures = 0;
                         continue;
                     }
@@ -469,14 +500,46 @@ public sealed class AcmeCertificateManager : IAsyncDisposable
 
     // ---- issuance ----
 
-    async Task<AcmeIssuedCertificate> IssueAsync(CancellationToken cancellationToken)
+    /// <summary>
+    /// Orders a certificate and installs it. <paramref name="observed"/> is the issue count the caller
+    /// saw when it decided an order was needed, or null to order regardless (an explicit renewal).
+    /// </summary>
+    async Task<AcmeIssuedCertificate> IssueAsync(long? observed, CancellationToken cancellationToken)
     {
-        await this.issuing.WaitAsync(cancellationToken).ConfigureAwait(false);
+        ObjectDisposedException.ThrowIf(this.disposed != 0, this);
+
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, this.disposing.Token);
+        var token = linked.Token;
+
         try
         {
-            var issued = await this.IssueCoreAsync(cancellationToken).ConfigureAwait(false);
+            await this.issuing.WaitAsync(token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (this.disposing.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            throw new ObjectDisposedException(nameof(AcmeCertificateManager));
+        }
+
+        try
+        {
+            ObjectDisposedException.ThrowIf(this.disposed != 0, this);
+
+            // Someone else ordered (or imported) while this waited for the semaphore: the renewal loop
+            // and EnsureCertificateAsync both decide outside it, and both used to go on to order. What
+            // they decided on is no longer what is being served, so the decision is stale - and a second
+            // order for the same names is spent against the CA's duplicate certificate limit.
+            if (observed is { } seen && Interlocked.Read(ref this.issueCount) != seen && this.current is { } fresh)
+                return fresh;
+
+            var issued = await this.IssueCoreAsync(token).ConfigureAwait(false);
             AcmeMetrics.IssuanceSucceeded(this);
             return issued;
+        }
+        catch (OperationCanceledException) when (this.disposing.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            // Not a failed order: the manager is going away and cancelled it. Reported as what it is,
+            // and without raising IssuanceFailed for an order nobody wants any more.
+            throw new ObjectDisposedException(nameof(AcmeCertificateManager));
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
@@ -553,6 +616,10 @@ public sealed class AcmeCertificateManager : IAsyncDisposable
 
     async Task<AcmeIssuedCertificate?> LoadStoredAsync(CancellationToken cancellationToken)
     {
+        // Loads run outside the issuing semaphore, so an issue can save and install its certificate
+        // while this is still reading the store. Whatever this read is then older than what is served.
+        var observed = Interlocked.Read(ref this.issueCount);
+
         byte[]? pkcs12;
         try
         {
@@ -584,14 +651,42 @@ public sealed class AcmeCertificateManager : IAsyncDisposable
             return null;
         }
 
-        this.Install(loaded, "loaded from the store");
+        AcmeIssuedCertificate? previous;
+        lock (this.installLock)
+        {
+            // An issue or import landed while the store was being read: installing what was read
+            // would put the old certificate back over the new one. Two loads racing each other (the
+            // loop and EnsureCertificateAsync) read the same bytes, and the second has nothing to add.
+            if (Interlocked.Read(ref this.issueCount) != observed)
+                return this.current;
+
+            if (this.current is { } serving && serving.Certificate.Thumbprint == loaded.Certificate.Thumbprint)
+                return serving;
+
+            previous = this.current;
+            this.current = loaded;
+        }
+
+        this.Announce(loaded, previous, "loaded from the store");
         return loaded;
     }
 
+    /// <summary>Installs a certificate this manager issued or imported, which always supersedes what was served.</summary>
     void Install(AcmeIssuedCertificate certificate, string how)
     {
-        var previous = this.current;
-        this.current = certificate;
+        AcmeIssuedCertificate? previous;
+        lock (this.installLock)
+        {
+            previous = this.current;
+            this.current = certificate;
+            Interlocked.Increment(ref this.issueCount);
+        }
+
+        this.Announce(certificate, previous, how);
+    }
+
+    void Announce(AcmeIssuedCertificate certificate, AcmeIssuedCertificate? previous, string how)
+    {
 
         this.logger.LogInformation(
             "Now serving the certificate {How} for {Subject} (expires {NotAfter:u}){Swap}",

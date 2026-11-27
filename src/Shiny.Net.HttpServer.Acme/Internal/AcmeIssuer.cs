@@ -1,3 +1,4 @@
+using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 
@@ -154,10 +155,13 @@ sealed class AcmeIssuer(
         var challengeUrl = challenge.GetProperty("url").GetString()!;
         var keyAuthorization = client.Key.KeyAuthorization(token);
 
+        // The TLS-ALPN-01 certificate is held so the cleanup removes this order's and no other's: a
+        // name can have a challenge pending from more than one order at a time.
+        X509Certificate2? tlsAlpn = null;
         if (kind == Http01)
             challenges.AddHttp(token, keyAuthorization);
         else
-            challenges.AddTlsAlpn(name, keyAuthorization);
+            tlsAlpn = challenges.AddTlsAlpn(name, keyAuthorization);
 
         try
         {
@@ -192,10 +196,10 @@ sealed class AcmeIssuer(
         }
         finally
         {
-            if (kind == Http01)
+            if (tlsAlpn is null)
                 challenges.RemoveHttp(token);
             else
-                challenges.RemoveTlsAlpn(name);
+                challenges.RemoveTlsAlpn(name, tlsAlpn);
         }
     }
 
