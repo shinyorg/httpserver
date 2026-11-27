@@ -60,6 +60,9 @@ public sealed class SwitchboardLine : IAsyncDisposable
     Task? dispatcher;
     bool stopping;
 
+    /// <summary>Runs between the stream opening and the line going Connected. For tests, to put a stop there.</summary>
+    internal Func<Task>? AfterConnectForTests { get; set; }
+
     internal SwitchboardLine(
         Uri baseUrl,
         SwitchboardLineOptions options,
@@ -128,6 +131,7 @@ public sealed class SwitchboardLine : IAsyncDisposable
     public async Task StartAsync(CancellationToken cancellationToken = default)
     {
         CancellationTokenSource life;
+        Channel<Dispatch> channel;
 
         lock (this.gate)
         {
@@ -137,30 +141,84 @@ public sealed class SwitchboardLine : IAsyncDisposable
             this.stopping = false;
             this.token = null;
             this.lifetime = life = new CancellationTokenSource();
-            this.dispatch = Channel.CreateUnbounded<Dispatch>(new UnboundedChannelOptions { SingleReader = true });
+            this.dispatch = channel = Channel.CreateUnbounded<Dispatch>(new UnboundedChannelOptions { SingleReader = true });
         }
 
         this.SetState(LineState.Connecting);
-        this.dispatcher = Task.Run(() => this.DispatchLoopAsync(this.dispatch));
+
+        // The channel is handed over rather than read from the field when the loop starts: a stop and
+        // a restart in between would otherwise give this loop the next start's channel, and that one
+        // two readers.
+        this.dispatcher = Task.Run(() => this.DispatchLoopAsync(channel));
+
+        Attached? attached = null;
 
         try
         {
             // The stream lives on the line's own token, not the caller's: the caller's only governs
             // how long it is willing to wait for the line to open.
-            Attached? attached;
             using (cancellationToken.Register(static state => ((CancellationTokenSource)state!).Cancel(), life))
                 attached = await this.ConnectAsync(resume: false, life.Token).ConfigureAwait(false);
 
-            this.SetState(LineState.Connected);
-            this.runner = Task.Run(() => this.RunAsync(attached!, life.Token), CancellationToken.None);
+            if (this.AfterConnectForTests is { } hook)
+                await hook().ConfigureAwait(false);
+
+            // Connected and the receive loop are published together, under the same lock StopAsync
+            // reads them under: either the stop saw this start through and will wait for its loop, or
+            // this sees the stop and goes no further. Going Connected after a stop had already raised
+            // Closed left a line that claimed to be connected with nothing receiving on it.
+            string? stoppedToken = null;
+            var stopped = false;
+
+            lock (this.gate)
+            {
+                if (this.stopping)
+                {
+                    stopped = true;
+                    stoppedToken = this.token;
+                }
+                else
+                {
+                    this.state = LineState.Connected;
+                    var opened = attached!;
+                    this.runner = Task.Run(() => this.RunAsync(opened, life.Token), CancellationToken.None);
+                }
+            }
+
+            if (stopped)
+            {
+                attached!.Dispose();
+
+                // The stop may have looked before the server had given this line a token, in which case
+                // nobody has told the server yet.
+                if (stoppedToken is not null)
+                    await this.HangUpAsync(stoppedToken, cancellationToken).ConfigureAwait(false);
+
+                throw new OperationCanceledException("The line was stopped while it was starting.");
+            }
+
+            this.Raise(this.StateChanged, new LineStateChangedEventArgs(LineState.Connecting, LineState.Connected));
         }
         catch
         {
-            lock (this.gate)
-                this.state = LineState.Disconnected;
+            var wasConnecting = false;
 
-            this.dispatch.Writer.TryComplete();
-            this.StateChanged?.Invoke(this, new LineStateChangedEventArgs(LineState.Connecting, LineState.Disconnected));
+            lock (this.gate)
+            {
+                // A stop closes the line itself, and raises Closed for it; this only undoes a start that
+                // failed on its own.
+                if (this.state == LineState.Connecting && !this.stopping)
+                {
+                    this.state = LineState.Disconnected;
+                    wasConnecting = true;
+                }
+            }
+
+            channel.Writer.TryComplete();
+
+            if (wasConnecting)
+                this.StateChanged?.Invoke(this, new LineStateChangedEventArgs(LineState.Connecting, LineState.Disconnected));
+
             throw;
         }
     }
@@ -186,22 +244,7 @@ public sealed class SwitchboardLine : IAsyncDisposable
         }
 
         if (currentToken is not null)
-        {
-            try
-            {
-                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                timeout.CancelAfter(TimeSpan.FromSeconds(5));
-
-                using var request = await this.NewRequestAsync(HttpMethod.Delete, "connect").ConfigureAwait(false);
-                request.Headers.Add(LineHeader, currentToken);
-                using var _ = await this.http.SendAsync(request, timeout.Token).ConfigureAwait(false);
-            }
-            catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException)
-            {
-                // The server hears about it either way: its stream ends and the line is swept.
-                this.logger.LogDebug(ex, "Could not tell the switchboard the line was closing");
-            }
-        }
+            await this.HangUpAsync(currentToken, cancellationToken).ConfigureAwait(false);
 
         if (life is not null)
             await life.CancelAsync().ConfigureAwait(false);
@@ -219,6 +262,24 @@ public sealed class SwitchboardLine : IAsyncDisposable
         }
 
         this.Finish(LineCloseReason.ClientClosed, null, null);
+    }
+
+    /// <summary>Tells the server the line is closing. Best effort: if this fails, its stream ends and the line is swept.</summary>
+    async Task HangUpAsync(string lineToken, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(5));
+
+            using var request = await this.NewRequestAsync(HttpMethod.Delete, "connect").ConfigureAwait(false);
+            request.Headers.Add(LineHeader, lineToken);
+            using var _ = await this.http.SendAsync(request, timeout.Token).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException)
+        {
+            this.logger.LogDebug(ex, "Could not tell the switchboard the line was closing");
+        }
     }
 
     public async ValueTask DisposeAsync()
@@ -371,12 +432,17 @@ public sealed class SwitchboardLine : IAsyncDisposable
         ArgumentException.ThrowIfNullOrEmpty(method);
 
         string currentToken;
+        long seq;
         lock (this.gate)
         {
             if (this.state != LineState.Connected || this.token is null)
                 throw new InvalidOperationException($"The line is {this.state}; calls can only be made while it is connected.");
 
+            // Token and number are taken together, and a new line sets both together: a number from the
+            // old line's count on the new line's token would have the server wait out its ordering timeout
+            // for calls that never come.
             currentToken = this.token;
+            seq = ++this.sequence;
         }
 
         var buffer = new ArrayBufferWriter<byte>(256);
@@ -385,7 +451,7 @@ public sealed class SwitchboardLine : IAsyncDisposable
             writer.WriteStartObject();
             writer.WriteString("target", method);
             this.Json.WriteArguments(writer, args);
-            writer.WriteNumber("seq", Interlocked.Increment(ref this.sequence));
+            writer.WriteNumber("seq", seq);
             writer.WriteEndObject();
         }
 
@@ -477,10 +543,12 @@ public sealed class SwitchboardLine : IAsyncDisposable
                         this.lineId = root.GetProperty("lineId").GetString();
                         this.token = root.GetProperty("lineToken").GetString();
                         this.heartbeat = TimeSpan.FromMilliseconds(root.TryGetProperty("heartbeatMs", out var hb) ? hb.GetInt64() : 0);
+
+                        // A new line counts its calls from one, starting with the token that names it.
+                        this.sequence = 0;
+                        Interlocked.Exchange(ref this.lastEventId, 0);
                     }
 
-                    Interlocked.Exchange(ref this.lastEventId, 0);
-                    Interlocked.Exchange(ref this.sequence, 0);
                     this.Feed(watchdog);
 
                     return new Attached(response, reader, watchdog, linked, newLine: true, missed: false);

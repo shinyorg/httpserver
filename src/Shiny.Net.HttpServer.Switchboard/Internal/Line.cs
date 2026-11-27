@@ -61,6 +61,10 @@ sealed class Line
         this.Protocol = protocol;
         this.RemoteAddress = remoteAddress;
         this.ConnectedAt = DateTimeOffset.UtcNow;
+
+        // Counted from now rather than from zero: between Open and the first Attach the line has no stream,
+        // and a sweeper that reads a zero here sees a line detached since boot and expires it.
+        this.detachedAt = Environment.TickCount64;
     }
 
     public string Id { get; }
@@ -90,6 +94,101 @@ sealed class Line
 
     /// <summary>Bounds concurrent calls from this line.</summary>
     public SemaphoreSlim Gate { get; }
+
+    // Only one taker of the whole gate at a time. Two of them each holding part of it — a disconnect and
+    // a resume's OnReconnectedAsync, say — would each wait forever for the slots the other has.
+    readonly SemaphoreSlim wholeGate = new(1, 1);
+
+    /// <summary>
+    /// Takes every slot of the invocation gate, so the lifecycle callback that follows runs with no call
+    /// beside it. Returns how many slots it got — fewer than <see cref="MaxParallelInvocations"/> when
+    /// <paramref name="cancellationToken"/> fired first — and the caller releases exactly that many.
+    /// </summary>
+    public async ValueTask<int> AcquireWholeGateAsync(CancellationToken cancellationToken)
+    {
+        var acquired = 0;
+
+        try
+        {
+            await this.wholeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            return 0;
+        }
+
+        try
+        {
+            for (; acquired < this.MaxParallelInvocations; acquired++)
+                await this.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        finally
+        {
+            this.wholeGate.Release();
+        }
+
+        return acquired;
+    }
+
+    /// <summary>
+    /// Takes the whole gate of a line nobody else can see yet, so it is free by construction. Held
+    /// through <c>OnConnectedAsync</c>: the client has the token from the <c>connected</c> event before the
+    /// callback runs, and a call it makes straight away must wait for the callback rather than run beside it.
+    /// </summary>
+    public void HoldGateForConnect()
+    {
+        for (var i = 0; i < this.MaxParallelInvocations; i++)
+            this.Gate.Wait(0);
+    }
+
+    // ---- calls in flight ----
+
+    readonly object calls = new();
+    int running;
+    TaskCompletionSource? drained;
+
+    /// <summary>
+    /// Counts a call for as long as it runs — including a stream, which gives the gate back once its
+    /// headers are out but keeps running its body after that.
+    /// </summary>
+    public void EnterCall()
+    {
+        lock (this.calls)
+            this.running++;
+    }
+
+    public void ExitCall()
+    {
+        TaskCompletionSource? done = null;
+
+        lock (this.calls)
+        {
+            this.running--;
+            if (this.running == 0)
+            {
+                done = this.drained;
+                this.drained = null;
+            }
+        }
+
+        done?.TrySetResult();
+    }
+
+    /// <summary>Completes once no call is running on this line.</summary>
+    public Task CallsDrained()
+    {
+        lock (this.calls)
+        {
+            if (this.running == 0)
+                return Task.CompletedTask;
+
+            this.drained ??= new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            return this.drained.Task;
+        }
+    }
 
     public int MaxParallelInvocations { get; }
 
@@ -252,6 +351,7 @@ sealed class Line
 
     readonly object turns = new();
     readonly SortedDictionary<long, TaskCompletionSource> waiting = [];
+    readonly SortedSet<long> forfeited = [];
     long nextTurn = 1;
 
     /// <summary>
@@ -302,16 +402,50 @@ sealed class Line
             if (sequence >= this.nextTurn)
                 this.nextTurn = sequence + 1;
 
-            // Anything at or below the new turn may go — including numbers a timeout skipped past.
-            while (this.waiting.Count > 0)
-            {
-                var first = this.waiting.First();
-                if (first.Key > this.nextTurn)
-                    break;
+            this.AdvanceTurns();
+        }
+    }
 
-                this.waiting.Remove(first.Key);
-                first.Value.TrySetResult();
-            }
+    /// <summary>
+    /// Gives up the turn of a call that will never run — refused before it started, or cancelled while it
+    /// waited. Its number still counts as done, so the call after it does not wait out the ordering timeout
+    /// for it; but it does not hurry anything along either, because the calls numbered before it may not
+    /// have run yet.
+    /// </summary>
+    public void ForfeitTurn(long sequence)
+    {
+        lock (this.turns)
+        {
+            if (sequence < this.nextTurn)
+                return;
+
+            if (sequence == this.nextTurn)
+                this.nextTurn = sequence + 1;
+            else
+                this.forfeited.Add(sequence);
+
+            this.AdvanceTurns();
+        }
+    }
+
+    // Called under the turns lock.
+    void AdvanceTurns()
+    {
+        // A number given up early is done as soon as everything before it is.
+        while (this.forfeited.Remove(this.nextTurn))
+            this.nextTurn++;
+
+        this.forfeited.RemoveWhere(s => s < this.nextTurn);
+
+        // Anything at or below the new turn may go — including numbers a timeout skipped past.
+        while (this.waiting.Count > 0)
+        {
+            var first = this.waiting.First();
+            if (first.Key > this.nextTurn)
+                break;
+
+            this.waiting.Remove(first.Key);
+            first.Value.TrySetResult();
         }
     }
 
@@ -376,6 +510,26 @@ sealed class Line
                 current.Writer.TryComplete();
                 this.channel = null;
             }
+        }
+
+        this.FailAllResults();
+        return true;
+    }
+
+    /// <summary>
+    /// Closes the line if it is still detached and has been for at least <paramref name="windowMs"/>.
+    /// The check and the close are one step under the line's lock, so a resume that attaches after the
+    /// sweeper looked cannot be closed out from under its client.
+    /// </summary>
+    public bool TryCloseDetached(long now, long windowMs)
+    {
+        lock (this.sync)
+        {
+            if (this.IsClosed || this.channel is not null || now - this.detachedAt < windowMs)
+                return false;
+
+            // No stream is attached, so there is nobody to send a close event to.
+            this.IsClosed = true;
         }
 
         this.FailAllResults();

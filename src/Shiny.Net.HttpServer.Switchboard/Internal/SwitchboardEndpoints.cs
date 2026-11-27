@@ -38,49 +38,72 @@ static class SwitchboardEndpoints
             return;
         }
 
-        var attachment = line.Attach(null, context.Request.Protocol, context.Connection.RemoteIpAddress)!;
-        var stream = await StartStreamAsync(context, board, line).ConfigureAwait(false);
-        if (stream is null)
+        // The line comes out of Open with its whole invocation gate held, and keeps it until OnConnectedAsync
+        // has run. The client has the token as soon as the connected event is out — before the callback —
+        // and a call it makes straight away, or a hang-up and the OnDisconnectedAsync behind it, must wait for
+        // the callback rather than run beside it on the same Items.
+        var holdingGate = true;
+        void ReleaseGate()
         {
-            // Detached, so the sweeper can expire it once the resume window passes. Left attached, a line whose
-            // stream never started was never swept: it held a MaxLines slot for good and OnDisconnectedAsync never ran.
-            line.Detach(attachment.Generation);
-            return;
+            if (holdingGate)
+            {
+                holdingGate = false;
+                line.Gate.Release(line.MaxParallelInvocations);
+            }
         }
-
-        var connected = JsonSerializer.Serialize(
-            new ConnectedPayload(
-                SwitchboardProtocol.Version,
-                line.Id,
-                line.Token,
-                (long)board.Options.HeartbeatInterval.TotalMilliseconds,
-                (long)board.Options.ResumeWindow.TotalMilliseconds
-            ),
-            SwitchboardProtocolJson.Default.ConnectedPayload
-        );
-
-        if (!await TrySendAsync(stream, SwitchboardProtocol.ConnectedEvent, connected, context.RequestAborted).ConfigureAwait(false))
-        {
-            await EndStreamAsync(context, board, line, attachment, stream).ConfigureAwait(false);
-            return;
-        }
-
-        // The pump starts before OnConnectedAsync runs, so anything it sends — Clients.Caller first
-        // of all — is delivered as it is sent rather than piling up behind the callback.
-        var pump = PumpAsync(stream, attachment.Reader, board.Options.HeartbeatInterval, context.RequestAborted);
 
         try
         {
-            await board.RunLifecycleAsync(line, context, context.RequestServices, Lifecycle.Connected).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            Logger(context).LogError(ex, "OnConnectedAsync failed for line {LineId}; closing it", line.Id);
-            board.Close(line, DisconnectReason.Faulted, "The server could not open the line", allowReconnect: false, ex);
-        }
+            var attachment = line.Attach(null, context.Request.Protocol, context.Connection.RemoteIpAddress)!;
+            var stream = await StartStreamAsync(context, board, line).ConfigureAwait(false);
+            if (stream is null)
+            {
+                // Still attached as far as the line knows, which would keep the sweeper from ever expiring it.
+                line.Detach(attachment.Generation);
+                return;
+            }
 
-        await pump.ConfigureAwait(false);
-        await EndStreamAsync(context, board, line, attachment, stream).ConfigureAwait(false);
+            var connected = JsonSerializer.Serialize(
+                new ConnectedPayload(
+                    SwitchboardProtocol.Version,
+                    line.Id,
+                    line.Token,
+                    (long)board.Options.HeartbeatInterval.TotalMilliseconds,
+                    (long)board.Options.ResumeWindow.TotalMilliseconds
+                ),
+                SwitchboardProtocolJson.Default.ConnectedPayload
+            );
+
+            if (!await TrySendAsync(stream, SwitchboardProtocol.ConnectedEvent, connected, context.RequestAborted).ConfigureAwait(false))
+            {
+                ReleaseGate();
+                await EndStreamAsync(context, board, line, attachment, stream).ConfigureAwait(false);
+                return;
+            }
+
+            // The pump starts before OnConnectedAsync runs, so anything it sends — Clients.Caller first
+            // of all — is delivered as it is sent rather than piling up behind the callback.
+            var pump = PumpAsync(stream, attachment.Reader, board.Options.HeartbeatInterval, context.RequestAborted);
+
+            try
+            {
+                await board.RunLifecycleAsync(line, context, context.RequestServices, Lifecycle.Connected).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                Logger(context).LogError(ex, "OnConnectedAsync failed for line {LineId}; closing it", line.Id);
+                board.Close(line, DisconnectReason.Faulted, "The server could not open the line", allowReconnect: false, ex);
+            }
+
+            ReleaseGate();
+
+            await pump.ConfigureAwait(false);
+            await EndStreamAsync(context, board, line, attachment, stream).ConfigureAwait(false);
+        }
+        finally
+        {
+            ReleaseGate();
+        }
     }
 
     static async ValueTask ResumeAsync(HttpContext context, BoardRuntime board, string token)
@@ -106,8 +129,7 @@ static class SwitchboardEndpoints
         var stream = await StartStreamAsync(context, board, line).ConfigureAwait(false);
         if (stream is null)
         {
-            // Detached, so the sweeper can expire it once the resume window passes. Left attached, a line whose
-            // stream never started was never swept: it held a MaxLines slot for good and OnDisconnectedAsync never ran.
+            // Still attached as far as the line knows, which would keep the sweeper from ever expiring it.
             line.Detach(attachment.Generation);
             return;
         }
@@ -123,14 +145,27 @@ static class SwitchboardEndpoints
 
         var pump = PumpAsync(stream, attachment.Reader, board.Options.HeartbeatInterval, context.RequestAborted);
 
+        // OnReconnectedAsync takes the whole gate like any lifecycle callback, so it does not run beside a
+        // call on the same Items. Taken after the pump starts: a call still running from before the drop may
+        // be waiting on the client for an answer, and the question only reaches it through this stream.
+        // Calls still running when the client gives up or the line closes leave nothing to welcome back.
+        using var waiting = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted, line.Closed);
+        var acquired = await line.AcquireWholeGateAsync(waiting.Token).ConfigureAwait(false);
+
         try
         {
-            await board.RunLifecycleAsync(line, context, context.RequestServices, Lifecycle.Reconnected).ConfigureAwait(false);
+            if (acquired == line.MaxParallelInvocations)
+                await board.RunLifecycleAsync(line, context, context.RequestServices, Lifecycle.Reconnected).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
             // A failed welcome-back is not worth losing the line over.
             Logger(context).LogError(ex, "OnReconnectedAsync failed for line {LineId}", line.Id);
+        }
+        finally
+        {
+            if (acquired > 0)
+                line.Gate.Release(acquired);
         }
 
         await pump.ConfigureAwait(false);
@@ -274,51 +309,75 @@ static class SwitchboardEndpoints
         {
             var root = document.RootElement;
 
-            if (root.ValueKind != JsonValueKind.Object
-                || !root.TryGetProperty("target", out var targetElement)
-                || targetElement.ValueKind != JsonValueKind.String
-                || targetElement.GetString() is not { Length: > 0 } target)
+            // Read before anything can refuse the call: a refused call still had a number, and the call after
+            // it waits for that number to be done.
+            long? sequence = root.ValueKind == JsonValueKind.Object
+                && root.TryGetProperty("seq", out var seqElement)
+                && seqElement.TryGetInt64(out var seq)
+                    ? seq
+                    : null;
+
+            var ran = false;
+            try
             {
-                await SwitchboardResponses.ErrorAsync(context, StatusCodes.Status400BadRequest, "The invocation has no target").ConfigureAwait(false);
-                return;
+                ran = await ValidateAndRunAsync(context, board, line, root, sequence).ConfigureAwait(false);
             }
-
-            var args = root.TryGetProperty("args", out var argsElement) ? argsElement : default;
-            if (args.ValueKind is not (JsonValueKind.Array or JsonValueKind.Undefined or JsonValueKind.Null))
+            finally
             {
-                await SwitchboardResponses.ErrorAsync(context, StatusCodes.Status400BadRequest, "The invocation's args must be an array").ConfigureAwait(false);
-                return;
+                // Refused before it ran (404, 400, 403): give the turn up rather than leave the next ordered
+                // call waiting out InvocationOrderingTimeout for a call that will never arrive.
+                if (!ran && sequence is { } refused && line.MaxParallelInvocations == 1)
+                    line.ForfeitTurn(refused);
             }
-
-            var method = board.Descriptor.FindMethod(target);
-            if (method is null)
-            {
-                await SwitchboardResponses.ErrorAsync(context, StatusCodes.Status404NotFound, $"There is no method '{target}'").ConfigureAwait(false);
-                return;
-            }
-
-            var count = args.ValueKind == JsonValueKind.Array ? args.GetArrayLength() : 0;
-            if (count < method.RequiredArguments || count > method.TotalArguments)
-            {
-                var expected = method.RequiredArguments == method.TotalArguments
-                    ? method.TotalArguments.ToString(CultureInfo.InvariantCulture)
-                    : $"{method.RequiredArguments} to {method.TotalArguments}";
-
-                await SwitchboardResponses.ErrorAsync(
-                    context,
-                    StatusCodes.Status400BadRequest,
-                    $"'{target}' takes {expected} argument(s), not {count}"
-                ).ConfigureAwait(false);
-                return;
-            }
-
-            if (!await SwitchboardAuthorization.AuthorizeAsync(context, RouteAuthorization(context, board), SwitchboardAuthorization.Fold(method.Metadata)).ConfigureAwait(false))
-                return;
-
-            long? sequence = root.TryGetProperty("seq", out var seqElement) && seqElement.TryGetInt64(out var seq) ? seq : null;
-
-            await RunAsync(context, board, line, method, args, sequence).ConfigureAwait(false);
         }
+    }
+
+    /// <summary>Checks the call can be made and runs it. False when it was refused before running.</summary>
+    static async ValueTask<bool> ValidateAndRunAsync(HttpContext context, BoardRuntime board, Line line, JsonElement root, long? sequence)
+    {
+        if (root.ValueKind != JsonValueKind.Object
+            || !root.TryGetProperty("target", out var targetElement)
+            || targetElement.ValueKind != JsonValueKind.String
+            || targetElement.GetString() is not { Length: > 0 } target)
+        {
+            await SwitchboardResponses.ErrorAsync(context, StatusCodes.Status400BadRequest, "The invocation has no target").ConfigureAwait(false);
+            return false;
+        }
+
+        var args = root.TryGetProperty("args", out var argsElement) ? argsElement : default;
+        if (args.ValueKind is not (JsonValueKind.Array or JsonValueKind.Undefined or JsonValueKind.Null))
+        {
+            await SwitchboardResponses.ErrorAsync(context, StatusCodes.Status400BadRequest, "The invocation's args must be an array").ConfigureAwait(false);
+            return false;
+        }
+
+        var method = board.Descriptor.FindMethod(target);
+        if (method is null)
+        {
+            await SwitchboardResponses.ErrorAsync(context, StatusCodes.Status404NotFound, $"There is no method '{target}'").ConfigureAwait(false);
+            return false;
+        }
+
+        var count = args.ValueKind == JsonValueKind.Array ? args.GetArrayLength() : 0;
+        if (count < method.RequiredArguments || count > method.TotalArguments)
+        {
+            var expected = method.RequiredArguments == method.TotalArguments
+                ? method.TotalArguments.ToString(CultureInfo.InvariantCulture)
+                : $"{method.RequiredArguments} to {method.TotalArguments}";
+
+            await SwitchboardResponses.ErrorAsync(
+                context,
+                StatusCodes.Status400BadRequest,
+                $"'{target}' takes {expected} argument(s), not {count}"
+            ).ConfigureAwait(false);
+            return false;
+        }
+
+        if (!await SwitchboardAuthorization.AuthorizeAsync(context, RouteAuthorization(context, board), SwitchboardAuthorization.Fold(method.Metadata)).ConfigureAwait(false))
+            return false;
+
+        await RunAsync(context, board, line, method, args, sequence).ConfigureAwait(false);
+        return true;
     }
 
     static async ValueTask RunAsync(HttpContext context, BoardRuntime board, Line line, SwitchboardMethod method, JsonElement args, long? sequence)
@@ -328,6 +387,7 @@ static class SwitchboardEndpoints
         // With one call at a time, calls also run in the order the client numbered them: they are
         // separate requests, and on HTTP/2 especially nothing stops a later one overtaking.
         var ordered = sequence is not null && line.MaxParallelInvocations == 1;
+        var hadTurn = false;
         var holdsGate = false;
         var released = 0;
 
@@ -339,9 +399,17 @@ static class SwitchboardEndpoints
             if (holdsGate)
                 line.Gate.Release();
 
-            if (ordered)
+            // A call cancelled while it waited never had its turn, so it must not end one: that would let
+            // the calls after it overtake the ones before it.
+            if (ordered && hadTurn)
                 line.EndTurn(sequence!.Value);
+            else if (ordered)
+                line.ForfeitTurn(sequence!.Value);
         }
+
+        // Counted until the very end — a stream keeps running after it hands the gate back, and
+        // OnDisconnectedAsync waits for it as well as for the gate.
+        line.EnterCall();
 
         Switchboard? instance = null;
         var outcome = "ok";
@@ -353,7 +421,10 @@ static class SwitchboardEndpoints
             try
             {
                 if (ordered)
+                {
                     await line.WaitTurnAsync(sequence!.Value, board.Options.InvocationOrderingTimeout, linked.Token).ConfigureAwait(false);
+                    hadTurn = true;
+                }
 
                 await line.Gate.WaitAsync(linked.Token).ConfigureAwait(false);
                 holdsGate = true;
@@ -417,8 +488,15 @@ static class SwitchboardEndpoints
         {
             Release();
 
-            if (instance is not null)
-                await BoardRuntime.DisposeBoardAsync(instance).ConfigureAwait(false);
+            try
+            {
+                if (instance is not null)
+                    await BoardRuntime.DisposeBoardAsync(instance).ConfigureAwait(false);
+            }
+            finally
+            {
+                line.ExitCall();
+            }
 
             activity?.SetTag("switchboard.outcome", outcome);
             SwitchboardMetrics.Invocation(board.Name, method.Name, outcome, Stopwatch.GetElapsedTime(started).TotalSeconds);
