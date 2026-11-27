@@ -40,6 +40,7 @@ public sealed class RequestTimeoutMiddleware(
         var clientAborted = context.RequestAborted;
 
         using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(clientAborted);
+        var started = System.Diagnostics.Stopwatch.GetTimestamp();
         timeoutSource.CancelAfter(policy.Timeout);
 
         context.RequestAborted = timeoutSource.Token;
@@ -61,8 +62,13 @@ public sealed class RequestTimeoutMiddleware(
         }
 
         // A handler that returned normally but ignored its token still ran over. Say so, if there
-        // is still a response to say it in.
-        if (timeoutSource.IsCancellationRequested && !clientAborted.IsCancellationRequested && !context.Response.HasStarted)
+        // is still a response to say it in. Measured by the clock as well as the token: the timer that
+        // cancels it is only a callback, and on a busy machine it can still be queued when a handler that
+        // overran returns.
+        var overran = timeoutSource.IsCancellationRequested
+            || System.Diagnostics.Stopwatch.GetElapsedTime(started) >= policy.Timeout;
+
+        if (overran && !clientAborted.IsCancellationRequested && !context.Response.HasStarted)
             await this.TimedOutAsync(context, policy).ConfigureAwait(false);
     }
 
