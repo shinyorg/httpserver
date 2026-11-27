@@ -61,7 +61,14 @@ public class BodyInterceptionTests
                 // The connection completes its own producer rather than whatever the response ended
                 // up bound to, so anything still sitting in this wrapper's writer would never reach
                 // the wire. Same reason response compression flushes here.
-                await tee.FinishAsync();
+                try
+                {
+                    await tee.FinishAsync();
+                }
+                finally
+                {
+                    log.Recorded.TrySetResult();
+                }
             }
         }
     }
@@ -71,6 +78,15 @@ public class BodyInterceptionTests
         public string? RequestBody { get; set; }
         public MemoryStream ResponseBody { get; } = new();
         public int StatusCode { get; set; }
+
+        /// <summary>
+        /// Set once the middleware has unwound. A handler that writes a response of known length has put all of it
+        /// on the wire before it returns, so the client can have the response before any of the recording has
+        /// happened: tests wait on this rather than read the log as soon as their request returns.
+        /// </summary>
+        public TaskCompletionSource Recorded { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task WaitAsync() => this.Recorded.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
 
         public string ResponseText => Encoding.UTF8.GetString(this.ResponseBody.ToArray());
     }
@@ -242,11 +258,8 @@ public class BodyInterceptionTests
         var response = await server.Client.GetAsync("/text", Token);
 
         Assert.Equal("hello from the handler", await response.Content.ReadAsStringAsync(Token));
+        await log.WaitAsync();
         Assert.Equal("hello from the handler", log.ResponseText);
-
-        // WriteAsync can put the whole response on the wire before the handler returns, so the
-        // client may have it before the middleware's finally has recorded the status.
-        await Wait.UntilAsync(() => log.StatusCode != 0, Token);
         Assert.Equal(StatusCodes.Status200OK, log.StatusCode);
     }
 
@@ -269,6 +282,7 @@ public class BodyInterceptionTests
         var response = await server.Client.GetAsync("/stream", Token);
 
         Assert.Equal("streamed straight to Body", await response.Content.ReadAsStringAsync(Token));
+        await log.WaitAsync();
         Assert.Equal("streamed straight to Body", log.ResponseText);
     }
 
@@ -289,6 +303,7 @@ public class BodyInterceptionTests
 
         await server.Client.GetAsync("/gone", Token);
 
+        await log.WaitAsync();
         Assert.Equal(StatusCodes.Status404NotFound, log.StatusCode);
         Assert.Equal("no such thing", log.ResponseText);
     }
@@ -311,6 +326,7 @@ public class BodyInterceptionTests
         var response = await server.Client.GetAsync("/nothing", Token);
 
         Assert.Equal(System.Net.HttpStatusCode.NoContent, response.StatusCode);
+        await log.WaitAsync();
         Assert.Equal("", log.ResponseText);
     }
 }
