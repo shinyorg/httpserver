@@ -79,7 +79,6 @@ public abstract class TunnelAgentOptions
 /// </summary>
 public abstract class ProcessTunnelAgent(TunnelAgentOptions options, ILogger? logger = null) : ITunnelAgent
 {
-    readonly TaskCompletionSource<string> announced = new(TaskCreationOptions.RunContinuationsAsynchronously);
     readonly ILogger logger = logger ?? NullLogger.Instance;
 
     Process? process;
@@ -176,17 +175,24 @@ public abstract class ProcessTunnelAgent(TunnelAgentOptions options, ILogger? lo
             );
         }
 
-        this.process.OutputDataReceived += (_, e) => this.OnLine(e.Data);
-        this.process.ErrorDataReceived += (_, e) => this.OnLine(e.Data);
-        this.process.BeginOutputReadLine();
-        this.process.BeginErrorReadLine();
+        // One per start, and every handler below closes over this start's process and this one.
+        // A single field for the agent's whole life meant a start after a stop returned the first
+        // run's URL - or its exception - straight away, and the old process's late output could
+        // answer for the new one.
+        var announced = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var started = this.process;
+
+        started.OutputDataReceived += (_, e) => this.OnLine(announced, e.Data);
+        started.ErrorDataReceived += (_, e) => this.OnLine(announced, e.Data);
+        started.BeginOutputReadLine();
+        started.BeginErrorReadLine();
 
         // An agent that exits during startup — bad credentials, a port already claimed — must fail
         // the wait rather than leave it running until the timeout.
-        this.process.EnableRaisingEvents = true;
-        this.process.Exited += (_, _) => this.announced.TrySetException(new TunnelAgentException(
+        started.EnableRaisingEvents = true;
+        started.Exited += (_, _) => announced.TrySetException(new TunnelAgentException(
             this.Name,
-            $"The {this.Name} agent exited with code {this.process?.ExitCode} before announcing a URL."
+            $"The {this.Name} agent exited with code {ExitCodeOf(started)} before announcing a URL."
         ));
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -194,7 +200,7 @@ public abstract class ProcessTunnelAgent(TunnelAgentOptions options, ILogger? lo
 
         try
         {
-            this.PublicUrl = await this.announced.Task.WaitAsync(timeout.Token).ConfigureAwait(false);
+            this.PublicUrl = await announced.Task.WaitAsync(timeout.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -250,18 +256,35 @@ public abstract class ProcessTunnelAgent(TunnelAgentOptions options, ILogger? lo
         return Task.CompletedTask;
     }
 
-    void OnLine(string? line)
+    void OnLine(TaskCompletionSource<string> announced, string? line)
     {
         if (line is not { Length: > 0 })
             return;
 
         this.logger.LogTrace("{Agent}: {Line}", this.Name, line);
 
-        if (this.announced.Task.IsCompleted)
+        if (announced.Task.IsCompleted)
             return;
 
         if (this.ParseUrl(line) is { Length: > 0 } url)
-            this.announced.TrySetResult(url.TrimEnd('/'));
+            announced.TrySetResult(url.TrimEnd('/'));
+    }
+
+    /// <summary>
+    /// The exit code for a message, or a placeholder. Runs on the thread pool from the Exited event,
+    /// where an exception takes the whole process down - and ExitCode throws for a process that has
+    /// been disposed by a stop, or that is somehow still running.
+    /// </summary>
+    internal static string ExitCodeOf(Process process)
+    {
+        try
+        {
+            return process.ExitCode.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException)
+        {
+            return "unknown";
+        }
     }
 
     public async ValueTask DisposeAsync() => await this.StopAsync(CancellationToken.None).ConfigureAwait(false);

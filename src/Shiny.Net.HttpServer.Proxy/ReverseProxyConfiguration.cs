@@ -142,9 +142,28 @@ public static class ReverseProxyConfigurationLoader
     /// </summary>
     public static ReverseProxyConfiguration Load(IConfiguration section, ReverseProxyConfiguration? existing = null)
     {
+        var (configuration, apply) = LoadStaged(section, existing);
+        apply();
+
+        return configuration;
+    }
+
+    /// <summary>
+    /// Reads and validates the whole section without touching a cluster that is already live, and
+    /// hands back the changes to those clusters as a step to run later.
+    /// <para>
+    /// A carried cluster is serving traffic while this reads. Writing its settings as they were
+    /// parsed meant a file that failed further down - a route with no ClusterId - left the running
+    /// proxy with half of the new configuration, even though the reload reported failure and claimed
+    /// the old one stayed in force.
+    /// </para>
+    /// </summary>
+    internal static (ReverseProxyConfiguration Configuration, Action Apply) LoadStaged(IConfiguration section, ReverseProxyConfiguration? existing = null)
+    {
         ArgumentNullException.ThrowIfNull(section);
 
         var clusters = new Dictionary<string, ProxyCluster>(StringComparer.OrdinalIgnoreCase);
+        var changes = new List<Action>();
 
         foreach (var child in section.GetSection("Clusters").GetChildren())
         {
@@ -154,7 +173,7 @@ public static class ReverseProxyConfigurationLoader
                 ? carried
                 : new ProxyCluster(id);
 
-            ReadCluster(child, cluster);
+            changes.Add(ReadCluster(child, cluster));
             clusters[id] = cluster;
         }
 
@@ -189,7 +208,11 @@ public static class ReverseProxyConfigurationLoader
 
         routes.Sort((a, b) => a.Order.CompareTo(b.Order));
 
-        return new ReverseProxyConfiguration(routes, clusters);
+        return (new ReverseProxyConfiguration(routes, clusters), () =>
+        {
+            foreach (var change in changes)
+                change();
+        });
     }
 
     /// <summary>
@@ -199,49 +222,40 @@ public static class ReverseProxyConfigurationLoader
     /// </summary>
     internal static string NormalizeTemplate(string path) => path.Replace("{**", "{*", StringComparison.Ordinal);
 
-    static void ReadCluster(IConfigurationSection section, ProxyCluster cluster)
+    /// <summary>Parses one cluster's section, and returns the step that writes it onto the cluster.</summary>
+    static Action ReadCluster(IConfigurationSection section, ProxyCluster cluster)
     {
-        if (LoadBalancingPolicies.Parse(section["LoadBalancingPolicy"]) is { } policy)
-            cluster.LoadBalancer = policy;
+        // Everything that can throw happens here, before anything is written.
+        var policy = LoadBalancingPolicies.Parse(section["LoadBalancingPolicy"]);
 
         var affinity = section.GetSection("SessionAffinity");
-        if (affinity.Exists())
-        {
-            cluster.SessionAffinity.Mode = Enum<SessionAffinityMode>(affinity["Mode"]) ?? cluster.SessionAffinity.Mode;
-            cluster.SessionAffinity.CookieName = affinity["CookieName"] ?? cluster.SessionAffinity.CookieName;
-            cluster.SessionAffinity.HeaderName = affinity["HeaderName"] ?? cluster.SessionAffinity.HeaderName;
-            cluster.SessionAffinity.FailurePolicy = Enum<AffinityFailurePolicy>(affinity["FailurePolicy"]) ?? cluster.SessionAffinity.FailurePolicy;
-            cluster.SessionAffinity.SecureCookie = Bool(affinity["SecureCookie"]) ?? cluster.SessionAffinity.SecureCookie;
-            cluster.SessionAffinity.CookieMaxAge = Time(affinity["CookieMaxAge"]) ?? cluster.SessionAffinity.CookieMaxAge;
-        }
+        var hasAffinity = affinity.Exists();
+        var affinityMode = Enum<SessionAffinityMode>(affinity["Mode"]);
+        var cookieName = affinity["CookieName"];
+        var headerName = affinity["HeaderName"];
+        var failurePolicy = Enum<AffinityFailurePolicy>(affinity["FailurePolicy"]);
+        var secureCookie = Bool(affinity["SecureCookie"]);
+        var cookieMaxAge = Time(affinity["CookieMaxAge"]);
 
         var active = section.GetSection("HealthCheck:Active");
-        if (active.Exists())
-        {
-            cluster.HealthCheck.Active.Enabled = Bool(active["Enabled"]) ?? cluster.HealthCheck.Active.Enabled;
-            cluster.HealthCheck.Active.Interval = Time(active["Interval"]) ?? cluster.HealthCheck.Active.Interval;
-            cluster.HealthCheck.Active.Timeout = Time(active["Timeout"]) ?? cluster.HealthCheck.Active.Timeout;
-            cluster.HealthCheck.Active.Path = active["Path"] ?? cluster.HealthCheck.Active.Path;
-        }
+        var hasActive = active.Exists();
+        var activeEnabled = Bool(active["Enabled"]);
+        var activeInterval = Time(active["Interval"]);
+        var activeTimeout = Time(active["Timeout"]);
+        var activePath = active["Path"];
 
         var passive = section.GetSection("HealthCheck:Passive");
-        if (passive.Exists())
-        {
-            cluster.HealthCheck.Passive.Enabled = Bool(passive["Enabled"]) ?? cluster.HealthCheck.Passive.Enabled;
-            cluster.HealthCheck.Passive.FailureThreshold = Int(passive["FailureThreshold"]) ?? cluster.HealthCheck.Passive.FailureThreshold;
-            cluster.HealthCheck.Passive.ReactivationPeriod = Time(passive["ReactivationPeriod"]) ?? cluster.HealthCheck.Passive.ReactivationPeriod;
-        }
+        var hasPassive = passive.Exists();
+        var passiveEnabled = Bool(passive["Enabled"]);
+        var failureThreshold = Int(passive["FailureThreshold"]);
+        var reactivationPeriod = Time(passive["ReactivationPeriod"]);
 
         var request = section.GetSection("HttpRequest");
-        if (request.Exists())
-        {
-            cluster.Forwarding.Timeout = Time(request["ActivityTimeout"]) ?? cluster.Forwarding.Timeout;
-            cluster.Forwarding.RewriteHost = Bool(request["RewriteHost"]) ?? cluster.Forwarding.RewriteHost;
-            cluster.Forwarding.ForwardUpgrades = Bool(request["ForwardUpgrades"]) ?? cluster.Forwarding.ForwardUpgrades;
-
-            if (request["Version"] is { Length: > 0 } version && Version.TryParse(version, out var parsed))
-                cluster.Forwarding.RequestVersion = parsed;
-        }
+        var hasRequest = request.Exists();
+        var activityTimeout = Time(request["ActivityTimeout"]);
+        var rewriteHost = Bool(request["RewriteHost"]);
+        var forwardUpgrades = Bool(request["ForwardUpgrades"]);
+        var requestVersion = request["Version"] is { Length: > 0 } version && Version.TryParse(version, out var parsed) ? parsed : null;
 
         var destinations = new List<ProxyDestination>();
 
@@ -259,7 +273,48 @@ public static class ReverseProxyConfigurationLoader
             destinations.Add(destination);
         }
 
-        cluster.SetDestinations(destinations);
+        return () =>
+        {
+            if (policy is not null)
+                cluster.LoadBalancer = policy;
+
+            if (hasAffinity)
+            {
+                cluster.SessionAffinity.Mode = affinityMode ?? cluster.SessionAffinity.Mode;
+                cluster.SessionAffinity.CookieName = cookieName ?? cluster.SessionAffinity.CookieName;
+                cluster.SessionAffinity.HeaderName = headerName ?? cluster.SessionAffinity.HeaderName;
+                cluster.SessionAffinity.FailurePolicy = failurePolicy ?? cluster.SessionAffinity.FailurePolicy;
+                cluster.SessionAffinity.SecureCookie = secureCookie ?? cluster.SessionAffinity.SecureCookie;
+                cluster.SessionAffinity.CookieMaxAge = cookieMaxAge ?? cluster.SessionAffinity.CookieMaxAge;
+            }
+
+            if (hasActive)
+            {
+                cluster.HealthCheck.Active.Enabled = activeEnabled ?? cluster.HealthCheck.Active.Enabled;
+                cluster.HealthCheck.Active.Interval = activeInterval ?? cluster.HealthCheck.Active.Interval;
+                cluster.HealthCheck.Active.Timeout = activeTimeout ?? cluster.HealthCheck.Active.Timeout;
+                cluster.HealthCheck.Active.Path = activePath ?? cluster.HealthCheck.Active.Path;
+            }
+
+            if (hasPassive)
+            {
+                cluster.HealthCheck.Passive.Enabled = passiveEnabled ?? cluster.HealthCheck.Passive.Enabled;
+                cluster.HealthCheck.Passive.FailureThreshold = failureThreshold ?? cluster.HealthCheck.Passive.FailureThreshold;
+                cluster.HealthCheck.Passive.ReactivationPeriod = reactivationPeriod ?? cluster.HealthCheck.Passive.ReactivationPeriod;
+            }
+
+            if (hasRequest)
+            {
+                cluster.Forwarding.Timeout = activityTimeout ?? cluster.Forwarding.Timeout;
+                cluster.Forwarding.RewriteHost = rewriteHost ?? cluster.Forwarding.RewriteHost;
+                cluster.Forwarding.ForwardUpgrades = forwardUpgrades ?? cluster.Forwarding.ForwardUpgrades;
+
+                if (requestVersion is not null)
+                    cluster.Forwarding.RequestVersion = requestVersion;
+            }
+
+            cluster.SetDestinations(destinations);
+        };
     }
 
     static void ReadTransforms(IConfigurationSection section, TransformBuilder transforms)

@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Primitives;
+using Shiny.Net.HttpServer.Routing;
 
 namespace Shiny.Net.HttpServer.Proxy;
 
@@ -19,6 +20,12 @@ public sealed class ReverseProxyRuntime : IDisposable
 {
     readonly IConfiguration? section;
     readonly Lock sync = new();
+
+    // One per method and template this runtime has put in the route table. A reload that keeps a
+    // route keeps its endpoint and only swaps what the endpoint forwards to, so a request arriving
+    // mid-reload finds the route either as it was or as it is now - never missing. Unmapping every
+    // proxy route and mapping them back one by one left a gap in which those requests got a 404.
+    readonly Dictionary<string, Slot> slots = new(StringComparer.Ordinal);
 
     IDisposable? reload;
     HttpServer? server;
@@ -49,10 +56,17 @@ public sealed class ReverseProxyRuntime : IDisposable
     {
         ArgumentNullException.ThrowIfNull(server);
 
-        this.server = server;
-        this.logger = ProxyExtensions.LoggerFor(server);
+        lock (this.sync)
+        {
+            // The slots describe one server's route table; another server starts from nothing.
+            if (!ReferenceEquals(this.server, server))
+                this.slots.Clear();
 
-        this.Map();
+            this.server = server;
+            this.logger = ProxyExtensions.LoggerFor(server);
+
+            this.Map(this.Current, null);
+        }
 
         if (this.section is not null)
             this.reload ??= ChangeToken.OnChange(this.section.GetReloadToken, this.OnConfigurationChanged);
@@ -63,15 +77,25 @@ public sealed class ReverseProxyRuntime : IDisposable
         if (this.section is null || this.server is null)
             return;
 
+        ReverseProxyConfiguration next;
+        List<ProxyCluster> dropped;
+
         lock (this.sync)
         {
             if (this.disposed)
                 return;
 
+            var previous = this.Current;
+
             try
             {
-                this.Current = ReverseProxyConfigurationLoader.Load(this.section, this.Current);
-                this.Map();
+                // Read and checked in full before anything live changes: the clusters a reload
+                // carries over are serving traffic, and a file that fails half way must leave them
+                // exactly as they were.
+                var (loaded, applyClusters) = ReverseProxyConfigurationLoader.LoadStaged(this.section, previous);
+
+                this.Map(loaded, applyClusters);
+                this.Current = next = loaded;
             }
             catch (Exception ex)
             {
@@ -81,66 +105,150 @@ public sealed class ReverseProxyRuntime : IDisposable
                 this.logger?.LogError(ex, "The reverse proxy configuration could not be reloaded; the previous one stays in force");
                 return;
             }
+
+            // A cluster the new configuration no longer has would otherwise keep its probe loop
+            // polling an upstream nothing routes to, for as long as the server runs.
+            dropped = [.. previous.Clusters.Values.Where(cluster => !next.Clusters.Values.Contains(cluster))];
         }
 
-        this.Reloaded?.Invoke(this, this.Current);
+        foreach (var cluster in dropped)
+            cluster.Dispose();
+
+        this.Reloaded?.Invoke(this, next);
     }
 
-    void Map()
+    /// <summary>
+    /// Brings the route table in line with <paramref name="configuration"/>. Everything that can fail
+    /// is worked out before <paramref name="applyClusters"/> runs or the table is touched.
+    /// </summary>
+    void Map(ReverseProxyConfiguration configuration, Action? applyClusters)
     {
         var target = this.server;
         if (target is null)
             return;
 
+        foreach (var route in configuration.Routes.Where(r => !configuration.Clusters.ContainsKey(r.ClusterId)))
+        {
+            this.logger?.LogWarning(
+                "Proxy route {Route} points at cluster {Cluster}, which is not configured",
+                route.RouteId, route.ClusterId
+            );
+        }
+
+        var plan = Plan(configuration);
+        var wanted = new HashSet<string>(plan.Select(x => x.Key), StringComparer.Ordinal);
+
         // Only routes this runtime put there. A MapProxy written in code is not configuration's to
         // remove, and a reload that quietly unmapped one would be very hard to explain.
-        target.UnmapAll(endpoint => endpoint.GetMetadata<ProxyRouteMetadata>()?.RouteId is not null);
+        var leaving = this.slots.Where(x => !wanted.Contains(x.Key)).ToList();
+        var leavingEndpoints = new HashSet<RouteEndpoint>(leaving.Select(x => x.Value.Endpoint), ReferenceEqualityComparer.Instance);
+        var ours = new HashSet<RouteEndpoint>(this.slots.Values.Select(x => x.Endpoint), ReferenceEqualityComparer.Instance);
+        var arriving = plan.Where(x => !this.slots.ContainsKey(x.Key)).ToList();
 
-        foreach (var group in this.Current.Routes.GroupBy(x => x.Path, StringComparer.Ordinal))
+        // An endpoint that would collide with one staying in the table is refused now, before
+        // anything has changed, rather than half way through the swap.
+        var staying = target.Router.Endpoints.Where(e => !ours.Contains(e)).ToList();
+        var clearFirst = new HashSet<RouteEndpoint>(ReferenceEqualityComparer.Instance);
+
+        foreach (var entry in arriving)
         {
-            var candidates = new List<Candidate>();
-            var methods = new List<string>();
-            var clusters = new List<ProxyCluster>();
+            var clash = staying.FirstOrDefault(e => HttpMethods.Equals(e.Method, entry.Method) && e.Template.IsEquivalentTo(entry.Template));
+            if (clash is not null)
+                throw new InvalidOperationException($"Proxy route '{entry.Method} {entry.Path}' clashes with '{clash.DisplayName}', which is already mapped.");
 
-            foreach (var route in group)
+            var twin = plan.FirstOrDefault(other => !ReferenceEquals(other, entry) && HttpMethods.Equals(other.Method, entry.Method) && other.Template.IsEquivalentTo(entry.Template));
+            if (twin is not null)
+                throw new InvalidOperationException($"Proxy routes '{entry.Path}' and '{twin.Path}' are the same template.");
+
+            // The same template written differently - a renamed parameter - replaces an endpoint
+            // that is leaving, and the table will not hold both, so that one goes first. Only that
+            // route sees a moment without an endpoint.
+            foreach (var predecessor in leavingEndpoints.Where(e => HttpMethods.Equals(e.Method, entry.Method) && e.Template.IsEquivalentTo(entry.Template)))
+                clearFirst.Add(predecessor);
+        }
+
+        applyClusters?.Invoke();
+
+        var added = new List<RouteEndpoint>();
+        var handlers = new Dictionary<string, (RequestDelegate Handler, IReadOnlyList<ProxyCluster> Clusters, IReadOnlyList<string> RouteIds)>(StringComparer.Ordinal);
+
+        foreach (var entry in plan)
+        {
+            // One handler per template, shared by its methods. Built after the cluster changes have
+            // gone in, because the forwarding options are copied when the handler is made.
+            if (!handlers.TryGetValue(entry.Path, out var built))
             {
-                if (!this.Current.Clusters.TryGetValue(route.ClusterId, out var cluster))
-                {
-                    this.logger?.LogWarning(
-                        "Proxy route {Route} points at cluster {Cluster}, which is not configured",
-                        route.RouteId, route.ClusterId
-                    );
-
-                    continue;
-                }
-
-                candidates.Add(new Candidate(route, ProxyExtensions.Handler(
-                    cluster,
-                    cluster.Forwarding.With(route.Transforms),
-                    this.logger
-                )));
-
-                cluster.AttachTo(target, this.logger);
-
-                if (!clusters.Contains(cluster))
-                    clusters.Add(cluster);
-
-                foreach (var method in route.Methods.Count > 0 ? route.Methods : cluster.Methods)
-                {
-                    if (!methods.Contains(method, StringComparer.Ordinal))
-                        methods.Add(method);
-                }
+                built = (
+                    Dispatch([.. entry.Targets.Select(t => new Candidate(t.Route, ProxyExtensions.Handler(t.Cluster, t.Cluster.Forwarding.With(t.Route.Transforms), this.logger)))]),
+                    [.. entry.Targets.Select(t => t.Cluster).Distinct()],
+                    [.. entry.Targets.Select(t => t.Route.RouteId)]
+                );
+                handlers[entry.Path] = built;
             }
 
-            if (candidates.Count == 0)
-                continue;
+            if (this.slots.TryGetValue(entry.Key, out var slot))
+            {
+                slot.Handler = built.Handler;
+                slot.Metadata.Update(built.Clusters, built.RouteIds);
+            }
+            else
+            {
+                var metadata = new ProxyRouteMetadata(built.Clusters, built.RouteIds);
+                var created = new Slot(built.Handler, metadata);
 
-            var handler = Dispatch(candidates);
-            var metadata = new ProxyRouteMetadata(clusters, [.. candidates.Select(x => x.Route.RouteId)]);
-
-            foreach (var method in methods)
-                target.Map(method, group.Key, handler, metadata);
+                created.Endpoint = new RouteEndpoint(created.InvokeAsync, entry.Method, entry.Template, metadata);
+                this.slots[entry.Key] = created;
+                added.Add(created.Endpoint);
+            }
         }
+
+        foreach (var cluster in plan.SelectMany(x => x.Targets).Select(t => t.Cluster).Distinct())
+            cluster.AttachTo(target, this.logger);
+
+        // Each of these is one atomic swap of the table. New routes go in before the leaving ones
+        // come out, so nothing that exists both before and after is ever missing.
+        if (clearFirst.Count > 0)
+            target.Router.RemoveAll(clearFirst.Contains);
+
+        if (added.Count > 0)
+            target.Router.AddRange(added);
+
+        if (leavingEndpoints.Count > 0)
+            target.Router.RemoveAll(leavingEndpoints.Contains);
+
+        foreach (var (key, _) in leaving)
+            this.slots.Remove(key);
+    }
+
+    /// <summary>Every method and template the configuration wants mapped, and what each forwards to.</summary>
+    static List<PlannedRoute> Plan(ReverseProxyConfiguration configuration)
+    {
+        var plan = new List<PlannedRoute>();
+
+        foreach (var group in configuration.Routes.GroupBy(x => x.Path, StringComparer.Ordinal))
+        {
+            List<(ProxyRouteConfig Route, ProxyCluster Cluster)> targets =
+            [
+                .. group
+                    .Where(route => configuration.Clusters.ContainsKey(route.ClusterId))
+                    .Select(route => (route, configuration.Clusters[route.ClusterId]))
+            ];
+
+            if (targets.Count > 0)
+            {
+                // Parsed here so a template that will not parse fails the reload before it changes anything.
+                var template = RouteTemplate.Parse(group.Key);
+                var methods = targets
+                    .SelectMany(t => t.Route.Methods.Count > 0 ? t.Route.Methods : t.Cluster.Methods)
+                    .Select(m => m.ToUpperInvariant())
+                    .Distinct(StringComparer.Ordinal);
+
+                foreach (var method in methods)
+                    plan.Add(new PlannedRoute(method + " " + group.Key, method, group.Key, template, targets));
+            }
+        }
+
+        return plan;
     }
 
     /// <summary>
@@ -159,12 +267,11 @@ public sealed class ReverseProxyRuntime : IDisposable
 
         return async context =>
         {
-            foreach (var candidate in candidates)
-            {
-                if (!candidate.Route.MatchesMethod(context.Request.Method) || !candidate.Route.MatchesHost(context))
-                    continue;
+            var match = candidates.FirstOrDefault(c => c.Route.MatchesMethod(context.Request.Method) && c.Route.MatchesHost(context));
 
-                await candidate.Handler(context).ConfigureAwait(false);
+            if (match.Handler is not null)
+            {
+                await match.Handler(context).ConfigureAwait(false);
                 return;
             }
 
@@ -193,6 +300,26 @@ public sealed class ReverseProxyRuntime : IDisposable
     }
 
     readonly record struct Candidate(ProxyRouteConfig Route, RequestDelegate Handler);
+
+    sealed record PlannedRoute(string Key, string Method, string Path, RouteTemplate Template, List<(ProxyRouteConfig Route, ProxyCluster Cluster)> Targets);
+
+    /// <summary>A route this runtime owns: the endpoint in the table, and what it forwards to right now.</summary>
+    sealed class Slot(RequestDelegate handler, ProxyRouteMetadata metadata)
+    {
+        volatile RequestDelegate handler = handler;
+
+        public RequestDelegate Handler
+        {
+            get => this.handler;
+            set => this.handler = value;
+        }
+
+        public ProxyRouteMetadata Metadata { get; } = metadata;
+
+        public RouteEndpoint Endpoint { get; set; } = null!;
+
+        public ValueTask InvokeAsync(HttpContext context) => this.handler(context);
+    }
 }
 
 /// <summary>Registering a configuration-driven reverse proxy.</summary>

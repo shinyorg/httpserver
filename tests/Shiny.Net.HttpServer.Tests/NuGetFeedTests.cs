@@ -625,6 +625,114 @@ public class NuGetFeedTests
         Assert.Equal(1, search.GetProperty("totalHits").GetInt32());
     }
 
+    static (NuGetPackage Package, byte[] Manifest) Parsed(byte[] nupkg)
+    {
+        using var stream = new MemoryStream(nupkg);
+        var manifest = Shiny.Net.HttpServer.NuGet.Internal.NuspecReader.ExtractManifest(stream);
+
+        return (Shiny.Net.HttpServer.NuGet.Internal.NuspecReader.Parse(manifest), manifest);
+    }
+
+    /// <summary>
+    /// A push whose index was taken before the gate used to land in a dictionary a Reload had
+    /// already dropped: the client got its 201 and search never showed the package. The gate is held
+    /// here so the push is parked waiting for it, and the index is rebuilt from disk underneath it.
+    /// </summary>
+    [Fact]
+    public async Task APushRacingAReloadIsStillInTheIndex()
+    {
+        using var dir = new FeedDirectory();
+        var store = new DiskNuGetPackageStore(dir.Packages);
+        Assert.Empty(await store.GetAllAsync(Token));
+
+        var bytes = Nupkg("Raced", "1.0.0");
+        var (package, manifest) = Parsed(bytes);
+
+        await store.Gate.WaitAsync(Token);
+        ValueTask<bool> push;
+
+        try
+        {
+            push = store.AddAsync(package, new MemoryStream(bytes), manifest, Token);
+            Assert.False(push.IsCompleted);
+
+            store.Reload();
+            await store.LoadIndexAsync(Token);
+        }
+        finally
+        {
+            store.Gate.Release();
+        }
+
+        Assert.True(await push);
+
+        var all = await store.GetAllAsync(Token);
+        Assert.Contains(all, p => p.Id == "Raced");
+    }
+
+    /// <summary>
+    /// An overwrite used to be a delete followed by an add, so a restore landing in between got a
+    /// 404. The replacement is parked half-written here, and the old package has to still be there.
+    /// </summary>
+    [Fact]
+    public async Task AnOverwriteNeverLeavesTheVersionMissing()
+    {
+        using var dir = new FeedDirectory();
+        var store = new DiskNuGetPackageStore(dir.Packages);
+
+        var first = Nupkg("Swapped", "1.0.0", description: "first");
+        var (firstPackage, firstManifest) = Parsed(first);
+        Assert.True(await store.AddAsync(firstPackage, new MemoryStream(first), firstManifest, Token));
+
+        var second = Nupkg("Swapped", "1.0.0", description: "second");
+        var (secondPackage, secondManifest) = Parsed(second);
+        var upload = new ParkedStream(second);
+
+        var replace = store.ReplaceAsync(secondPackage, upload, secondManifest, Token).AsTask();
+        await upload.Reached.WaitAsync(Token);
+
+        await using (var during = await store.OpenPackageAsync("swapped", NuGetVersion.Parse("1.0.0"), Token))
+        {
+            Assert.NotNull(during);
+
+            using var copy = new MemoryStream();
+            await during.CopyToAsync(copy, Token);
+            Assert.Equal(first, copy.ToArray());
+        }
+
+        upload.Release();
+        Assert.True(await replace);
+
+        await using var after = await store.OpenPackageAsync("swapped", NuGetVersion.Parse("1.0.0"), Token);
+        using var replaced = new MemoryStream();
+        await after!.CopyToAsync(replaced, Token);
+
+        Assert.Equal(second, replaced.ToArray());
+        Assert.Single(await store.GetVersionsAsync("swapped", Token));
+    }
+
+    /// <summary>Hands over its bytes only once the test says so, after signalling that it was asked.</summary>
+    sealed class ParkedStream(byte[] contents) : MemoryStream(contents)
+    {
+        readonly TaskCompletionSource reached = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        readonly TaskCompletionSource released = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task Reached => this.reached.Task;
+
+        public void Release() => this.released.TrySetResult();
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            this.reached.TrySetResult();
+            await this.released.Task.WaitAsync(cancellationToken);
+
+            return await base.ReadAsync(buffer, cancellationToken);
+        }
+
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+            => this.ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+    }
+
     // ---- transport ----
 
     [Fact]

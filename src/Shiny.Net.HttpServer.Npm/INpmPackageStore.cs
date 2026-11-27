@@ -46,6 +46,12 @@ public sealed class DiskNpmPackageStore : INpmPackageStore
 
     readonly string root;
 
+    // The registry serialises writes per package, not per scope, so a publish of @scope/b can run
+    // while the last package of @scope/a is being removed. Creating a package directory and removing
+    // an emptied scope directory are each a check followed by an act on the shared parent, and they
+    // hold this so neither acts on a check the other has made stale.
+    readonly Lock directories = new();
+
     public DiskNpmPackageStore(string root)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(root);
@@ -60,12 +66,21 @@ public sealed class DiskNpmPackageStore : INpmPackageStore
     public async ValueTask<NpmPackageDocument?> GetAsync(string name, CancellationToken cancellationToken)
     {
         var path = Path.Combine(this.PackageDirectory(name), DocumentFile);
+        FileStream file;
 
-        if (!File.Exists(path))
+        // Opened straight away rather than checked first: an unpublish between a File.Exists and the
+        // open turned what should be a 404 into a 500.
+        try
+        {
+            file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete, 4096, useAsync: true);
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+        {
             return null;
+        }
 
-        await using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete, 4096, useAsync: true);
-        return await JsonSerializer.DeserializeAsync(file, NpmStoreJson.Default.NpmPackageDocument, cancellationToken).ConfigureAwait(false);
+        await using (file.ConfigureAwait(false))
+            return await JsonSerializer.DeserializeAsync(file, NpmStoreJson.Default.NpmPackageDocument, cancellationToken).ConfigureAwait(false);
     }
 
     public async ValueTask<IReadOnlyList<NpmPackageDocument>> GetAllAsync(CancellationToken cancellationToken)
@@ -76,7 +91,7 @@ public sealed class DiskNpmPackageStore : INpmPackageStore
         {
             var name = Path.GetFileName(top);
             var candidates = name.StartsWith('@')
-                ? Directory.EnumerateDirectories(top).Select(d => name + "/" + Path.GetFileName(d))
+                ? ScopeMembers(top).Select(d => name + "/" + Path.GetFileName(d))
                 : [name];
 
             foreach (var candidate in candidates)
@@ -93,7 +108,7 @@ public sealed class DiskNpmPackageStore : INpmPackageStore
     {
         ArgumentNullException.ThrowIfNull(document);
 
-        var directory = Directory.CreateDirectory(this.PackageDirectory(document.Name)).FullName;
+        var directory = this.CreatePackageDirectory(document.Name);
         var path = Path.Combine(directory, DocumentFile);
         var temp = path + "." + Guid.NewGuid().ToString("n") + ".tmp";
 
@@ -116,15 +131,24 @@ public sealed class DiskNpmPackageStore : INpmPackageStore
         // An emptied scope directory goes too.
         var parent = Path.GetDirectoryName(directory)!;
 
-        if (!string.Equals(parent, this.root, StringComparison.Ordinal) && Directory.Exists(parent) && !Directory.EnumerateFileSystemEntries(parent).Any())
-            Directory.Delete(parent);
+        if (!string.Equals(parent, this.root, StringComparison.Ordinal))
+        {
+            lock (this.directories)
+            {
+                if (Directory.Exists(parent) && !Directory.EnumerateFileSystemEntries(parent).Any())
+                {
+                    this.BeforeScopeRemoved?.Invoke();
+                    Directory.Delete(parent);
+                }
+            }
+        }
 
         return ValueTask.CompletedTask;
     }
 
     public async ValueTask SaveTarballAsync(string name, string file, ReadOnlyMemory<byte> data, CancellationToken cancellationToken)
     {
-        var directory = Directory.CreateDirectory(this.PackageDirectory(name)).FullName;
+        var directory = this.CreatePackageDirectory(name);
         var path = this.TarballPath(name, file);
         var temp = Path.Combine(directory, "." + Guid.NewGuid().ToString("n") + ".tmp");
 
@@ -153,6 +177,34 @@ public sealed class DiskNpmPackageStore : INpmPackageStore
     {
         File.Delete(this.TarballPath(name, file));
         return ValueTask.CompletedTask;
+    }
+
+    /// <summary>Test hook: runs with the directory lock held, just before an emptied scope directory is removed.</summary>
+    internal Action? BeforeScopeRemoved { get; set; }
+
+    /// <summary>
+    /// Creates a package's directory, and its scope's. Once the package directory exists the scope
+    /// directory is no longer empty, so a removal checking it afterwards leaves it alone.
+    /// </summary>
+    string CreatePackageDirectory(string name)
+    {
+        var path = this.PackageDirectory(name);
+
+        lock (this.directories)
+            return Directory.CreateDirectory(path).FullName;
+    }
+
+    /// <summary>The packages in a scope directory, or none when it was removed while being read.</summary>
+    static List<string> ScopeMembers(string scope)
+    {
+        try
+        {
+            return [.. Directory.EnumerateDirectories(scope)];
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return [];
+        }
     }
 
     string PackageDirectory(string name)

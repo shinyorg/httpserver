@@ -202,6 +202,70 @@ public class TunnelAgentTests
         Assert.Contains("did not announce a URL", error.Message);
     }
 
+    /// <summary>
+    /// One completion source used to serve the agent's whole life, so a start after a stop launched a
+    /// new process and returned the first one's URL straight away. The stub prints its own pid in the
+    /// URL, so each run's address is different.
+    /// </summary>
+    [Fact]
+    public async Task A_restart_reports_the_new_process_url()
+    {
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            return;
+
+        using var script = StubScript("""
+            #!/bin/sh
+            echo "INF |  https://stub-$$.trycloudflare.com  |"
+            while true; do sleep 1; done
+            """);
+
+        await using var agent = new CloudflareTunnel(new CloudflareTunnelOptions
+        {
+            Port = 8080,
+            ExecutablePath = script.Path,
+            StartTimeout = TimeSpan.FromSeconds(10)
+        });
+
+        var first = await agent.StartAsync(Token);
+        await agent.StopAsync(Token);
+
+        var second = await agent.StartAsync(Token);
+
+        Assert.NotEqual(first, second);
+        Assert.True(agent.IsRunning);
+    }
+
+    /// <summary>
+    /// The Exited handler runs on the thread pool, where an exception ends the process. It used to
+    /// read the exit code of whatever process the agent held by then - the next run's, still going -
+    /// which throws; and a process a stop has disposed throws as well.
+    /// </summary>
+    [Fact]
+    public void Reading_the_exit_code_never_throws()
+    {
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            return;
+
+        using var running = System.Diagnostics.Process.Start("/bin/sh", ["-c", "sleep 30"]);
+
+        try
+        {
+            Assert.Equal("unknown", ProcessTunnelAgent.ExitCodeOf(running));
+        }
+        finally
+        {
+            running.Kill();
+            running.WaitForExit();
+        }
+
+        var disposed = System.Diagnostics.Process.Start("/bin/sh", ["-c", "exit 4"]);
+        disposed.WaitForExit();
+        Assert.Equal("4", ProcessTunnelAgent.ExitCodeOf(disposed));
+
+        disposed.Dispose();
+        Assert.Equal("unknown", ProcessTunnelAgent.ExitCodeOf(disposed));
+    }
+
     [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
     static StubbedScript StubScript(string contents)
     {

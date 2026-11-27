@@ -483,6 +483,57 @@ public class NpmRegistryTests
         Assert.Equal(Tarball("@acme/h2", "1.0.0"), await tarball.Content.ReadAsByteArrayAsync(Ct));
     }
 
+    /// <summary>
+    /// Removing the last package in a scope deletes the scope directory, which raced a publish of
+    /// another package in the same scope: the publish created its directory under a parent that was
+    /// about to go, or the removal found the parent no longer empty, and one side answered 500. The
+    /// publish is started from inside the removal here, and must wait for it rather than run into it.
+    /// </summary>
+    [Fact]
+    public async Task APublishInAScopeWaitsForThatScopeToBeTidiedAway()
+    {
+        using var scratch = new Scratch();
+        var store = new DiskNpmPackageStore(scratch.Path);
+
+        await store.SaveAsync(new NpmPackageDocument { Name = "@race/a" }, Ct);
+
+        Task? publish = null;
+        var finishedDuringRemoval = false;
+
+        store.BeforeScopeRemoved = () =>
+        {
+            publish = Task.Run(() => store.SaveTarballAsync("@race/b", "b-1.0.0.tgz", new byte[] { 1, 2, 3 }, Ct).AsTask(), Ct);
+
+            // Only ever true if the publish is not held off - a slow machine can make this miss the
+            // race, never report one that is not there.
+            finishedDuringRemoval = publish.Wait(TimeSpan.FromMilliseconds(250), Ct);
+        };
+
+        await store.DeleteAsync("@race/a", Ct);
+
+        Assert.NotNull(publish);
+        Assert.False(finishedDuringRemoval);
+
+        await publish;
+
+        await using var tarball = await store.OpenTarballAsync("@race/b", "b-1.0.0.tgz", Ct);
+        Assert.NotNull(tarball);
+    }
+
+    [Fact]
+    public async Task AMissingScopedPackageIsNullNotAnError()
+    {
+        using var scratch = new Scratch();
+        var store = new DiskNpmPackageStore(scratch.Path);
+
+        await store.SaveAsync(new NpmPackageDocument { Name = "@gone/a" }, Ct);
+        await store.DeleteAsync("@gone/a", Ct);
+
+        Assert.False(Directory.Exists(Path.Combine(scratch.Path, "@gone")));
+        Assert.Null(await store.GetAsync("@gone/a", Ct));
+        Assert.Empty(await store.GetAllAsync(Ct));
+    }
+
     [Fact]
     public void SemVerPrecedence()
     {

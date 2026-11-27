@@ -64,6 +64,22 @@ public sealed class ProxyCluster : IDisposable
     internal Task? ProbeLoop { get; private set; }
 
     /// <summary>
+    /// How the probe loop is put on a thread. A seam so a test can hold the loop back and stop the
+    /// cluster before it has started.
+    /// </summary>
+    internal Func<Func<Task>, Task> RunProbeLoop { get; set; } = static loop => Task.Run(loop);
+
+    /// <summary>True once the cluster has been disposed.</summary>
+    internal bool IsDisposed
+    {
+        get
+        {
+            lock (this.sync)
+                return this.disposed;
+        }
+    }
+
+    /// <summary>
     /// The methods a route pointing at this cluster answers. Defaults to everything with a defined
     /// meaning over a proxy; <c>CONNECT</c> and <c>TRACE</c> are not in it, and adding them is a
     /// deliberate act.
@@ -261,7 +277,7 @@ public sealed class ProxyCluster : IDisposable
             this.StartProbing();
     }
 
-    void StartProbing()
+    internal void StartProbing()
     {
         lock (this.sync)
         {
@@ -276,11 +292,16 @@ public sealed class ProxyCluster : IDisposable
                 ConnectTimeout = this.HealthCheck.Active.Timeout
             });
 
-            this.ProbeLoop = Task.Run(() => this.ProbeLoopAsync(this.probing.Token));
+            // The token is taken here, under the lock, and not inside the lambda: the lambda runs
+            // whenever the thread pool gets to it, by which time a Stop may have cleared the field
+            // (a NullReferenceException) or a Stop and a Start may have replaced it (two loops on
+            // the second start's token, and none on the first).
+            var token = this.probing.Token;
+            this.ProbeLoop = this.RunProbeLoop(() => this.ProbeLoopAsync(token));
         }
     }
 
-    void StopProbing()
+    internal void StopProbing()
     {
         CancellationTokenSource? source;
 
@@ -300,12 +321,12 @@ public sealed class ProxyCluster : IDisposable
 
         using var timer = new PeriodicTimer(options.Interval);
 
-        // Probe once immediately: waiting a full interval before the first check means the cluster
-        // spends that interval sending traffic to destinations nobody has asked about.
-        await this.ProbeAllAsync(cancellationToken).ConfigureAwait(false);
-
         try
         {
+            // Probe once immediately: waiting a full interval before the first check means the
+            // cluster spends that interval sending traffic to destinations nobody has asked about.
+            await this.ProbeAllAsync(cancellationToken).ConfigureAwait(false);
+
             while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
                 await this.ProbeAllAsync(cancellationToken).ConfigureAwait(false);
         }
@@ -351,10 +372,15 @@ public sealed class ProxyCluster : IDisposable
 
             healthy = options.Policy?.Invoke(response) ?? response.IsSuccessStatusCode;
         }
-        catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException or IOException)
+        catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException or IOException or ObjectDisposedException)
         {
             healthy = false;
         }
+
+        // Stopped or disposed mid-probe: the failure is ours, not the destination's, and marking it
+        // unhealthy would take it out of rotation for a reason that has nothing to do with it.
+        if (cancellationToken.IsCancellationRequested)
+            return;
 
         var previous = destination.ActiveHealth;
         destination.ActiveHealth = healthy ? DestinationHealth.Healthy : DestinationHealth.Unhealthy;
@@ -370,13 +396,31 @@ public sealed class ProxyCluster : IDisposable
 
     public void Dispose()
     {
-        if (this.disposed)
-            return;
+        HttpMessageInvoker? client;
+        Task? loop;
 
-        this.disposed = true;
+        lock (this.sync)
+        {
+            if (this.disposed)
+                return;
+
+            this.disposed = true;
+            client = this.probeClient;
+            loop = this.ProbeLoop;
+            this.probeClient = null;
+        }
 
         this.StopProbing();
-        this.probeClient?.Dispose();
-        this.probeClient = null;
+
+        if (client is null)
+            return;
+
+        // The client goes once the loop has wound down, not now: probes still in flight are using
+        // it, and disposing it under them throws an ObjectDisposedException out of the loop with
+        // nobody left to observe it.
+        if (loop is null || loop.IsCompleted)
+            client.Dispose();
+        else
+            loop.ContinueWith(static (_, state) => ((HttpMessageInvoker)state!).Dispose(), client, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
     }
 }
