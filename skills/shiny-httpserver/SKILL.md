@@ -226,6 +226,10 @@ triggers:
 - RunTunnelAsync
 - RelayTunnelProvider
 - RelayServer
+- TunnelSettings
+- EnableFlowControl
+- StreamWindowSize
+- MaxStreamsPerTunnel
 - RelayTunnel
 - TunnelConnected
 - TunnelDisconnected
@@ -2150,6 +2154,14 @@ await app.RunTunnelAsync(provider, logger, ct);
   rather than keeping the token; `relay.TunnelConnected` / `TunnelDisconnected` report it, `relay.Tunnels`
   lists it, and revoking is "make `Authorize` refuse, **then** `await relay.DisconnectAsync(t =>
   Equals(t.State, keyId))`" — in the other order a reconnecting client is simply let back in.
+- Relay flow control is on by default on both ends (`EnableFlowControl`), negotiated with `Settings`
+  frames that older ends ignore, so any mix of old and new relay/client works. Each request gets its own
+  window, so one stalled download or unread upload no longer stalls the tunnel. Leave the defaults
+  unless asked: windows start at `StreamWindowSize` (256 KiB) and grow toward `MaxStreamWindowSize`
+  (16 MiB) within `TunnelWindowBudget` (64 MiB). On a shared relay with many tunnels, lower
+  `MaxStreamsPerTunnel` (512) to bound memory: worst case per tunnel is streams × starting window +
+  budget. A public connection beyond the limit gets a 503, and kept-alive connections count while open.
+  `PublicWriteTimeout` (60s) disconnects a public client that stops reading.
 - Relay behind a reverse proxy on the same host: `ControlAddress = IPAddress.Any`,
   `PublicAddress = IPAddress.Loopback`, `IncludePortInPublicUrl = false`, and
   `AddForwardedHeaders = false` (the proxy's `X-Forwarded-*` are the real ones). Per-tunnel scheme:
