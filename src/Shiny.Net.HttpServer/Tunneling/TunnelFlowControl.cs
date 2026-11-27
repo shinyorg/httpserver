@@ -216,6 +216,109 @@ sealed class StreamSendWindow(int initial)
 }
 
 /// <summary>
+/// The tunnel's round trip, measured with the Ping and Pong frames both ends already answer. A stream's window only
+/// needs to grow when it is the bottleneck - when the sender can fill it faster than a round trip - and telling that
+/// takes knowing how long a round trip is.
+/// </summary>
+sealed class TunnelRoundTrip
+{
+    static readonly long Resample = System.Diagnostics.Stopwatch.Frequency * 5;
+    static readonly long GiveUp = System.Diagnostics.Stopwatch.Frequency * 30;
+
+    readonly Lock gate = new();
+    long estimate;
+    long pingSent;
+    long lastSample;
+
+    /// <summary>The smoothed round trip, or null before the first sample.</summary>
+    public TimeSpan? Estimate
+    {
+        get
+        {
+            lock (this.gate)
+                return this.estimate == 0 ? null : TimeSpan.FromSeconds((double)this.estimate / System.Diagnostics.Stopwatch.Frequency);
+        }
+    }
+
+    /// <summary>
+    /// True when a Ping should go out now to take a sample: none is in flight (or the last one was never answered) and
+    /// the estimate is missing or more than a few seconds old. The caller sends the Ping.
+    /// </summary>
+    public bool TryBeginSample()
+    {
+        var now = System.Diagnostics.Stopwatch.GetTimestamp();
+
+        lock (this.gate)
+        {
+            var inFlight = this.pingSent != 0 && now - this.pingSent < GiveUp;
+            var fresh = this.lastSample != 0 && now - this.lastSample < Resample;
+
+            if (inFlight || fresh)
+                return false;
+
+            this.pingSent = now;
+            return true;
+        }
+    }
+
+    /// <summary>Notes that a Ping went out for another reason - a keep-alive - so its Pong can be timed too.</summary>
+    public void OnPingSent()
+    {
+        lock (this.gate)
+        {
+            if (this.pingSent == 0)
+                this.pingSent = System.Diagnostics.Stopwatch.GetTimestamp();
+        }
+    }
+
+    /// <summary>A Pong arrived: the time since the Ping is a sample.</summary>
+    public void OnPong()
+    {
+        var now = System.Diagnostics.Stopwatch.GetTimestamp();
+
+        lock (this.gate)
+        {
+            if (this.pingSent == 0)
+                return;
+
+            var sample = Math.Max(1, now - this.pingSent);
+            this.pingSent = 0;
+            this.lastSample = now;
+
+            // Smoothed, as TCP does, so one delayed Pong behind a burst of data does not swing every window at once.
+            this.estimate = this.estimate == 0 ? sample : (this.estimate * 7 + sample) / 8;
+        }
+    }
+}
+
+/// <summary>
+/// How much room a tunnel has for windows to grow beyond the size they start at. Shared by every stream on one end of
+/// the tunnel, so growth for throughput can never add up to more memory than this.
+/// </summary>
+sealed class StreamWindowBudget(long capacity)
+{
+    long remaining = capacity;
+
+    /// <summary>Room left, for diagnostics and tests.</summary>
+    public long Remaining => Interlocked.Read(ref this.remaining);
+
+    public bool TryTake(long amount)
+    {
+        while (true)
+        {
+            var current = Interlocked.Read(ref this.remaining);
+            if (current < amount)
+                return false;
+
+            if (Interlocked.CompareExchange(ref this.remaining, current - amount, current) == current)
+                return true;
+        }
+    }
+
+    public void Return(long amount) => Interlocked.Add(ref this.remaining, amount);
+}
+
+/// <summary>
 /// The receiving half of one flow-controlled stream: frames are queued as they arrive and delivered by a pump of the
 /// stream's own, which grants the sender more credit as the destination takes the bytes.
 /// <para>
@@ -223,43 +326,63 @@ sealed class StreamSendWindow(int initial)
 /// itself and waited for the destination - a public client that stopped reading, a handler that never read its upload
 /// - and every other stream waited behind it. Here the loop only queues, and the sender's window bounds the queue.
 /// </para>
+/// <para>
+/// The window starts at the size this end declared and grows, as HTTP/2 implementations do, while it is the
+/// bottleneck: when half of it is delivered in less than a round trip, the destination is keeping up and the sender is
+/// waiting on credit, so the window doubles - by granting the extra - up to a cap, and only while the tunnel's budget
+/// allows. A stream whose destination stalls never grows, which is the one whose window would sit full in memory.
+/// </para>
 /// </summary>
 sealed class StreamReceiver
 {
-    readonly int window;
-    readonly int creditThreshold;
+    readonly int maxWindow;
     readonly Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask<bool>> deliver;
     readonly Func<int, ValueTask> grant;
-    readonly Channel<byte[]> queue = Channel.CreateUnbounded<byte[]>(
+    readonly TunnelRoundTrip? roundTrip;
+    readonly StreamWindowBudget? budget;
+    readonly Action? sampleRoundTrip;
+    // Pooled: a busy tunnel queues a frame's worth for every frame, and each is handed back once delivered.
+    readonly Channel<(byte[] Buffer, int Length)> queue = Channel.CreateUnbounded<(byte[] Buffer, int Length)>(
         new UnboundedChannelOptions { SingleReader = true, SingleWriter = true }
     );
     readonly CancellationTokenSource aborted = new();
     readonly Task pump;
+
+    // The window the sender is held to: what this end declared, plus whatever it has grown by since.
+    long window;
 
     // Bytes the sender has put on the stream that have not been granted back yet. The sender may never have more than
     // the window outstanding; more is a protocol violation.
     long outstanding;
     int stopped;
 
-    /// <param name="window">The window this end declared, which the sender is held to.</param>
+    /// <param name="window">The window this end declared, which the sender starts out held to.</param>
     /// <param name="deliver">
     /// Hands one chunk to the destination and completes once it has taken it. Returns false when the destination is
     /// gone for good; the rest is then discarded, and still granted, so the sender is never left waiting on it.
     /// </param>
     /// <param name="grant">Sends a WindowUpdate for that many bytes.</param>
+    /// <param name="maxWindow">How far the window may grow; at or below <paramref name="window"/> it never grows.</param>
+    /// <param name="roundTrip">The tunnel's round trip, which growth is judged against; null never grows.</param>
+    /// <param name="budget">The tunnel's room for growth, shared across its streams; null is unlimited.</param>
+    /// <param name="sampleRoundTrip">Asks for a round-trip sample when there is none yet.</param>
     public StreamReceiver(
         int window,
         Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask<bool>> deliver,
-        Func<int, ValueTask> grant
+        Func<int, ValueTask> grant,
+        int maxWindow = 0,
+        TunnelRoundTrip? roundTrip = null,
+        StreamWindowBudget? budget = null,
+        Action? sampleRoundTrip = null
     )
     {
         this.window = window;
+        this.maxWindow = Math.Max(window, maxWindow);
         this.deliver = deliver;
         this.grant = grant;
-
-        // In batches, as HTTP/2 does: a WindowUpdate per frame doubles the frame count for nothing. Half a window keeps
-        // the sender from running dry while a batch is in flight.
-        this.creditThreshold = Math.Max(1, window / 2);
+        this.roundTrip = roundTrip;
+        this.budget = budget;
+        this.sampleRoundTrip = sampleRoundTrip;
         this.pump = Task.Run(this.PumpAsync, CancellationToken.None);
     }
 
@@ -268,6 +391,9 @@ sealed class StreamReceiver
 
     /// <summary>Bytes received and not yet granted back.</summary>
     public long Outstanding => Interlocked.Read(ref this.outstanding);
+
+    /// <summary>The window the sender is held to now.</summary>
+    public long Window => Interlocked.Read(ref this.window);
 
     /// <summary>
     /// Queues one frame's payload, copied - the frame's memory belongs to the reader. False when it takes the sender
@@ -279,14 +405,19 @@ sealed class StreamReceiver
             return true;
 
         var length = payload.Length;
-        if (Interlocked.Add(ref this.outstanding, length) > this.window)
+        if (Interlocked.Add(ref this.outstanding, length) > Interlocked.Read(ref this.window))
             return false;
 
         // A stream already over takes no more, but the bytes still count as received so the arithmetic stays honest.
         if (Volatile.Read(ref this.stopped) != 0)
             return true;
 
-        this.queue.Writer.TryWrite(payload.ToArray());
+        var buffer = ArrayPool<byte>.Shared.Rent((int)length);
+        payload.CopyTo(buffer);
+
+        if (!this.queue.Writer.TryWrite((buffer, (int)length)))
+            ArrayPool<byte>.Shared.Return(buffer);
+
         return true;
     }
 
@@ -307,19 +438,37 @@ sealed class StreamReceiver
     {
         var pending = 0;
         var discarding = false;
+        var grown = 0L;
+        var lastGrant = System.Diagnostics.Stopwatch.GetTimestamp();
 
         try
         {
-            await foreach (var chunk in this.queue.Reader.ReadAllAsync().ConfigureAwait(false))
+            await foreach (var (buffer, length) in this.queue.Reader.ReadAllAsync().ConfigureAwait(false))
             {
-                if (!discarding && Volatile.Read(ref this.stopped) == 0)
-                    discarding = !await this.deliver(chunk, this.aborted.Token).ConfigureAwait(false);
-
-                pending += chunk.Length;
-                if (pending >= this.creditThreshold && Volatile.Read(ref this.stopped) == 0)
+                try
                 {
+                    // Delivered means copied on by the destination, so the buffer can go back as soon as it returns.
+                    if (!discarding && Volatile.Read(ref this.stopped) == 0)
+                        discarding = !await this.deliver(buffer.AsMemory(0, length), this.aborted.Token).ConfigureAwait(false);
+                }
+                finally
+                {
+                    ArrayPool<byte>.Shared.Return(buffer);
+                }
+
+                pending += length;
+
+                // In batches, as HTTP/2 does: a WindowUpdate per frame doubles the frame count for nothing. Half a
+                // window keeps the sender from running dry while a batch is in flight.
+                if (pending >= Interlocked.Read(ref this.window) / 2 && Volatile.Read(ref this.stopped) == 0)
+                {
+                    var now = System.Diagnostics.Stopwatch.GetTimestamp();
+                    var extra = this.Grow(now - lastGrant);
+                    grown += extra;
+                    lastGrant = now;
+
                     Interlocked.Add(ref this.outstanding, -pending);
-                    await this.grant(pending).ConfigureAwait(false);
+                    await this.grant(pending + extra).ConfigureAwait(false);
                     pending = 0;
                 }
             }
@@ -331,7 +480,47 @@ sealed class StreamReceiver
         }
         finally
         {
+            // Whatever an abort left queued goes back too, and so does the room the window grew into.
+            while (this.queue.Reader.TryRead(out var left))
+                ArrayPool<byte>.Shared.Return(left.Buffer);
+
+            if (grown > 0)
+                this.budget?.Return(grown);
+
             this.aborted.Dispose();
         }
+    }
+
+    /// <summary>
+    /// Grows the window when half of it was delivered in less than a round trip - the sender is waiting on credit, not
+    /// the destination on data - within the cap and the tunnel's budget. Returns the bytes it grew by, which go out
+    /// with the grant. The window is raised before the credit, so the sender can never be ahead of it.
+    /// </summary>
+    int Grow(long elapsed)
+    {
+        var current = Interlocked.Read(ref this.window);
+        if (current >= this.maxWindow || this.roundTrip is not { } roundTrip)
+            return 0;
+
+        if (roundTrip.Estimate is not { } estimate)
+        {
+            this.sampleRoundTrip?.Invoke();
+            return 0;
+        }
+
+        var roundTripTicks = estimate.TotalSeconds * System.Diagnostics.Stopwatch.Frequency;
+        if (elapsed >= roundTripTicks)
+            return 0;
+
+        // Half the window went in elapsed; a window that lasts a whole round trip is that many times bigger. Grown
+        // toward it - at least doubled, at most eight times in one step, so a burst cannot overshoot far - rather than
+        // only doubled, which on a fresh stream took a round trip per doubling to reach a fast link's speed.
+        var factor = Math.Clamp(roundTripTicks / Math.Max(1, elapsed), 2, 8);
+        var growth = (int)Math.Min(current * (factor - 1), this.maxWindow - current);
+        if (this.budget is not null && !this.budget.TryTake(growth))
+            return 0;
+
+        Interlocked.Add(ref this.window, growth);
+        return growth;
     }
 }

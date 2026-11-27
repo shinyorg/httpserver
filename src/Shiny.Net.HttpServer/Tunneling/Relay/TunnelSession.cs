@@ -31,6 +31,10 @@ sealed class TunnelSession(
     TunnelSettings? peer;
     int flowStreams;
 
+    // Windows grow while they are the bottleneck, judged against the tunnel's round trip, within a shared budget.
+    readonly TunnelRoundTrip roundTrip = new();
+    readonly StreamWindowBudget budget = new(options.TunnelWindowBudget);
+
     /// <summary>
     /// One public connection multiplexed over the tunnel. Its output is written from two places - the app's response,
     /// and the relay's request loop answering a 421 or closing - and a <see cref="System.IO.Pipelines.PipeWriter"/> is
@@ -75,6 +79,12 @@ sealed class TunnelSession(
 
     /// <summary>Flow-controlled streams in flight, for diagnostics and tests.</summary>
     public int FlowStreams => Volatile.Read(ref this.flowStreams);
+
+    /// <summary>The tunnel's measured round trip, for diagnostics and tests.</summary>
+    public TimeSpan? RoundTrip => this.roundTrip.Estimate;
+
+    /// <summary>Room left for windows to grow, for diagnostics and tests.</summary>
+    public long WindowBudgetRemaining => this.budget.Remaining;
 
     /// <summary>
     /// Why the tunnel is ending. The first caller wins, so a disconnect is not relabelled by the
@@ -213,8 +223,19 @@ sealed class TunnelSession(
                 stream.Gate.Release();
             }
         },
-        increment => this.SendQuietlyAsync(TunnelFrameType.WindowUpdate, streamId, TunnelSettings.EncodeWindowUpdate(increment))
+        increment => this.SendQuietlyAsync(TunnelFrameType.WindowUpdate, streamId, TunnelSettings.EncodeWindowUpdate(increment)),
+        options.MaxStreamWindowSize,
+        this.roundTrip,
+        this.budget,
+        this.SampleRoundTrip
     );
+
+    /// <summary>Sends a Ping to time, unless one is already out or the estimate is fresh.</summary>
+    void SampleRoundTrip()
+    {
+        if (this.roundTrip.TryBeginSample())
+            _ = this.SendQuietlyAsync(TunnelFrameType.Ping, 0, ReadOnlyMemory<byte>.Empty).AsTask();
+    }
 
     /// <summary>Aborts <paramref name="connection"/> if a write to it does not finish within the configured timeout.</summary>
     IDisposable? WriteTimeout(IConnection connection)
@@ -327,7 +348,16 @@ sealed class TunnelSession(
                 // Once, on the connection: a second one, or one on a stream, is ignored rather than allowed to change
                 // the windows of streams already open.
                 if (streamId == 0 && this.local is not null && Volatile.Read(ref this.peer) is null)
+                {
                     Volatile.Write(ref this.peer, TunnelSettings.Decode(payload));
+
+                    // A first round-trip sample now, so windows can grow from the first stream on.
+                    this.SampleRoundTrip();
+                }
+                return;
+
+            case TunnelFrameType.Pong:
+                this.roundTrip.OnPong();
                 return;
 
             case TunnelFrameType.CloseStream:

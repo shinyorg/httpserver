@@ -58,9 +58,16 @@ public sealed class RelayTunnelOptions
 
     /// <summary>
     /// How many bytes of one request body this end will hold for a handler that is not reading it, before the relay
-    /// has to wait. 512 KiB by default.
+    /// has to wait: the window every stream starts with. A stream whose handler keeps up grows its window, up to
+    /// <see cref="MaxStreamWindowSize"/>. 256 KiB by default.
     /// </summary>
-    public int StreamWindowSize { get; set; } = 512 * 1024;
+    public int StreamWindowSize { get; set; } = 256 * 1024;
+
+    /// <summary>How far one stream's window may grow while its handler keeps up. 16 MiB by default.</summary>
+    public int MaxStreamWindowSize { get; set; } = 16 * 1024 * 1024;
+
+    /// <summary>Room, across all streams on the tunnel, for windows to grow beyond <see cref="StreamWindowSize"/>. 64 MiB by default.</summary>
+    public long TunnelWindowBudget { get; set; } = 64L * 1024 * 1024;
 
     /// <summary>
     /// How many flow-controlled connections this end will carry at once; the relay holds itself to it. A connection

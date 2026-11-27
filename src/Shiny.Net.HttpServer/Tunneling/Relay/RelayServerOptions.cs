@@ -93,16 +93,30 @@ public sealed class RelayServerOptions
 
     /// <summary>
     /// How many bytes of one response the relay will hold for a public client that is not keeping up, before the
-    /// tunnelled app has to wait - and so the most one stalled request can cost in memory here. Larger windows carry
-    /// more over a long round trip (one window per round trip per request); 512 KiB by default.
+    /// tunnelled app has to wait: the window every stream starts with, and so what one stalled request costs in memory
+    /// here. A stream whose public client keeps up grows its window, up to <see cref="MaxStreamWindowSize"/>, so a long
+    /// round trip does not cap a fast download at one starting window per round trip. 256 KiB by default.
     /// </summary>
-    public int StreamWindowSize { get; set; } = 512 * 1024;
+    public int StreamWindowSize { get; set; } = 256 * 1024;
+
+    /// <summary>
+    /// How far one stream's window may grow while its public client keeps up - which is what carries a large transfer
+    /// at full speed over a long round trip (a stream moves at most one window per round trip). 16 MiB by default.
+    /// </summary>
+    public int MaxStreamWindowSize { get; set; } = 16 * 1024 * 1024;
+
+    /// <summary>
+    /// Room, across all of one tunnel's streams, for windows to grow beyond <see cref="StreamWindowSize"/>. Growth stops
+    /// when it is used up, so fast transfers can never add more than this to what a tunnel can make the relay buffer.
+    /// 64 MiB by default.
+    /// </summary>
+    public long TunnelWindowBudget { get; set; } = 64L * 1024 * 1024;
 
     /// <summary>
     /// Public connections one tunnel may carry at once when flow control is in use; one over the limit gets a 503. A
     /// connection counts for as long as it is open, kept-alive ones between requests included, so this is a safety
     /// bound rather than a working limit: with <see cref="StreamWindowSize"/> it caps what one tunnel can make the
-    /// relay buffer (512 x 512 KiB, if every one of them stalled at once). 512 by default.
+    /// relay buffer (512 x 256 KiB, plus <see cref="TunnelWindowBudget"/>, if every one of them stalled at once). 512 by default.
     /// </summary>
     public int MaxStreamsPerTunnel { get; set; } = 512;
 

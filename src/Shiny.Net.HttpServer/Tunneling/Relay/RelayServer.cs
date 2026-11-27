@@ -206,6 +206,12 @@ public sealed class RelayServer : IAsyncDisposable
 
             if (this.options.MaxStreamsPerTunnel < 1)
                 throw new ArgumentOutOfRangeException(nameof(RelayServerOptions.MaxStreamsPerTunnel), this.options.MaxStreamsPerTunnel, "Must be at least 1.");
+
+            if (this.options.MaxStreamWindowSize > TunnelSettings.MaximumWindow)
+                throw new ArgumentOutOfRangeException(nameof(RelayServerOptions.MaxStreamWindowSize), this.options.MaxStreamWindowSize, $"Must be at most {TunnelSettings.MaximumWindow} bytes.");
+
+            if (this.options.TunnelWindowBudget < 0)
+                throw new ArgumentOutOfRangeException(nameof(RelayServerOptions.TunnelWindowBudget), this.options.TunnelWindowBudget, "Must not be negative.");
         }
 
         this.controlListener = new SocketConnectionListener(

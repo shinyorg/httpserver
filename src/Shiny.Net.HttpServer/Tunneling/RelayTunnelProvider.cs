@@ -36,6 +36,11 @@ public sealed class RelayTunnelProvider : ITunnelProvider
     TunnelSettings? relaySettings;
     int flowStreams;
 
+    // Windows grow while they are the bottleneck, judged against the round trip to the relay, within a shared budget.
+    // Kept across reconnects: the budget is returned by streams as they end, whichever connection they were on.
+    readonly TunnelRoundTrip roundTrip = new();
+    readonly StreamWindowBudget budget;
+
     /// <summary>
     /// One exchange arriving over the tunnel. A flow-controlled one carries its own receiver, which feeds the request
     /// body to the app and grants the relay more as the app reads it, and a send window the response is held to.
@@ -64,6 +69,7 @@ public sealed class RelayTunnelProvider : ITunnelProvider
 
         this.options = options;
         this.logger = logger ?? NullLogger<RelayTunnelProvider>.Instance;
+        this.budget = new StreamWindowBudget(options.TunnelWindowBudget);
 
         if (options.EnableFlowControl)
         {
@@ -77,6 +83,12 @@ public sealed class RelayTunnelProvider : ITunnelProvider
             {
                 throw new ArgumentOutOfRangeException(nameof(options), ex.Message);
             }
+
+            if (options.MaxStreamWindowSize > TunnelSettings.MaximumWindow)
+                throw new ArgumentOutOfRangeException(nameof(options), $"MaxStreamWindowSize must be at most {TunnelSettings.MaximumWindow} bytes.");
+
+            if (options.TunnelWindowBudget < 0)
+                throw new ArgumentOutOfRangeException(nameof(options), "TunnelWindowBudget must not be negative.");
         }
     }
 
@@ -85,6 +97,12 @@ public sealed class RelayTunnelProvider : ITunnelProvider
 
     /// <summary>Flow-controlled streams in flight, for diagnostics and tests.</summary>
     internal int FlowStreams => Volatile.Read(ref this.flowStreams);
+
+    /// <summary>The measured round trip to the relay, for diagnostics and tests.</summary>
+    internal TimeSpan? RoundTrip => this.roundTrip.Estimate;
+
+    /// <summary>Room left for windows to grow, for diagnostics and tests.</summary>
+    internal long WindowBudgetRemaining => this.budget.Remaining;
 
     public string Name => "shiny-relay";
 
@@ -291,6 +309,9 @@ public sealed class RelayTunnelProvider : ITunnelProvider
             while (!cancellationToken.IsCancellationRequested)
             {
                 await Task.Delay(this.options.KeepAliveInterval, cancellationToken).ConfigureAwait(false);
+
+                // Timed as well: a keep-alive's Pong is a free round-trip sample.
+                this.roundTrip.OnPingSent();
                 await tunnel.SendAsync(TunnelFrameType.Ping, 0, cancellationToken).ConfigureAwait(false);
             }
         }
@@ -356,6 +377,10 @@ public sealed class RelayTunnelProvider : ITunnelProvider
                     await channel.SendAsync(TunnelFrameType.Pong, 0, cancellationToken).ConfigureAwait(false);
                 return;
 
+            case TunnelFrameType.Pong:
+                this.roundTrip.OnPong();
+                return;
+
             default:
                 return;
         }
@@ -375,6 +400,16 @@ public sealed class RelayTunnelProvider : ITunnelProvider
 
         if (this.channel is { } channel)
             await channel.SendAsync(TunnelFrameType.Settings, 0, settings.Encode(), cancellationToken).ConfigureAwait(false);
+
+        // A first round-trip sample now, so windows can grow from the first stream on.
+        this.SampleRoundTrip();
+    }
+
+    /// <summary>Sends a Ping to time, unless one is already out or the estimate is fresh.</summary>
+    void SampleRoundTrip()
+    {
+        if (this.roundTrip.TryBeginSample())
+            this.SendQuietly(TunnelFrameType.Ping, 0, ReadOnlyMemory<byte>.Empty);
     }
 
     void OpenStream(uint streamId, string remoteDescription, bool flow)
@@ -448,7 +483,11 @@ public sealed class RelayTunnelProvider : ITunnelProvider
                 return false;
             }
         },
-        increment => this.SendQuietlyAsync(TunnelFrameType.WindowUpdate, streamId, TunnelSettings.EncodeWindowUpdate(increment))
+        increment => this.SendQuietlyAsync(TunnelFrameType.WindowUpdate, streamId, TunnelSettings.EncodeWindowUpdate(increment)),
+        this.options.MaxStreamWindowSize,
+        this.roundTrip,
+        this.budget,
+        this.SampleRoundTrip
     );
 
     async ValueTask ReceiveAsync(uint streamId, ReadOnlySequence<byte> payload, CancellationToken cancellationToken)

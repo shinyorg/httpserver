@@ -244,4 +244,174 @@ public class TunnelFlowControlUnitTests
         Assert.Empty(recorder.Delivered);
         Assert.Empty(recorder.Grants);
     }
+
+    // ---- Window growth ----
+
+    static TunnelRoundTrip RoundTripOf(TimeSpan duration)
+    {
+        var roundTrip = new TunnelRoundTrip();
+        Assert.True(roundTrip.TryBeginSample());
+        Thread.Sleep(duration);
+        roundTrip.OnPong();
+        return roundTrip;
+    }
+
+    /// <summary>Feeds a receiver as a sender would: never more than the credit it has been granted.</summary>
+    static async Task FeedAsync(StreamReceiver receiver, StreamSendWindow sender, long total)
+    {
+        var sent = 0L;
+        while (sent < total)
+        {
+            var take = await sender.ReserveAsync((int)Math.Min(TunnelProtocol.MaxPayloadLength, total - sent), Token);
+            Assert.True(receiver.TryEnqueue(new ReadOnlySequence<byte>(new byte[take])));
+            sent += take;
+        }
+    }
+
+    [Fact]
+    public async Task A_window_whose_destination_keeps_up_grows_while_it_is_the_bottleneck()
+    {
+        const int Initial = 64 * 1024;
+        var roundTrip = RoundTripOf(TimeSpan.FromMilliseconds(200));
+        var sender = new StreamSendWindow(Initial);
+        var budget = new StreamWindowBudget(64L * 1024 * 1024);
+
+        // A destination that takes everything at once, granting back to the sender as a real peer would.
+        StreamReceiver receiver = null!;
+        receiver = new StreamReceiver(
+            Initial,
+            (_, _) => ValueTask.FromResult(true),
+            increment =>
+            {
+                sender.Add(increment);
+                return ValueTask.CompletedTask;
+            },
+            maxWindow: 4 * 1024 * 1024,
+            roundTrip,
+            budget
+        );
+
+        await FeedAsync(receiver, sender, 8L * 1024 * 1024);
+        receiver.Complete();
+        await receiver.Completion.WaitAsync(TimeSpan.FromSeconds(10), Token);
+
+        Assert.True(receiver.Window > Initial, $"The window stayed at {receiver.Window}.");
+        Assert.True(receiver.Window <= 4 * 1024 * 1024);
+
+        // The room it grew into is given back once the stream ends.
+        Assert.Equal(64L * 1024 * 1024, budget.Remaining);
+    }
+
+    [Fact]
+    public async Task A_window_whose_destination_is_slow_never_grows()
+    {
+        const int Initial = 64 * 1024;
+        var roundTrip = RoundTripOf(TimeSpan.FromMilliseconds(5));
+        var sender = new StreamSendWindow(Initial);
+
+        // Each chunk takes far longer than a round trip to be taken: the destination, not the window, is the limit.
+        var receiver = new StreamReceiver(
+            Initial,
+            async (_, ct) =>
+            {
+                await Task.Delay(50, ct);
+                return true;
+            },
+            increment =>
+            {
+                sender.Add(increment);
+                return ValueTask.CompletedTask;
+            },
+            maxWindow: 4 * 1024 * 1024,
+            roundTrip,
+            new StreamWindowBudget(64L * 1024 * 1024)
+        );
+
+        await FeedAsync(receiver, sender, 512 * 1024);
+        receiver.Complete();
+        await receiver.Completion.WaitAsync(TimeSpan.FromSeconds(20), Token);
+
+        Assert.Equal(Initial, receiver.Window);
+    }
+
+    [Fact]
+    public async Task A_window_does_not_grow_past_the_tunnels_budget()
+    {
+        const int Initial = 64 * 1024;
+        var roundTrip = RoundTripOf(TimeSpan.FromMilliseconds(200));
+        var sender = new StreamSendWindow(Initial);
+        var budget = new StreamWindowBudget(Initial);
+
+        var receiver = new StreamReceiver(
+            Initial,
+            (_, _) => ValueTask.FromResult(true),
+            increment =>
+            {
+                sender.Add(increment);
+                return ValueTask.CompletedTask;
+            },
+            maxWindow: 4 * 1024 * 1024,
+            roundTrip,
+            budget
+        );
+
+        await FeedAsync(receiver, sender, 4L * 1024 * 1024);
+
+        // Room for one window's worth of growth: it doubled, once, and took all of it.
+        Assert.True(receiver.Window <= 2 * Initial, $"The window grew to {receiver.Window}.");
+
+        receiver.Complete();
+        await receiver.Completion.WaitAsync(TimeSpan.FromSeconds(10), Token);
+        Assert.Equal(Initial, budget.Remaining);
+    }
+
+    [Fact]
+    public async Task A_window_with_no_round_trip_estimate_asks_for_one_and_does_not_grow_yet()
+    {
+        const int Initial = 64 * 1024;
+        var asked = 0;
+        var sender = new StreamSendWindow(Initial);
+
+        var receiver = new StreamReceiver(
+            Initial,
+            (_, _) => ValueTask.FromResult(true),
+            increment =>
+            {
+                sender.Add(increment);
+                return ValueTask.CompletedTask;
+            },
+            maxWindow: 4 * 1024 * 1024,
+            new TunnelRoundTrip(),
+            new StreamWindowBudget(64L * 1024 * 1024),
+            () => Interlocked.Increment(ref asked)
+        );
+
+        await FeedAsync(receiver, sender, 1024 * 1024);
+        receiver.Complete();
+        await receiver.Completion.WaitAsync(TimeSpan.FromSeconds(10), Token);
+
+        Assert.Equal(Initial, receiver.Window);
+        Assert.True(asked > 0);
+    }
+
+    [Fact]
+    public void A_round_trip_is_sampled_once_at_a_time_and_smoothed()
+    {
+        var roundTrip = new TunnelRoundTrip();
+        Assert.Null(roundTrip.Estimate);
+
+        Assert.True(roundTrip.TryBeginSample());
+        Assert.False(roundTrip.TryBeginSample());
+
+        Thread.Sleep(20);
+        roundTrip.OnPong();
+        var first = roundTrip.Estimate;
+        Assert.NotNull(first);
+        Assert.True(first.Value >= TimeSpan.FromMilliseconds(15));
+
+        // Fresh: no new sample for a while. A Pong with no Ping out is ignored.
+        Assert.False(roundTrip.TryBeginSample());
+        roundTrip.OnPong();
+        Assert.Equal(first, roundTrip.Estimate);
+    }
 }
