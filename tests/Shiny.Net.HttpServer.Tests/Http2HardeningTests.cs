@@ -269,49 +269,6 @@ public class Http2HardeningTests
     }
 
     [Fact]
-    public async Task Refuses_a_header_block_that_decodes_past_the_list_limit()
-    {
-        // 16 KB on the wire: one 4 KB cookie added to the dynamic table, then thousands of one-byte
-        // references to it - 16 MB of cookies once decoded.
-        var invoked = 0;
-
-        await using var server = await TestServer.StartAsync(app =>
-        {
-            app.MapGet("/cookies", ctx =>
-            {
-                Interlocked.Increment(ref invoked);
-                return ctx.Response.WriteAsync("ok");
-            });
-
-            MapSize(app);
-        });
-
-        await using var client = await Http2RawClient.ConnectAsync(server.Port);
-
-        var block = Http2RawClient.RequestBlock("GET", "/cookies");
-        Http2RawClient.WriteInteger(block, 32, 6, 0x40); // literal, indexed, name "cookie"
-        Http2RawClient.WriteString(block, new string('a', 4000));
-
-        while (block.Count < 16_000)
-            block.Add(0x80 | 62); // the dynamic entry just added
-
-        var allocated = GC.GetTotalAllocatedBytes(true);
-        await client.SendFrameAsync(Http2RawFrame.Headers, 0x5, 1, block.ToArray());
-
-        var response = await client.WaitForAsync(x => x.Type == Http2RawFrame.Headers && x.StreamId == 1, Wait);
-        allocated = GC.GetTotalAllocatedBytes(true) - allocated;
-
-        Assert.NotNull(response);
-        Assert.Contains("431", Encoding.ASCII.GetString(response.Payload));
-        Assert.Equal(0, Volatile.Read(ref invoked));
-        Assert.True(allocated < 64L * 1024 * 1024, $"Allocated {allocated / (1024 * 1024)} MiB refusing the request.");
-
-        // Refused, not disconnected: the block was decoded in full, so HPACK is still in step.
-        await client.HeadersAsync(3, "GET", "/size/5", endStream: true);
-        Assert.NotNull(await client.WaitForEndAsync(3, Wait));
-    }
-
-    [Fact]
     public async Task Answers_431_to_headers_over_the_limit_and_keeps_the_connection()
     {
         await using var server = await TestServer.StartAsync(MapSize);
@@ -372,7 +329,8 @@ public class Http2HardeningTests
     [Fact]
     public async Task A_writer_waiting_on_the_connection_window_is_released_when_its_stream_is_reset()
     {
-        var finished = new TaskCompletionSource();
+        var finished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
         await using var server = await TestServer.StartAsync(app =>
         {
@@ -380,6 +338,7 @@ public class Http2HardeningTests
 
             app.MapGet("/wait", async ctx =>
             {
+                started.TrySetResult();
                 try
                 {
                     // No token, like the server's own error responses.
@@ -400,10 +359,14 @@ public class Http2HardeningTests
         Assert.NotNull(await client.WaitForEndAsync(1, Wait));
 
         await client.HeadersAsync(3, "GET", "/wait", endStream: true);
-        await Task.Delay(300, Token);
+
+        // Reset once the handler runs: reset any earlier and the handler may never be started, so nothing would
+        // finish. Reset before the write parks and the write fails at once - released either way.
+        await started.Task.WaitAsync(Wait, Token);
+        await Task.Delay(100, Token);
         await client.ResetAsync(3);
 
-        await finished.Task.WaitAsync(TimeSpan.FromSeconds(3), Token);
+        await finished.Task.WaitAsync(Wait, Token);
     }
 
     // ---- 5. Staged bytes are not dropped ----

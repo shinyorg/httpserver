@@ -356,13 +356,15 @@ public class CookieAuthenticationTests
     [Fact]
     public async Task Reissues_a_cookie_that_is_more_than_half_spent()
     {
-        await using var server = await StartAsync(o => o.ExpireTimeSpan = TimeSpan.FromSeconds(4));
+        // The ticket keeps whole seconds, so up to a second of its life is gone at issue. 10 s waited 6: past half
+        // spent however the seconds fall, with 3 s or more still left for the round trips on a slow runner.
+        await using var server = await StartAsync(o => o.ExpireTimeSpan = TimeSpan.FromSeconds(10));
 
         using var client = RawClient(server);
 
         var cookie = ValueOf(CookieFrom(await client.PostAsync("/login", null, TestContext.Current.CancellationToken))!);
 
-        await Task.Delay(2_400, TestContext.Current.CancellationToken);
+        await Task.Delay(6_000, TestContext.Current.CancellationToken);
 
         using var request = new HttpRequestMessage(HttpMethod.Get, "/me");
         request.Headers.Add("Cookie", cookie);

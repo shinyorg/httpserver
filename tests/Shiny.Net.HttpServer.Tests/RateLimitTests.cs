@@ -392,10 +392,19 @@ public class RateLimitMiddlewareTests
         release.SetResult();
         Assert.Equal(HttpStatusCode.OK, (await inFlight).StatusCode);
 
-        // ...and once the response is complete the permit is back.
+        // ...and once the request is complete the permit is back. Complete means the pipeline unwound, which can be
+        // a moment after the client has the response, so a 429 in that moment is retried rather than failed.
         release = new TaskCompletionSource();
         release.SetResult();
-        Assert.Equal(HttpStatusCode.OK, (await server.Client.GetAsync("/slow", Token)).StatusCode);
+        var status = HttpStatusCode.TooManyRequests;
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+        while (status == HttpStatusCode.TooManyRequests && DateTime.UtcNow < deadline)
+        {
+            status = (await server.Client.GetAsync("/slow", Token)).StatusCode;
+            if (status == HttpStatusCode.TooManyRequests)
+                await Task.Delay(20, Token);
+        }
+        Assert.Equal(HttpStatusCode.OK, status);
     }
 
     [Fact]

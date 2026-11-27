@@ -1134,6 +1134,9 @@ public sealed class HttpServer : IAsyncDisposable
         }
     }
 
+    /// <summary>How long a connection closed on an error keeps reading off what the client is still sending.</summary>
+    static readonly TimeSpan LingerTimeout = TimeSpan.FromSeconds(2);
+
     void TrackConnection(IConnection connection, ConnectionTokens tokens)
     {
         var task = Task.Run(() => this.ServeConnectionAsync(connection, tokens.Abort, tokens.Drain), CancellationToken.None);
@@ -1167,6 +1170,8 @@ public sealed class HttpServer : IAsyncDisposable
             connection
         );
 
+        var linger = false;
+
         try
         {
             // TLS happens here rather than on the accept loop. A handshake is at best a round trip
@@ -1191,6 +1196,7 @@ public sealed class HttpServer : IAsyncDisposable
                 // The same two moments an HTTP/1.1 connection gets: the drain sends GOAWAY and lets
                 // open streams finish, and the abort - ShutdownTimeout running out - cancels them.
                 await http2.ProcessAsync(drainToken, cancellationToken).ConfigureAwait(false);
+                linger = http2.LingerOnClose;
                 return;
             }
 
@@ -1204,6 +1210,7 @@ public sealed class HttpServer : IAsyncDisposable
             );
 
             await http.ProcessAsync(cancellationToken).ConfigureAwait(false);
+            linger = http.LingerOnClose;
         }
         catch (ProxyProtocolException ex)
         {
@@ -1228,6 +1235,13 @@ public sealed class HttpServer : IAsyncDisposable
         }
         finally
         {
+            // A stopping server does not wait on clients: the drain and the abort both cut the linger short.
+            if (linger && connection is ILingeringClose lingering && !drainToken.IsCancellationRequested)
+            {
+                using var stop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, drainToken);
+                await lingering.LingerAsync(LingerTimeout, stop.Token).ConfigureAwait(false);
+            }
+
             await connection.DisposeAsync().ConfigureAwait(false);
             this.connectionLimit?.Release();
         }

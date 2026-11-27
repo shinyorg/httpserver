@@ -49,18 +49,32 @@ public sealed class OutputCacheMiddleware(OutputCacheOptions options, IOutputCac
         var buffer = new BufferingBodyControl(context.Response, this.options.MaxBodyBytes);
         context.Response.Bind(buffer);
 
+        // Flushed here rather than through CompleteAsync: the connection completes its own producer, not whatever
+        // the response ended up bound to, so anything still buffered when this unwinds would never reach the wire.
         try
         {
             await next(context).ConfigureAwait(false);
         }
-        finally
+        catch
         {
-            // Flushed here rather than through CompleteAsync: the connection completes its own
-            // producer, not whatever the response ended up bound to, so anything still buffered
-            // when this unwinds would never reach the wire.
             await buffer.FinishAsync(context.RequestAborted).ConfigureAwait(false);
+            throw;
         }
 
+        // Stored before it is written, so a client that asks again the moment it has this response finds the entry.
+        buffer.Seal();
+        try
+        {
+            await this.StoreAsync(context, policy, key, buffer).ConfigureAwait(false);
+        }
+        finally
+        {
+            await buffer.FinishAsync(context.RequestAborted).ConfigureAwait(false);
+        }
+    }
+
+    async ValueTask StoreAsync(HttpContext context, OutputCachePolicy policy, string key, BufferingBodyControl buffer)
+    {
         if (buffer.Captured is { } body && this.ShouldStore(context, policy))
         {
             var now = DateTimeOffset.UtcNow;
@@ -235,6 +249,7 @@ sealed class BufferingBodyControl : IResponseBodyControl
     readonly int maxBytes;
 
     ArrayBufferWriter<byte>? buffer = new(1024);
+    ArrayBufferWriter<byte>? sealedBody;
     BufferStream? stream;
     PipeWriter? writer;
     bool passThrough;
@@ -271,8 +286,12 @@ sealed class BufferingBodyControl : IResponseBodyControl
 
     public ValueTask CompleteAsync(CancellationToken cancellationToken) => this.inner.CompleteAsync(cancellationToken);
 
-    /// <summary>Writes whatever was buffered through to the connection.</summary>
-    public async ValueTask FinishAsync(CancellationToken cancellationToken)
+    /// <summary>
+    /// Ends buffering and sets <see cref="Captured"/> without writing anything, so a caller can record the response
+    /// before the client has it. Recorded after the write, a client quick enough to send its next request the moment
+    /// it read this one could beat the record there.
+    /// </summary>
+    public void Seal()
     {
         if (this.finished)
             return;
@@ -283,15 +302,27 @@ sealed class BufferingBodyControl : IResponseBodyControl
             return;
 
         this.buffer = null;
+        this.sealedBody = captured;
         this.Captured = captured.WrittenSpan.ToArray();
+
+        // The length is known now even when the handler never set one, so this response goes out with a
+        // Content-Length instead of chunked - set here so a caller recording the headers records it too.
+        if (captured.WrittenCount > 0 && !this.inner.HasStarted)
+            this.response.ContentLength ??= captured.WrittenCount;
+    }
+
+    /// <summary>Writes whatever was buffered through to the connection.</summary>
+    public async ValueTask FinishAsync(CancellationToken cancellationToken)
+    {
+        this.Seal();
+
+        if (this.sealedBody is not { } captured)
+            return;
+
+        this.sealedBody = null;
 
         if (captured.WrittenCount == 0)
             return;
-
-        // The length is known now even when the handler never set one, so this response goes out
-        // with a Content-Length instead of chunked.
-        if (!this.inner.HasStarted)
-            this.response.ContentLength ??= captured.WrittenCount;
 
         await this.inner.Stream.WriteAsync(captured.WrittenMemory, cancellationToken).ConfigureAwait(false);
     }

@@ -420,8 +420,10 @@ public class Http1HardeningTests
     public async Task Stopping_lets_an_in_flight_request_finish_without_cancelling_it()
     {
         var sawAbort = true;
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var (server, port) = await StartAsync(app => app.MapGet("/slow", async ctx =>
         {
+            started.TrySetResult();
             await Task.Delay(1000);
             sawAbort = ctx.RequestAborted.IsCancellationRequested;
             await ctx.Response.WriteTextAsync("finished");
@@ -429,7 +431,10 @@ public class Http1HardeningTests
 
         using var socket = await ConnectAsync(port);
         await SendAsync(socket, "GET /slow HTTP/1.1\r\nHost: x\r\n\r\n");
-        await Task.Delay(200);
+
+        // In flight means the handler is running; a fixed delay could stop the server while the request was still
+        // unparsed, and then it is an idle connection that is closed, not a request that is finished.
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
         using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         var stop = server.StopAsync(budget.Token);
@@ -465,10 +470,12 @@ public class Http1HardeningTests
     [Fact]
     public async Task A_request_still_running_when_the_stop_runs_out_is_cancelled_and_its_connection_aborted()
     {
-        var cancelled = new TaskCompletionSource();
+        var cancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var (server, port) = await StartAsync(
             app => app.MapGet("/hang", async ctx =>
             {
+                started.TrySetResult();
                 try
                 {
                     await Task.Delay(Timeout.Infinite, ctx.RequestAborted);
@@ -484,7 +491,7 @@ public class Http1HardeningTests
 
         using var socket = await ConnectAsync(port);
         await SendAsync(socket, "GET /hang HTTP/1.1\r\nHost: x\r\n\r\n");
-        await Task.Delay(200);
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
         var clock = Stopwatch.StartNew();
         await server.StopAsync();
@@ -492,7 +499,8 @@ public class Http1HardeningTests
         Assert.True(clock.Elapsed < TimeSpan.FromSeconds(5), $"Stop took {clock.Elapsed}");
         Assert.Equal(HttpServerState.Stopped, server.State);
         Assert.Equal(0, server.ActiveConnections);
-        Assert.True(cancelled.Task.IsCompleted);
+        // The handler's catch runs on its own continuation, which the stop does not wait on.
+        await cancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
         var result = await ReadAllAsync(socket, TimeSpan.FromSeconds(3));
         Assert.DoesNotContain("<<OPEN>>", result);
@@ -502,9 +510,18 @@ public class Http1HardeningTests
     [Fact]
     public async Task Disposing_with_a_connection_that_ignores_cancellation_does_not_break_its_slot()
     {
-        var finished = new TaskCompletionSource();
-        var unobserved = 0;
-        void OnUnobserved(object? sender, UnobservedTaskExceptionEventArgs e) => Interlocked.Increment(ref unobserved);
+        var finished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        // The event is process-wide and other tests run alongside this one, so only an exception thrown by the
+        // connection machinery this test exercises counts.
+        var unobserved = new System.Collections.Concurrent.ConcurrentQueue<Exception>();
+        void OnUnobserved(object? sender, UnobservedTaskExceptionEventArgs e)
+        {
+            var text = e.Exception.ToString();
+            if (text.Contains("Http1Connection", StringComparison.Ordinal) || text.Contains("ServeConnectionAsync", StringComparison.Ordinal))
+                unobserved.Enqueue(e.Exception);
+        }
         TaskScheduler.UnobservedTaskException += OnUnobserved;
 
         try
@@ -512,6 +529,7 @@ public class Http1HardeningTests
             var (server, port) = await StartAsync(
                 app => app.MapGet("/stubborn", async _ =>
                 {
+                    started.TrySetResult();
                     try
                     {
                         await Task.Delay(2500, CancellationToken.None);
@@ -526,7 +544,7 @@ public class Http1HardeningTests
 
             using var socket = await ConnectAsync(port);
             await SendAsync(socket, "GET /stubborn HTTP/1.1\r\nHost: x\r\n\r\n");
-            await Task.Delay(200);
+            await started.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
             await server.DisposeAsync();
             await finished.Task.WaitAsync(TimeSpan.FromSeconds(10));
@@ -534,7 +552,7 @@ public class Http1HardeningTests
 
             GC.Collect();
             GC.WaitForPendingFinalizers();
-            Assert.Equal(0, unobserved);
+            Assert.Empty(unobserved);
         }
         finally
         {
@@ -618,11 +636,13 @@ public class Http1HardeningTests
     [Fact]
     public async Task Abort_cancels_RequestAborted()
     {
-        var wasCancelled = false;
+        // Abort closes the socket before the handler gets to look at the token, so the client can see EOF first:
+        // the handler reports what it saw instead of the test reading a field it may not have written yet.
+        var wasCancelled = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var (server, port) = await StartAsync(app => app.MapGet("/abort", ctx =>
         {
             ctx.Abort();
-            wasCancelled = ctx.RequestAborted.IsCancellationRequested;
+            wasCancelled.TrySetResult(ctx.RequestAborted.IsCancellationRequested);
             return ValueTask.CompletedTask;
         }));
         await using var _ = server;
@@ -631,7 +651,37 @@ public class Http1HardeningTests
         await SendAsync(socket, "GET /abort HTTP/1.1\r\nHost: x\r\n\r\n");
         await ReadAllAsync(socket, TimeSpan.FromSeconds(3));
 
-        Assert.True(wasCancelled);
+        Assert.True(await wasCancelled.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+    }
+
+    [Fact]
+    public async Task A_413_reaches_a_client_still_sending_its_body()
+    {
+        // Closing over bytes the client is still sending makes the kernel answer with a reset, and a reset lets the
+        // client's stack throw away the 413 it had buffered. The server lingers, reading the rest off, so it does not.
+        var (server, port) = await StartAsync(
+            app => app.MapPost("/upload", async ctx => await ctx.Request.Body.CopyToAsync(Stream.Null, ctx.RequestAborted)),
+            options => options.Limits.MaxRequestBodySize = 1024
+        );
+        await using var _ = server;
+
+        const int Size = 4 * 1024 * 1024;
+        using var socket = await ConnectAsync(port);
+        await SendAsync(socket, $"POST /upload HTTP/1.1\r\nHost: x\r\nContent-Length: {Size}\r\n\r\n");
+
+        // A client like HttpClient writes the whole body before it reads the response, so a write cut off by a reset is
+        // a client that never sees the 413 at all: every byte has to go.
+        var sending = Task.Run(async () =>
+        {
+            var chunk = new byte[64 * 1024];
+            for (var sent = 0; sent < Size; sent += chunk.Length)
+                await socket.SendAsync(chunk);
+        });
+
+        var result = await ReadAllAsync(socket, TimeSpan.FromSeconds(5));
+        await sending.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.StartsWith("HTTP/1.1 413", result);
     }
 
     // ---- 10. Body, drain and write timeouts ----

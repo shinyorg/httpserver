@@ -15,6 +15,24 @@ public class Http2VanishedClientTests
     static CancellationToken Token => TestContext.Current.CancellationToken;
 
     [Fact]
+    public async Task Abort_cancels_RequestAborted_before_it_returns()
+    {
+        var wasCancelled = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        await using var server = await TestServer.StartAsync(app => app.MapGet("/abort", ctx =>
+        {
+            ctx.Abort();
+            wasCancelled.TrySetResult(ctx.RequestAborted.IsCancellationRequested);
+            return ValueTask.CompletedTask;
+        }));
+
+        await using var client = await Http2RawClient.ConnectAsync(server.Port);
+        await client.HeadersAsync(1, "GET", "/abort", endStream: true);
+
+        Assert.True(await wasCancelled.Task.WaitAsync(Wait, Token));
+    }
+
+    [Fact]
     public async Task A_stream_the_client_stops_giving_credit_to_is_reset_after_the_write_timeout()
     {
         var aborted = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);

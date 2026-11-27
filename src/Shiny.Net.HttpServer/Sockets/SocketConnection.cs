@@ -15,7 +15,7 @@ namespace Shiny.Net.HttpServer.Transports;
 /// still gets a real <see cref="PipeReader"/>, so request parsing remains zero-copy.
 /// </para>
 /// </summary>
-sealed class SocketConnection : IConnection, IConnectionInitializer, IProxyProtocolConnection
+sealed class SocketConnection : IConnection, IConnectionInitializer, IProxyProtocolConnection, ILingeringClose
 {
     readonly Socket socket;
     readonly HttpServerOptions options;
@@ -260,6 +260,42 @@ sealed class SocketConnection : IConnection, IConnectionInitializer, IProxyProto
         }
     }
 
+    /// <summary>
+    /// Closes our side gracefully and reads off whatever the client is still sending, so the close that follows is a
+    /// FIN rather than a reset. Closing a socket with unread bytes in its receive buffer - or having bytes arrive after
+    /// it closed - makes the kernel send RST, and a client's stack is free to throw away everything it had buffered on
+    /// a reset, including the 413 or GOAWAY written a moment earlier. The same lingering close nginx and Apache do.
+    /// </summary>
+    public async ValueTask LingerAsync(TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        if (Volatile.Read(ref this.aborted) != 0 || this.input is null || this.stream is null)
+            return;
+
+        using var linger = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        linger.CancelAfter(timeout);
+
+        try
+        {
+            if (this.stream is SslStream ssl)
+                await ssl.ShutdownAsync().WaitAsync(linger.Token).ConfigureAwait(false);
+
+            this.socket.Shutdown(SocketShutdown.Send);
+
+            ReadResult result;
+            do
+            {
+                result = await this.input.ReadAsync(linger.Token).ConfigureAwait(false);
+                this.input.AdvanceTo(result.Buffer.End);
+            }
+            while (!result.IsCompleted && !result.IsCanceled);
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or IOException or SocketException or ObjectDisposedException or InvalidOperationException)
+        {
+            // Out of time, reset, aborted underneath us, or a read still owned by the protocol - all of them mean
+            // there is nothing more to wait for.
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
         try
@@ -304,6 +340,15 @@ sealed class SocketConnection : IConnection, IConnectionInitializer, IProxyProto
 interface IConnectionInitializer
 {
     ValueTask InitializeAsync(CancellationToken cancellationToken);
+}
+
+/// <summary>
+/// A connection that can close gracefully after the server ends it mid-conversation - an error response written while
+/// the client was still sending. Socket-only: an in-memory tunnel connection has no kernel to answer with a reset.
+/// </summary>
+interface ILingeringClose
+{
+    ValueTask LingerAsync(TimeSpan timeout, CancellationToken cancellationToken);
 }
 
 /// <summary>

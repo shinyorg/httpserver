@@ -515,12 +515,14 @@ public class FileSyncTests
 
         await using var server = await TestServer.StartAsync(app =>
         {
+            // Counted on the way in: after next() the response has already gone, and the client can be asserting
+            // before this line runs.
             app.Use(async (ctx, next) =>
             {
-                await next(ctx);
-
                 if (HttpMethods.IsPatch(ctx.Request.Method) && ctx.Request.Path.StartsWith("/sync/uploads", StringComparison.Ordinal))
                     Interlocked.Increment(ref tusCompleted);
+
+                await next(ctx);
             });
 
             app.MapFileSync("/sync", o =>
@@ -557,7 +559,7 @@ public class FileSyncTests
 
         var up = await a.SyncAsync(Token).WaitAsync(TimeSpan.FromSeconds(60), Token);
         Assert.Equal(1, up.Uploaded);
-        Assert.True(tusCompleted > 0, "the pack did not go over tus");
+        Assert.True(Volatile.Read(ref tusCompleted) > 0, "the pack did not go over tus");
 
         var down = await b.SyncAsync(Token).WaitAsync(TimeSpan.FromSeconds(60), Token);
         Assert.Equal(1, down.Downloaded);

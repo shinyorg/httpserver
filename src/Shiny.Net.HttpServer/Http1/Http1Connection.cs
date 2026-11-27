@@ -81,6 +81,12 @@ sealed class Http1Connection : IRequestBodySource
         this.readTimer = new PipeOperationTimer(connection.Input.CancelPendingRead);
     }
 
+    /// <summary>
+    /// True when the connection closed on the server's initiative while the client may still be sending: the host
+    /// lingers before closing so the response is not lost to a reset.
+    /// </summary>
+    internal bool LingerOnClose { get; private set; }
+
     public async Task ProcessAsync(CancellationToken connectionToken)
     {
         var requestsServed = 0L;
@@ -98,9 +104,12 @@ sealed class Http1Connection : IRequestBodySource
                     return;
 
                 if (received == ReadHeadResult.BadRequest)
+                {
                     // The error response has already been written; the connection is not reusable
                     // because we do not know where the malformed request ended.
+                    this.LingerOnClose = true;
                     return;
+                }
 
                 requestsServed++;
 
@@ -108,7 +117,15 @@ sealed class Http1Connection : IRequestBodySource
                 var handled = await this.HandleRequestAsync(keepAlive, connectionToken).ConfigureAwait(false);
 
                 if (!handled)
+                {
+                    // Closing with request bytes still to come - an unread body, or one held back for a
+                    // 100 Continue - would reset the connection over the response that was just written.
+                    this.LingerOnClose = !this.output.IsUpgrade
+                        && !this.abortRequested
+                        && !this.output.WriteTimedOut
+                        && (!this.bodyComplete || this.continuePending);
                     return;
+                }
             }
         }
         catch (Exception ex) when (IsConnectionResetOrCancellation(ex))
@@ -495,8 +512,15 @@ sealed class Http1Connection : IRequestBodySource
     void AbortRequest()
     {
         this.abortRequested = true;
-        TryCancel(this.requestAborted);
-        this.connection.Abort();
+        try
+        {
+            TryCancel(this.requestAborted);
+        }
+        finally
+        {
+            // A callback registered on RequestAborted that throws must not leave the connection open.
+            this.connection.Abort();
+        }
     }
 
     static void TryCancel(CancellationTokenSource? source)

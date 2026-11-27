@@ -219,6 +219,10 @@ sealed class Http3Connection(
             context.RequestAborted = aborted.Token;
 
             this.ApplyConnectionInfo(context, id, stream);
+            context.AbortAction = HttpContext.CancelThenAbort(
+                aborted,
+                () => stream.Abort(QuicAbortDirection.Both, Http3ErrorCode.RequestCancelled)
+            );
 
             if (!Http3RequestMapper.TryApply(context, fields, body, out var error))
             {
@@ -358,7 +362,6 @@ sealed class Http3Connection(
 
         context.Request.Protocol = HttpProtocols.Http3;
         context.Request.Scheme = "https";
-        context.AbortAction = () => stream.Abort(QuicAbortDirection.Both, Http3ErrorCode.RequestCancelled);
     }
 
     /// <summary>

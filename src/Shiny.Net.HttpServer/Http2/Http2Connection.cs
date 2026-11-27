@@ -142,6 +142,12 @@ sealed class Http2Connection
         this.maxHeaderBlockSize = (int)Math.Min(int.MaxValue, 2L * options.Http2.MaxHeaderListSize);
     }
 
+    /// <summary>
+    /// True once the connection ended on an error GOAWAY: the client may still have frames in flight, and closing
+    /// over them would reset the connection and could cost the client the GOAWAY that explains why.
+    /// </summary>
+    internal bool LingerOnClose { get; private set; }
+
     /// <summary>Serves the connection until it closes. A stop with no drain phase: both moments at once.</summary>
     public Task ProcessAsync(CancellationToken connectionToken) => this.ProcessAsync(connectionToken, connectionToken);
 
@@ -978,6 +984,7 @@ sealed class Http2Connection
             context.RequestAborted = aborted.Token;
 
             this.ApplyConnectionInfo(context);
+            context.AbortAction = HttpContext.CancelThenAbort(aborted, this.connection.Abort);
 
             if (!Http2RequestMapper.TryApply(context, fields, stream, out var error))
             {
@@ -1125,7 +1132,6 @@ sealed class Http2Connection
 
         context.Request.Protocol = HttpProtocols.Http2;
         context.Request.Scheme = this.connection.IsEncrypted ? "https" : "http";
-        context.AbortAction = this.connection.Abort;
     }
 
     /// <summary>Writes the response headers for a stream.</summary>
@@ -1413,6 +1419,10 @@ sealed class Http2Connection
 
         if (alreadySent)
             return;
+
+        // An error ends the connection while the client may still be sending; see LingerOnClose.
+        if (code != Http2ErrorCode.NoError)
+            this.LingerOnClose = true;
 
         try
         {

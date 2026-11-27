@@ -84,6 +84,27 @@ public sealed class HttpContext
     internal Action? AbortAction { get; set; }
 
     /// <summary>
+    /// An abort that cancels <see cref="RequestAborted"/> before the transport goes, so the handler that called
+    /// <see cref="Abort"/> sees the cancellation on its next line rather than whenever the teardown gets to it.
+    /// The transport is torn down even when a callback registered on the token throws.
+    /// </summary>
+    internal static Action CancelThenAbort(CancellationTokenSource requestAborted, Action abort) => () =>
+    {
+        try
+        {
+            requestAborted.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // The request already finished; there is nothing left to cancel.
+        }
+        finally
+        {
+            abort();
+        }
+    };
+
+    /// <summary>
     /// The raw transport, for handlers that take the connection over entirely — a WebSocket
     /// upgrade, or any other protocol switch. Null when nothing can be upgraded.
     /// </summary>

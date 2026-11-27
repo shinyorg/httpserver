@@ -138,9 +138,24 @@ public sealed class IdempotencyMiddleware(
             throw;
         }
 
-        // Flushed here rather than through CompleteAsync: the connection completes its own producer,
-        // not whatever the response ended up bound to.
-        await buffer.FinishAsync(abort).ConfigureAwait(false);
+        // Recorded before the response is written: a client that retries the moment it has the response must find
+        // the answer, not the claim this request still holds - that would be a 409 for a request that has finished.
+        buffer.Seal();
+        try
+        {
+            await this.RecordAsync(context, key, fingerprint, metadata, buffer).ConfigureAwait(false);
+        }
+        finally
+        {
+            // Flushed here rather than through CompleteAsync: the connection completes its own producer,
+            // not whatever the response ended up bound to.
+            await buffer.FinishAsync(abort).ConfigureAwait(false);
+        }
+    }
+
+    async ValueTask RecordAsync(HttpContext context, string key, string fingerprint, IdempotencyMetadata metadata, BufferingBodyControl buffer)
+    {
+        var response = context.Response;
 
         if (buffer.Captured is { } captured && this.options.ShouldStoreStatusCode(response.StatusCode))
         {
