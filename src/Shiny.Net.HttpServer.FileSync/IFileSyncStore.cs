@@ -80,7 +80,11 @@ public interface IFileSyncStore
 {
     ValueTask<bool> HasChunkAsync(string hash, CancellationToken cancellationToken);
 
-    /// <summary>Stores a chunk whose hash has already been verified. Storing one that exists does nothing.</summary>
+    /// <summary>
+    /// Stores a chunk whose hash has already been verified. Storing one that exists leaves its bytes
+    /// alone but should refresh its <see cref="FileSyncStoredChunk.StoredUtc"/>, so garbage collection's
+    /// grace period counts from the latest upload rather than the first.
+    /// </summary>
     ValueTask PutChunkAsync(string hash, ReadOnlyMemory<byte> data, CancellationToken cancellationToken);
 
     /// <summary>The chunk's bytes, or null when the store does not have it.</summary>

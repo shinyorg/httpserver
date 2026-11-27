@@ -300,6 +300,139 @@ public class FileSyncTests
         Assert.Equal(4, next.Entry!.Revision);
     }
 
+    /// <summary>
+    /// Garbage collection used to read which chunks were referenced once, then delete from a listing
+    /// made after it. A file restored in between - committed naming the chunks of the version that
+    /// was deleted, which the store still had - lost them a moment after its commit was acknowledged.
+    /// </summary>
+    [Fact]
+    public async Task GarbageCollectionSparesChunksARestoreBroughtBack()
+    {
+        using var scratch = new Scratch();
+        var clock = new ManualClock();
+        var store = new HookedStore(new DiskFileSyncStore(scratch.Dir("server")));
+        FileSyncMountBuilder? mount = null;
+
+        await using var server = await TestServer.StartAsync(app => mount = app.MapFileSync("/sync", o =>
+        {
+            o.Store = store;
+            o.TimeProvider = clock;
+        }));
+
+        var data = Random(100, 1);
+        await PutPackAsync(server.Client, await PackAsync(data));
+        var created = await (await CommitAsync(server.Client, "doc.bin", null, data)).Content.ReadFromJsonAsync(Wire.WireJson.Default.WireEntry, Token);
+        Assert.Equal(HttpStatusCode.OK, (await server.Client.DeleteAsync($"/sync/files/manifest?path=doc.bin&revision={created!.Revision}", Token)).StatusCode);
+
+        clock.Now += TimeSpan.FromDays(2);
+
+        // Lands after collection has decided what is referenced and before it deletes anything.
+        store.BeforeListChunks = async () =>
+            Assert.Equal(HttpStatusCode.OK, (await CommitAsync(server.Client, "doc.bin", null, data)).StatusCode);
+
+        Assert.Equal(0, await mount!.CollectGarbageAsync(cancellationToken: Token));
+        Assert.Equal(data, await server.Client.GetByteArrayAsync("/sync/files/content?path=doc.bin", Token));
+    }
+
+    [Fact]
+    public async Task ReuploadingAChunkRestartsItsGracePeriod()
+    {
+        using var scratch = new Scratch();
+        var store = new DiskFileSyncStore(scratch.Dir("server"));
+        var data = Random(100, 1);
+        var hash = Sha(data);
+
+        await store.PutChunkAsync(hash, data, Token);
+        File.SetLastWriteTimeUtc(Path.Combine(store.RootPath, "chunks", hash[..2], hash), DateTime.UtcNow.AddDays(-30));
+
+        await store.PutChunkAsync(hash, data, Token);
+
+        var stored = await store.ListChunksAsync(Token).SingleAsync(Token);
+        Assert.True(stored.StoredUtc > DateTimeOffset.UtcNow.AddDays(-1), $"stored at {stored.StoredUtc:O}");
+    }
+
+    /// <summary>
+    /// The loop used to read the folder's change signal after a pass, so an edit made during the
+    /// pass pulsed a signal nobody was waiting on and was not uploaded until the scan interval (or
+    /// the long-poll timing out) came round.
+    /// </summary>
+    [Fact]
+    public async Task AnEditDuringAPassWakesTheNextPass()
+    {
+        using var scratch = new Scratch();
+        await using var server = await StartAsync(scratch);
+        using var device = Device(server, scratch.Dir("phone"), o => o.ScanInterval = TimeSpan.FromHours(1));
+
+        var signal = new FileSyncClient.LocalChangeSignal();
+        var passes = 0;
+        var second = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        device.LocalSignalForTest = signal;
+        device.PassStartingForTest = () =>
+        {
+            // The watcher firing for a save made while the first pass is running.
+            if (Interlocked.Increment(ref passes) == 1)
+                signal.Pulse();
+            else
+                second.TrySetResult();
+        };
+
+        using var stop = CancellationTokenSource.CreateLinkedTokenSource(Token);
+        var run = device.RunAsync(stop.Token);
+
+        // Well short of the 60 second long-poll that would otherwise be the next thing to wake it.
+        await second.Task.WaitAsync(TimeSpan.FromSeconds(20), Token);
+
+        await stop.CancelAsync();
+
+        try
+        {
+            await run;
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    /// <summary>A store that runs <see cref="BeforeListChunks"/> once, ahead of the first chunk listing.</summary>
+    sealed class HookedStore(IFileSyncStore inner) : IFileSyncStore
+    {
+        Func<Task>? hook;
+
+        public Func<Task>? BeforeListChunks
+        {
+            get => this.hook;
+            set => this.hook = value;
+        }
+
+        public ValueTask<bool> HasChunkAsync(string hash, CancellationToken cancellationToken) => inner.HasChunkAsync(hash, cancellationToken);
+
+        public ValueTask PutChunkAsync(string hash, ReadOnlyMemory<byte> data, CancellationToken cancellationToken) => inner.PutChunkAsync(hash, data, cancellationToken);
+
+        public ValueTask<Stream?> OpenChunkAsync(string hash, CancellationToken cancellationToken) => inner.OpenChunkAsync(hash, cancellationToken);
+
+        public ValueTask<bool> DeleteChunkAsync(string hash, CancellationToken cancellationToken) => inner.DeleteChunkAsync(hash, cancellationToken);
+
+        public async IAsyncEnumerable<FileSyncStoredChunk> ListChunksAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+        {
+            if (Interlocked.Exchange(ref this.hook, null) is { } before)
+                await before();
+
+            await foreach (var chunk in inner.ListChunksAsync(cancellationToken))
+                yield return chunk;
+        }
+
+        public ValueTask<FileSyncEntry?> GetEntryAsync(string path, CancellationToken cancellationToken) => inner.GetEntryAsync(path, cancellationToken);
+
+        public ValueTask<IReadOnlyList<FileSyncEntry>> GetChangesAsync(long afterRevision, int limit, CancellationToken cancellationToken) => inner.GetChangesAsync(afterRevision, limit, cancellationToken);
+
+        public ValueTask<IReadOnlyList<FileSyncEntry>> GetAllEntriesAsync(CancellationToken cancellationToken) => inner.GetAllEntriesAsync(cancellationToken);
+
+        public ValueTask<long> GetLatestRevisionAsync(CancellationToken cancellationToken) => inner.GetLatestRevisionAsync(cancellationToken);
+
+        public ValueTask<FileSyncCommitResult> CommitAsync(FileSyncCommit commit, CancellationToken cancellationToken) => inner.CommitAsync(commit, cancellationToken);
+    }
+
     sealed class ManualClock : TimeProvider
     {
         public DateTimeOffset Now { get; set; } = DateTimeOffset.UtcNow;

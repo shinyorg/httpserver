@@ -642,14 +642,31 @@ sealed class TusHandler
             // Never waits and never pre-empts: an upload somebody is writing to right now is, by
             // definition, not abandoned - and the write will slide its expiry forward.
             using var lease = await this.locks.AcquireAsync(id, TimeSpan.Zero, cancellationToken).ConfigureAwait(false);
-            if (lease is null)
-                continue;
 
-            if (await this.store.DeleteAsync(id, cancellationToken).ConfigureAwait(false))
+            if (lease is not null &&
+                await this.IsStillExpiredAsync(id, now, cancellationToken).ConfigureAwait(false) &&
+                await this.store.DeleteAsync(id, cancellationToken).ConfigureAwait(false))
                 removed++;
         }
 
         return removed;
+    }
+
+    /// <summary>
+    /// Asked again under the lease, because the list was made without one: a PATCH that finished
+    /// between the listing and the lease has slid the expiry forward or completed the upload, and
+    /// its client was just told 204.
+    /// </summary>
+    async ValueTask<bool> IsStillExpiredAsync(string id, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        var upload = await this.store.GetAsync(id, cancellationToken).ConfigureAwait(false);
+
+        // Nothing readable is left to re-check - files the store lists as orphans by their age -
+        // so the store's own verdict stands.
+        if (upload is null)
+            return true;
+
+        return !upload.IsComplete && upload.ExpiresUtc is { } expires && expires < now;
     }
 
     /// <summary>

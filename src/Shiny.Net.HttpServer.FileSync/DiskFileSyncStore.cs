@@ -47,7 +47,10 @@ public sealed class DiskFileSyncStore : IFileSyncStore
     {
         var path = this.ChunkPath(hash);
 
-        if (File.Exists(path))
+        // Uploaded again: the chunk is wanted, so the garbage grace period starts over. Left at its
+        // first write time, a chunk re-sent for a file restored long after it was deleted would look
+        // as abandoned as it did before, and be collected before the commit naming it arrived.
+        if (File.Exists(path) && TryTouch(path))
             return;
 
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
@@ -75,6 +78,20 @@ public sealed class DiskFileSyncStore : IFileSyncStore
         {
             if (File.Exists(temp))
                 File.Delete(temp);
+        }
+    }
+
+    static bool TryTouch(string path)
+    {
+        try
+        {
+            File.SetLastWriteTimeUtc(path, DateTime.UtcNow);
+            return true;
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+        {
+            // Collected between the check and the touch: written again below.
+            return false;
         }
     }
 

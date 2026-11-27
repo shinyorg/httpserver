@@ -876,6 +876,42 @@ public class CalDavTests
         Assert.Equal([Calendar + "app.ics"], Hrefs(delta));
     }
 
+    /// <summary>
+    /// A read hashed the bytes it read but cached the tag against the file's size and time as they
+    /// stood afterwards. A PUT landing in between left the old text's tag pinned to the new text,
+    /// and sync-collection never reported the change.
+    /// </summary>
+    [Fact]
+    public async Task A_read_racing_a_write_does_not_pin_the_old_tag_to_the_new_text()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "shiny-caldav-" + Guid.NewGuid().ToString("n")[..8]);
+
+        try
+        {
+            var store = new DirectoryCollectionStore(directory);
+            store.CreateCollection("ada", "default");
+
+            var before = await store.WriteObjectAsync("ada", "default", "a.ics", Event("a", "20260105T090000Z", "20260105T100000Z"), Token);
+            string? after = null;
+
+            store.AfterReadForTest = async _ =>
+            {
+                store.AfterReadForTest = null;
+                after = await store.WriteObjectAsync("ada", "default", "a.ics", Event("a-moved", "20260106T090000Z", "20260106T113000Z"), Token);
+            };
+
+            var read = await store.ReadObjectAsync("ada", "default", "a.ics", Token);
+
+            Assert.Equal(before, read!.ETag);
+            Assert.NotEqual(before, after);
+            Assert.Equal(after, (await store.ListObjectsAsync("ada", "default", Token)).Single().ETag);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
     // ---- CardDAV ----
 
     [Theory]
