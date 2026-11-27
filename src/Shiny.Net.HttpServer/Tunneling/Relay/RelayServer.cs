@@ -58,6 +58,9 @@ public sealed class RelayServer : IAsyncDisposable
     /// <summary>A snapshot of the tunnels currently registered.</summary>
     public IReadOnlyList<RelayTunnel> Tunnels => [.. this.sessions.Values.Select(x => x.Tunnel)];
 
+    /// <summary>The session registered for <paramref name="host"/>, for tests and diagnostics.</summary>
+    internal TunnelSession? FindSession(string host) => this.sessions.TryGetValue(host, out var session) ? session : null;
+
     /// <summary>
     /// Raised once a tunnel is registered and its client has been told its public URL. Raised on the
     /// tunnel's own connection task; keep handlers short. An exception from a handler is logged and
@@ -191,6 +194,19 @@ public sealed class RelayServer : IAsyncDisposable
 
         if (this.controlLoop is not null)
             throw new InvalidOperationException("The relay is already running.");
+
+        if (this.options.EnableFlowControl)
+        {
+            if (this.options.StreamWindowSize is < TunnelSettings.MinimumWindow or > TunnelSettings.MaximumWindow)
+                throw new ArgumentOutOfRangeException(
+                    nameof(RelayServerOptions.StreamWindowSize),
+                    this.options.StreamWindowSize,
+                    $"Must be between {TunnelSettings.MinimumWindow} and {TunnelSettings.MaximumWindow} bytes."
+                );
+
+            if (this.options.MaxStreamsPerTunnel < 1)
+                throw new ArgumentOutOfRangeException(nameof(RelayServerOptions.MaxStreamsPerTunnel), this.options.MaxStreamsPerTunnel, "Must be at least 1.");
+        }
 
         this.controlListener = new SocketConnectionListener(
             new HttpServerOptions(),
@@ -383,7 +399,7 @@ public sealed class RelayServer : IAsyncDisposable
             DateTimeOffset.UtcNow,
             request.State
         );
-        var session = new TunnelSession(tunnel, connection, channel);
+        var session = new TunnelSession(tunnel, connection, channel, this.options);
 
         string? refusal;
         lock (this.registrationGate)
@@ -411,6 +427,12 @@ public sealed class RelayServer : IAsyncDisposable
             // that follows reports TunnelDisconnected for the tunnel just announced.
             this.logger.LogInformation("Tunnel registered for {Host} from {Remote}", host, connection.RemoteEndPoint);
             this.RaiseConnected(session);
+
+            // Ahead of the acknowledgement, so a client that supports flow control has it before its first stream. A
+            // client that predates it ignores the frame, and its streams are served without.
+            if (session.LocalSettings is { } settings)
+                await channel.SendAsync(TunnelFrameType.Settings, 0, settings.Encode(), token).ConfigureAwait(false);
+
             await channel.SendAsync(TunnelFrameType.HelloAck, 0, tunnel.PublicUrl, token).ConfigureAwait(false);
 
             await session.RunAsync(token).ConfigureAwait(false);
@@ -557,6 +579,17 @@ public sealed class RelayServer : IAsyncDisposable
             // Inside the try: a session closing at this moment throws here, and the public connection must still
             // be disposed rather than left hanging.
             streamId = await session.OpenStreamAsync(connection, token).ConfigureAwait(false);
+            if (streamId == 0)
+            {
+                await WriteErrorAsync(
+                    connection,
+                    503,
+                    "Service Unavailable",
+                    "This tunnel is carrying as many requests as it can. Try again shortly."
+                ).ConfigureAwait(false);
+                return;
+            }
+
             var current = head.Value;
 
             while (true)

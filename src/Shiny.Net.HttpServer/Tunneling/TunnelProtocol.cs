@@ -28,7 +28,26 @@ public enum TunnelFrameType : byte
 
     Ping = 7,
 
-    Pong = 8
+    Pong = 8,
+
+    /// <summary>
+    /// Either direction, stream 0. Announces flow-control support and its limits; payload: <see cref="TunnelSettings"/>.
+    /// A peer that predates it ignores it, which is what keeps old and new ends compatible: flow control is only used
+    /// once both have sent one.
+    /// </summary>
+    Settings = 9,
+
+    /// <summary>
+    /// Either direction. Payload: a 4-byte big-endian increment - that many more bytes may be sent on the stream. Only
+    /// on a stream opened with <see cref="OpenWithFlowControl"/>.
+    /// </summary>
+    WindowUpdate = 10,
+
+    /// <summary>
+    /// Relay → client. As <see cref="Open"/>, for a stream whose data in both directions is held to the windows the
+    /// two <see cref="Settings"/> frames declared. Only sent to a client that sent its own Settings.
+    /// </summary>
+    OpenWithFlowControl = 11
 }
 
 /// <summary>

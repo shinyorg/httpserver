@@ -45,7 +45,7 @@ public sealed record IdempotencyRecord(
 /// lands on a different instance behind a load balancer only sees the first request if they share a
 /// store.
 /// <para>
-/// The one hard requirement is that <see cref="TryReserveAsync"/> is atomic: two concurrent requests
+/// The one hard requirement is that <see cref="TryReserveAsync(string, string, TimeSpan, CancellationToken)"/> is atomic: two concurrent requests
 /// with the same key must not both be told they hold it. That is the whole difference between an
 /// idempotency store and a cache.
 /// </para>

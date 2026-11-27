@@ -48,4 +48,23 @@ public sealed class RelayTunnelOptions
     /// Delay before redialling after the tunnel drops. Set to null to fail instead of reconnecting.
     /// </summary>
     public TimeSpan? ReconnectDelay { get; set; } = TimeSpan.FromSeconds(3);
+
+    /// <summary>
+    /// Holds each request on the tunnel to its own flow-control window, so a handler that never reads its upload - or a
+    /// public client that stops reading its download - holds up only its own request. Used when the relay supports it;
+    /// against an older relay the tunnel works as before. On by default.
+    /// </summary>
+    public bool EnableFlowControl { get; set; } = true;
+
+    /// <summary>
+    /// How many bytes of one request body this end will hold for a handler that is not reading it, before the relay
+    /// has to wait. 512 KiB by default.
+    /// </summary>
+    public int StreamWindowSize { get; set; } = 512 * 1024;
+
+    /// <summary>
+    /// How many flow-controlled connections this end will carry at once; the relay holds itself to it. A connection
+    /// counts for as long as the public client keeps it open. 512 by default.
+    /// </summary>
+    public int MaxStreams { get; set; } = 512;
 }

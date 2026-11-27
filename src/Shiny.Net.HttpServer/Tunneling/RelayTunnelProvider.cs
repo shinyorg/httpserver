@@ -28,8 +28,28 @@ public sealed class RelayTunnelProvider : ITunnelProvider
     readonly Channel<IConnection> accepted = Channel.CreateUnbounded<IConnection>(
         new UnboundedChannelOptions { SingleReader = true }
     );
-    readonly ConcurrentDictionary<uint, DuplexPipeConnection> streams = new();
+    readonly ConcurrentDictionary<uint, AgentStream> streams = new();
     readonly CancellationTokenSource stopping = new();
+
+    // What this end declares, or null with flow control off; and what the relay declared on the current connection.
+    readonly TunnelSettings? local;
+    TunnelSettings? relaySettings;
+    int flowStreams;
+
+    /// <summary>
+    /// One exchange arriving over the tunnel. A flow-controlled one carries its own receiver, which feeds the request
+    /// body to the app and grants the relay more as the app reads it, and a send window the response is held to.
+    /// </summary>
+    sealed class AgentStream(DuplexPipeConnection connection)
+    {
+        public DuplexPipeConnection Connection { get; } = connection;
+        public StreamSendWindow? Send { get; init; }
+        public StreamReceiver? Receive { get; set; }
+
+        int released;
+
+        public bool TryRelease() => Interlocked.Exchange(ref this.released, 1) == 0;
+    }
 
     TaskCompletionSource<string>? handshake;
     TunnelChannel? channel;
@@ -44,7 +64,27 @@ public sealed class RelayTunnelProvider : ITunnelProvider
 
         this.options = options;
         this.logger = logger ?? NullLogger<RelayTunnelProvider>.Instance;
+
+        if (options.EnableFlowControl)
+        {
+            this.local = new TunnelSettings(TunnelSettings.CurrentVersion, options.StreamWindowSize, options.MaxStreams);
+
+            try
+            {
+                this.local.Validate();
+            }
+            catch (TunnelProtocolException ex)
+            {
+                throw new ArgumentOutOfRangeException(nameof(options), ex.Message);
+            }
+        }
     }
+
+    /// <summary>True once the relay and this end have both declared flow control on the current connection.</summary>
+    internal bool FlowControlNegotiated => this.local is not null && Volatile.Read(ref this.relaySettings) is not null;
+
+    /// <summary>Flow-controlled streams in flight, for diagnostics and tests.</summary>
+    internal int FlowStreams => Volatile.Read(ref this.flowStreams);
 
     public string Name => "shiny-relay";
 
@@ -141,6 +181,9 @@ public sealed class RelayTunnelProvider : ITunnelProvider
 
             this.socket = connectSocket;
             this.transport = stream;
+
+            // Each connection negotiates afresh: a relay restarted with flow control off must not be held to it.
+            Volatile.Write(ref this.relaySettings, null);
 
             var tunnel = new TunnelChannel(
                 PipeReader.Create(stream, new StreamPipeReaderOptions(leaveOpen: true)),
@@ -278,12 +321,30 @@ public sealed class RelayTunnelProvider : ITunnelProvider
                 );
                 return;
 
+            case TunnelFrameType.Settings:
+                await this.AcceptSettingsAsync(streamId, payload, cancellationToken).ConfigureAwait(false);
+                return;
+
             case TunnelFrameType.Open:
-                this.OpenStream(streamId, Decode(payload));
+                this.OpenStream(streamId, Decode(payload), flow: false);
+                return;
+
+            case TunnelFrameType.OpenWithFlowControl:
+                this.OpenStream(streamId, Decode(payload), flow: true);
                 return;
 
             case TunnelFrameType.Data:
-                await this.WriteToStreamAsync(streamId, payload, cancellationToken).ConfigureAwait(false);
+                await this.ReceiveAsync(streamId, payload, cancellationToken).ConfigureAwait(false);
+                return;
+
+            case TunnelFrameType.WindowUpdate:
+                if (this.streams.TryGetValue(streamId, out var credited)
+                    && credited.Send is { } window
+                    && TunnelSettings.DecodeWindowUpdate(payload) is { } increment
+                    && !window.Add(increment))
+                {
+                    this.Reset(streamId, credited);
+                }
                 return;
 
             case TunnelFrameType.CloseStream:
@@ -300,43 +361,153 @@ public sealed class RelayTunnelProvider : ITunnelProvider
         }
     }
 
-    void OpenStream(uint streamId, string remoteDescription)
+    /// <summary>
+    /// The relay supports flow control: noted, and answered with this end's own Settings, after which the relay opens
+    /// streams with <see cref="TunnelFrameType.OpenWithFlowControl"/>. Once per connection; with flow control off here
+    /// the frame is ignored, as a client that predates it would.
+    /// </summary>
+    async ValueTask AcceptSettingsAsync(uint streamId, ReadOnlySequence<byte> payload, CancellationToken cancellationToken)
     {
+        if (streamId != 0 || this.local is not { } settings || Volatile.Read(ref this.relaySettings) is not null)
+            return;
+
+        Volatile.Write(ref this.relaySettings, TunnelSettings.Decode(payload));
+
+        if (this.channel is { } channel)
+            await channel.SendAsync(TunnelFrameType.Settings, 0, settings.Encode(), cancellationToken).ConfigureAwait(false);
+    }
+
+    void OpenStream(uint streamId, string remoteDescription, bool flow)
+    {
+        var relay = Volatile.Read(ref this.relaySettings);
+
+        // A flow-controlled stream only follows both Settings frames; one before them, or beyond this end's own stream
+        // limit, is a relay not keeping to the protocol, and is refused rather than served with no window to hold it.
+        var refused = flow && (this.local is null || relay is null);
+        if (!refused && flow && Interlocked.Increment(ref this.flowStreams) > this.local!.MaxStreams)
+        {
+            Interlocked.Decrement(ref this.flowStreams);
+            refused = true;
+        }
+
+        if (refused)
+        {
+            this.SendQuietly(TunnelFrameType.CloseStream, streamId, ReadOnlyMemory<byte>.Empty);
+            return;
+        }
+
         var connection = new DuplexPipeConnection(
             $"tunnel-{streamId}",
             ParseEndPoint(remoteDescription),
             isTunneled: true
         );
 
-        if (!this.streams.TryAdd(streamId, connection))
+        var stream = new AgentStream(connection)
+        {
+            // The relay's window: what it is prepared to buffer of this stream's response for a slow public client.
+            Send = flow ? new StreamSendWindow(relay!.InitialWindow) : null
+        };
+
+        if (flow)
+            stream.Receive = this.CreateReceiver(streamId, connection);
+
+        if (!this.streams.TryAdd(streamId, stream))
         {
             // An id still in use - a stream left over from before a reconnect. Refused, but the relay is told, or its
             // public client waits out the whole keep-alive timeout for a response that is never coming.
+            stream.Receive?.Abort();
+            this.Retire(stream);
             connection.Abort();
-            if (this.channel is { } channel)
+            this.SendQuietly(TunnelFrameType.CloseStream, streamId, ReadOnlyMemory<byte>.Empty);
+            return;
+        }
+
+        _ = Task.Run(() => this.PumpOutboundAsync(streamId, stream), CancellationToken.None);
+        this.accepted.Writer.TryWrite(connection);
+    }
+
+    /// <summary>
+    /// The request half of a flow-controlled stream: fed to the app by the stream's own pump. The flush into the app's
+    /// pipe only completes once the app has read far enough, and only then is the relay granted more - so a handler
+    /// that never reads its upload holds up that upload alone.
+    /// </summary>
+    StreamReceiver CreateReceiver(uint streamId, DuplexPipeConnection connection) => new(
+        this.local!.InitialWindow,
+        async (chunk, cancellationToken) =>
+        {
+            try
             {
-                _ = channel.SendAsync(TunnelFrameType.CloseStream, streamId, this.stopping.Token)
-                    .AsTask()
-                    .ContinueWith(
-                        static t => _ = t.Exception,
-                        CancellationToken.None,
-                        TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
-                        TaskScheduler.Default
-                    );
+                connection.TransportWriter.Write(chunk.Span);
+                var result = await connection.TransportWriter.FlushAsync(cancellationToken).ConfigureAwait(false);
+
+                // The app has finished with the request; the rest of it is discarded, and still granted back.
+                return !result.IsCompleted;
             }
+            catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException)
+            {
+                return false;
+            }
+        },
+        increment => this.SendQuietlyAsync(TunnelFrameType.WindowUpdate, streamId, TunnelSettings.EncodeWindowUpdate(increment))
+    );
+
+    async ValueTask ReceiveAsync(uint streamId, ReadOnlySequence<byte> payload, CancellationToken cancellationToken)
+    {
+        if (!this.streams.TryGetValue(streamId, out var stream))
+            return;
+
+        if (stream.Receive is { } receiver)
+        {
+            // Only queued: the stream's own pump hands it to the app, so the loop goes straight back to the others.
+            if (!receiver.TryEnqueue(payload))
+                this.Reset(streamId, stream);
 
             return;
         }
 
-        _ = Task.Run(() => this.PumpOutboundAsync(streamId, connection), CancellationToken.None);
-        this.accepted.Writer.TryWrite(connection);
+        await WriteToStreamAsync(streamId, stream.Connection, payload, cancellationToken).ConfigureAwait(false);
     }
 
-    async ValueTask WriteToStreamAsync(uint streamId, ReadOnlySequence<byte> payload, CancellationToken cancellationToken)
+    /// <summary>The relay broke the stream's flow control. The stream is reset; the tunnel and its other streams carry on.</summary>
+    void Reset(uint streamId, AgentStream stream)
     {
-        if (!this.streams.TryGetValue(streamId, out var connection))
+        stream.Receive?.Abort();
+        stream.Send?.Close();
+
+        if (this.streams.TryRemove(KeyValuePair.Create(streamId, stream)))
+            this.Retire(stream);
+
+        stream.Connection.Abort();
+        this.SendQuietly(TunnelFrameType.CloseStream, streamId, ReadOnlyMemory<byte>.Empty);
+    }
+
+    void Retire(AgentStream stream)
+    {
+        if (stream.Receive is not null && stream.TryRelease())
+            Interlocked.Decrement(ref this.flowStreams);
+    }
+
+    void SendQuietly(TunnelFrameType type, uint streamId, ReadOnlyMemory<byte> payload)
+        => _ = this.SendQuietlyAsync(type, streamId, payload).AsTask();
+
+    async ValueTask SendQuietlyAsync(TunnelFrameType type, uint streamId, ReadOnlyMemory<byte> payload)
+    {
+        if (this.channel is not { } channel)
             return;
 
+        try
+        {
+            await channel.SendAsync(type, streamId, payload, this.stopping.Token).ConfigureAwait(false);
+        }
+        catch
+        {
+            // The tunnel is gone; the supervisor is already handling it.
+        }
+    }
+
+    /// <summary>A stream without flow control: written into the app's pipe by the frame loop itself, as before.</summary>
+    async ValueTask WriteToStreamAsync(uint streamId, DuplexPipeConnection connection, ReadOnlySequence<byte> payload, CancellationToken cancellationToken)
+    {
         try
         {
             foreach (var segment in payload)
@@ -353,15 +524,38 @@ public sealed class RelayTunnelProvider : ITunnelProvider
 
     void CloseStream(uint streamId)
     {
-        if (this.streams.TryRemove(streamId, out var connection))
-            connection.TransportWriter.Complete();
+        if (!this.streams.TryRemove(streamId, out var stream))
+            return;
+
+        // The public client is gone or done: nothing more of the response is wanted. The pump keeps reading the app's
+        // output, discarding it, so a handler mid-write is not left waiting on a window that will never open.
+        stream.Send?.Close();
+
+        if (stream.Receive is not { } receiver)
+        {
+            stream.Connection.TransportWriter.Complete();
+            return;
+        }
+
+        // Whatever of the request is still queued reaches the app first, then the app sees its end.
+        receiver.Complete();
+        _ = receiver.Completion.ContinueWith(
+            static (_, state) => ((DuplexPipeConnection)state!).TransportWriter.Complete(),
+            stream.Connection,
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default
+        );
     }
 
     /// <summary>Forwards everything the server writes for one exchange back to the relay as frames.</summary>
-    async Task PumpOutboundAsync(uint streamId, DuplexPipeConnection connection)
+    async Task PumpOutboundAsync(uint streamId, AgentStream stream)
     {
+        var connection = stream.Connection;
         var reader = connection.TransportReader;
         var tunnel = this.channel;
+        var window = stream.Send;
+        var discarding = false;
 
         try
         {
@@ -383,13 +577,23 @@ public sealed class RelayTunnelProvider : ITunnelProvider
                 try
                 {
                     var offset = 0;
-                    while (offset < length)
+                    while (offset < length && !discarding)
                     {
                         var take = Math.Min(length - offset, TunnelProtocol.MaxPayloadLength);
-                        await tunnel.SendAsync(TunnelFrameType.Data, streamId, pending.AsMemory(offset, take), this.stopping.Token)
-                            .ConfigureAwait(false);
 
-                        offset += take;
+                        // Held to the relay's window: a public client that is not keeping up stops this response, not
+                        // the tunnel. A closed window means the relay is done with the stream; the rest is discarded.
+                        if (window is not null)
+                            take = await window.ReserveAsync(take, this.stopping.Token).ConfigureAwait(false);
+
+                        discarding = take == 0;
+                        if (!discarding)
+                        {
+                            await tunnel.SendAsync(TunnelFrameType.Data, streamId, pending.AsMemory(offset, take), this.stopping.Token)
+                                .ConfigureAwait(false);
+
+                            offset += take;
+                        }
                     }
                 }
                 finally
@@ -407,7 +611,9 @@ public sealed class RelayTunnelProvider : ITunnelProvider
         finally
         {
             // This stream's entry only: after a reconnect the id can belong to a new stream already.
-            this.streams.TryRemove(KeyValuePair.Create(streamId, connection));
+            this.streams.TryRemove(KeyValuePair.Create(streamId, stream));
+            stream.Send?.Close();
+            this.Retire(stream);
 
             if (tunnel is not null)
             {
@@ -428,8 +634,13 @@ public sealed class RelayTunnelProvider : ITunnelProvider
     {
         foreach (var streamId in this.streams.Keys)
         {
-            if (this.streams.TryRemove(streamId, out var connection))
-                connection.Abort();
+            if (this.streams.TryRemove(streamId, out var stream))
+            {
+                stream.Receive?.Abort();
+                stream.Send?.Close();
+                stream.Connection.Abort();
+                this.Retire(stream);
+            }
         }
     }
 

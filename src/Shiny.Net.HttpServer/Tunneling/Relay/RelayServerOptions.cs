@@ -82,6 +82,36 @@ public sealed class RelayServerOptions
 
     /// <summary>How long a public connection may sit idle between requests before it is closed.</summary>
     public TimeSpan KeepAliveTimeout { get; set; } = TimeSpan.FromSeconds(130);
+
+    /// <summary>
+    /// Holds each request on a tunnel to its own flow-control window, so one that stalls - a public client that stops
+    /// reading its download, an app handler that never reads its upload - waits alone instead of stopping every other
+    /// request on the tunnel. Used with clients that support it, which say so when they register; others are served as
+    /// before. On by default.
+    /// </summary>
+    public bool EnableFlowControl { get; set; } = true;
+
+    /// <summary>
+    /// How many bytes of one response the relay will hold for a public client that is not keeping up, before the
+    /// tunnelled app has to wait - and so the most one stalled request can cost in memory here. Larger windows carry
+    /// more over a long round trip (one window per round trip per request); 512 KiB by default.
+    /// </summary>
+    public int StreamWindowSize { get; set; } = 512 * 1024;
+
+    /// <summary>
+    /// Public connections one tunnel may carry at once when flow control is in use; one over the limit gets a 503. A
+    /// connection counts for as long as it is open, kept-alive ones between requests included, so this is a safety
+    /// bound rather than a working limit: with <see cref="StreamWindowSize"/> it caps what one tunnel can make the
+    /// relay buffer (512 x 512 KiB, if every one of them stalled at once). 512 by default.
+    /// </summary>
+    public int MaxStreamsPerTunnel { get; set; } = 512;
+
+    /// <summary>
+    /// How long a write to a public client may wait for it to take the bytes, when flow control is in use. A client
+    /// that has stopped reading - or vanished without closing - is disconnected after this, which gives back the window
+    /// it was holding and lets the app's response end.
+    /// </summary>
+    public TimeSpan PublicWriteTimeout { get; set; } = TimeSpan.FromSeconds(60);
 }
 
 /// <summary>What a client asked for when it registered.</summary>
