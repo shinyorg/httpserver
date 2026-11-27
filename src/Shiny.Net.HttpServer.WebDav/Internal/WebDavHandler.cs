@@ -38,6 +38,12 @@ sealed partial class WebDavHandler
     readonly WebDavLockManager locks;
     readonly IWebDavPropertyStore properties;
 
+    // Held from a PUT's last lock check to its file landing, and around a LOCK taking its lock (and
+    // creating the file it locks). Without it either can slip between the other's check and its
+    // write: a long upload overwriting a lock taken while it was arriving, or a losing LOCK
+    // emptying the file the winner just saved.
+    readonly SemaphoreSlim writeGate = new(1, 1);
+
     public WebDavHandler(WebDavOptions options, IWebDavFileSystem fileSystem, string basePath)
     {
         this.options = options;
@@ -307,7 +313,7 @@ sealed partial class WebDavHandler
             return;
         }
 
-        if (await this.AuthorizeAsync(context, path, subtree: false).ConfigureAwait(false) is null)
+        if (await this.AuthorizeAsync(context, path, subtree: false).ConfigureAwait(false) is not { } tokens)
             return;
 
         if (context.Request.ContentLength is { } declared && declared > this.options.MaxUploadBytes)
@@ -316,12 +322,34 @@ sealed partial class WebDavHandler
             return;
         }
 
+        var gated = false;
+
         // Counted as it is read rather than trusting Content-Length, which a client is free to
         // understate or omit entirely. Passing the limit throws a 413 out of the file system's copy,
         // which is what stops a write it had staged from being moved into place.
-        var body = new UploadLimitStream(context.Request.Body, this.options.MaxUploadBytes);
+        //
+        // The locks are asked again once the body is in: the check above was made before the upload
+        // started, and an exclusive LOCK taken while a large one was arriving would otherwise be
+        // overwritten by it. The gate is held from that check until the file system is done, so no
+        // LOCK lands in between either.
+        var body = new UploadLimitStream(context.Request.Body, this.options.MaxUploadBytes, async cancellationToken =>
+        {
+            await this.writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            gated = true;
 
-        await this.fileSystem.WriteAsync(path.Relative, body, context.RequestAborted).ConfigureAwait(false);
+            if (this.options.EnableLocking && this.locks.FindBlocking(path.Relative, tokens, includeDescendants: false) is not null)
+                throw new WebDavException(StatusCodes.Status423Locked, "The resource was locked while the upload was arriving.");
+        });
+
+        try
+        {
+            await this.fileSystem.WriteAsync(path.Relative, body, context.RequestAborted).ConfigureAwait(false);
+        }
+        finally
+        {
+            if (gated)
+                this.writeGate.Release();
+        }
 
         // The new tag, so a client can make its next write conditional without a round trip. A file
         // system is free to file what it was given under another name - a photo library does - and

@@ -330,7 +330,11 @@ sealed class DirectoryCollectionStore
             return null;
 
         var bytes = await File.ReadAllBytesAsync(info.FullName, cancellationToken).ConfigureAwait(false);
-        var etag = this.Remember(info, bytes);
+
+        if (this.AfterReadForTest is { } afterRead)
+            await afterRead(info.FullName).ConfigureAwait(false);
+
+        var etag = this.Remember(info.FullName, info.Length, info.LastWriteTimeUtc.Ticks, bytes);
 
         return new DavObject(name, etag, Encoding.UTF8.GetString(bytes), info.LastWriteTimeUtc);
     }
@@ -340,9 +344,9 @@ sealed class DirectoryCollectionStore
         var path = this.ObjectPath(principal, collection, name);
         var bytes = Encoding.UTF8.GetBytes(data);
 
-        await WriteAtomicallyAsync(path, bytes, cancellationToken).ConfigureAwait(false);
+        var (length, ticks) = await WriteAtomicallyAsync(path, bytes, cancellationToken).ConfigureAwait(false);
 
-        return this.Remember(new FileInfo(path), bytes);
+        return this.Remember(path, length, ticks, bytes);
     }
 
     public ValueTask DeleteObject(string principal, string collection, string name)
@@ -362,36 +366,57 @@ sealed class DirectoryCollectionStore
             cached.Ticks == info.LastWriteTimeUtc.Ticks)
             return cached.ETag;
 
+        // The size and time the listing saw, from before the read.
         var bytes = await File.ReadAllBytesAsync(info.FullName, cancellationToken).ConfigureAwait(false);
 
-        return this.Remember(info, bytes);
+        return this.Remember(info.FullName, info.Length, info.LastWriteTimeUtc.Ticks, bytes);
     }
 
-    string Remember(FileInfo info, byte[] content)
+    /// <summary>
+    /// The tag for <paramref name="content"/>, cached only if the file is still the one that was
+    /// stat'ed - <paramref name="length"/> and <paramref name="ticks"/>, taken before the content
+    /// was read (or, for a write, from the file before it was moved into place).
+    /// <para>
+    /// Stat'ing afterwards and caching against that would pin the old text's tag to a PUT that
+    /// replaced the file in between: the listing would keep serving the old tag for the new text,
+    /// and sync-collection would never report the change.
+    /// </para>
+    /// </summary>
+    string Remember(string path, long length, long ticks, byte[] content)
     {
-        info.Refresh();
-
         var etag = "\"" + Convert.ToHexStringLower(SHA256.HashData(content).AsSpan(0, 12)) + "\"";
-        this.etags[info.FullName] = (info.Length, info.LastWriteTimeUtc.Ticks, etag);
+        var now = new FileInfo(path);
+
+        if (now.Exists && now.Length == length && now.LastWriteTimeUtc.Ticks == ticks)
+            this.etags[path] = (length, ticks, etag);
 
         return etag;
     }
 
-    static ValueTask WriteAtomicallyAsync(string path, string text, CancellationToken cancellationToken)
-        => WriteAtomicallyAsync(path, Encoding.UTF8.GetBytes(text), cancellationToken);
+    /// <summary>Runs between reading an object and caching its tag, so a test can land a write there.</summary>
+    internal Func<string, ValueTask>? AfterReadForTest { get; set; }
+
+    static async ValueTask WriteAtomicallyAsync(string path, string text, CancellationToken cancellationToken)
+        => await WriteAtomicallyAsync(path, Encoding.UTF8.GetBytes(text), cancellationToken).ConfigureAwait(false);
 
     /// <summary>
     /// Written beside the target and moved over it, so a reader — or a crash — never sees half an
-    /// object where a whole one was.
+    /// object where a whole one was. Returns the size and write time the file had before the move,
+    /// which a move keeps: what the target shows afterwards if no other write has replaced it.
     /// </summary>
-    static async ValueTask WriteAtomicallyAsync(string path, byte[] bytes, CancellationToken cancellationToken)
+    static async ValueTask<(long Length, long Ticks)> WriteAtomicallyAsync(string path, byte[] bytes, CancellationToken cancellationToken)
     {
         var temp = Path.Combine(Path.GetDirectoryName(path)!, "." + Guid.NewGuid().ToString("N") + ".tmp");
 
         try
         {
             await File.WriteAllBytesAsync(temp, bytes, cancellationToken).ConfigureAwait(false);
+
+            var staged = new FileInfo(temp);
+            var stat = (staged.Length, staged.LastWriteTimeUtc.Ticks);
+
             File.Move(temp, path, overwrite: true);
+            return stat;
         }
         finally
         {

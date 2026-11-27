@@ -173,8 +173,6 @@ partial class WebDavHandler
         if (tokens is null)
             return;
 
-        var created = false;
-
         if (this.Stat(path) is null)
         {
             // RFC 4918 §7.3: locking an unmapped URL creates an empty resource to hold the lock.
@@ -194,13 +192,44 @@ partial class WebDavHandler
 
             if (!await this.CheckLockAsync(context, path, tokens, subtree: false).ConfigureAwait(false))
                 return;
-
-            await this.fileSystem.WriteAsync(path.Relative, Stream.Null, context.RequestAborted).ConfigureAwait(false);
-
-            created = true;
         }
 
-        if (!this.locks.TryAcquire(path.Relative, info.Scope, depth == Depth.Infinity, info.Owner, timeout, tokens, out var held))
+        var created = false;
+        WebDavLock held;
+        bool acquired;
+
+        await this.writeGate.WaitAsync(context.RequestAborted).ConfigureAwait(false);
+
+        try
+        {
+            // The lock first and the empty file second, and the file only if it is still missing.
+            // The other way round, a LOCK that loses the race for a new URL has already written its
+            // empty file - over the one the winner locked and saved a moment before, which is
+            // exactly the LOCK-then-PUT a Mac does for every new file.
+            acquired = this.locks.TryAcquire(path.Relative, info.Scope, depth == Depth.Infinity, info.Owner, timeout, tokens, out held);
+
+            if (acquired && this.Stat(path) is null)
+            {
+                try
+                {
+                    await this.fileSystem.WriteAsync(path.Relative, Stream.Null, context.RequestAborted).ConfigureAwait(false);
+                }
+                catch
+                {
+                    // A lock on a resource that could not be made would hold a URL that is not there.
+                    this.locks.Release(held.Path, held.Token);
+                    throw;
+                }
+
+                created = true;
+            }
+        }
+        finally
+        {
+            this.writeGate.Release();
+        }
+
+        if (!acquired)
         {
             await WebDavXml.WriteErrorAsync(
                 context,

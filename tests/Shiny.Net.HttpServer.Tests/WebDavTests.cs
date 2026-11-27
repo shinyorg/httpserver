@@ -1013,4 +1013,154 @@ public class WebDavTests
             (await server.Client.PutAsync("/dav/b.txt", new StringContent("x"), TestContext.Current.CancellationToken)).StatusCode
         );
     }
+
+    // ---- races ----
+
+    static Task<TestServer> StartHookedAsync(HookedFileSystem fileSystem)
+        => TestServer.StartAsync(app => app.MapWebDav("/dav", o =>
+        {
+            o.FileSystem = fileSystem;
+            o.AllowWrite = true;
+            o.AllowDelete = true;
+        }));
+
+    /// <summary>
+    /// A PUT checked the locks when it arrived and not again, so an exclusive LOCK taken while a
+    /// long upload was still coming in was overwritten by it when it finished.
+    /// </summary>
+    [Fact]
+    public async Task A_lock_taken_during_an_upload_stops_it_landing()
+    {
+        using var root = new ContentRoot().With("a.txt", "original");
+        var fs = new HookedFileSystem(root.Path) { HoldWriteOf = "a.txt" };
+        await using var server = await StartHookedAsync(fs);
+
+        var put = server.Client.PutAsync("/dav/a.txt", new StringContent("overwritten"), TestContext.Current.CancellationToken);
+
+        // Past the PUT's first lock check and into the upload.
+        await fs.WriteHeld.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+        await LockAsync(server, "/dav/a.txt");
+        fs.ReleaseWrite.TrySetResult();
+
+        Assert.Equal(423, (int)(await put).StatusCode);
+        Assert.Equal("original", await File.ReadAllTextAsync(Path.Combine(root.Path, "a.txt"), TestContext.Current.CancellationToken));
+    }
+
+    /// <summary>
+    /// A LOCK on a new URL wrote its empty file before taking the lock. Two of them at once - Finder
+    /// saving a new file is LOCK then PUT - and the one that lost could write its empty file over the
+    /// one the winner had locked and saved in the meantime. The lock now comes first, so the second
+    /// LOCK finds it while the first is still creating the file.
+    /// </summary>
+    [Fact]
+    public async Task A_lock_on_a_new_url_is_held_before_its_empty_file_is_written()
+    {
+        using var root = new ContentRoot();
+        var fs = new HookedFileSystem(root.Path) { HoldWriteOf = "new.txt" };
+        await using var server = await StartHookedAsync(fs);
+
+        var firstRequest = Request("LOCK", "/dav/new.txt", LockBody);
+        firstRequest.Headers.Add("Depth", "0");
+        var first = server.Client.SendAsync(firstRequest, TestContext.Current.CancellationToken);
+
+        await fs.WriteHeld.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+        var secondRequest = Request("LOCK", "/dav/new.txt", LockBody);
+        secondRequest.Headers.Add("Depth", "0");
+        var second = await server.Client.SendAsync(secondRequest, TestContext.Current.CancellationToken);
+
+        Assert.Equal(423, (int)second.StatusCode);
+        Assert.False(File.Exists(Path.Combine(root.Path, "new.txt")));
+
+        fs.ReleaseWrite.TrySetResult();
+
+        Assert.Equal(HttpStatusCode.Created, (await first).StatusCode);
+        Assert.True(File.Exists(Path.Combine(root.Path, "new.txt")));
+    }
+
+    /// <summary>
+    /// Removing a resource's last dead property dropped its inner dictionary, and a PROPPATCH setting
+    /// another property on it at the same moment could write into the dictionary just dropped.
+    /// </summary>
+    [Fact]
+    public async Task A_property_set_racing_the_removal_of_the_last_one_is_kept()
+    {
+        var store = new InMemoryWebDavPropertyStore();
+        var first = new WebDavPropertyName("urn:x", "first");
+        var second = new WebDavPropertyName("urn:x", "second");
+
+        for (var i = 0; i < 2000; i++)
+        {
+            var path = "file" + i;
+            await store.SetAsync(path, new WebDavProperty(first, "1"), TestContext.Current.CancellationToken);
+
+            using var start = new Barrier(2);
+            var remove = Task.Run(async () =>
+            {
+                start.SignalAndWait();
+                await store.RemoveAsync(path, first, CancellationToken.None);
+            }, TestContext.Current.CancellationToken);
+
+            var set = Task.Run(async () =>
+            {
+                start.SignalAndWait();
+                await store.SetAsync(path, new WebDavProperty(second, "2"), CancellationToken.None);
+            }, TestContext.Current.CancellationToken);
+
+            await Task.WhenAll(remove, set);
+
+            var properties = await store.GetAsync(path, TestContext.Current.CancellationToken);
+            Assert.Equal([second], properties.Select(p => p.Name));
+        }
+    }
+
+    /// <summary>
+    /// The physical file system, with one write that waits for the test before it starts: the moment
+    /// a PUT is past its first checks, or a LOCK is creating its file.
+    /// </summary>
+    sealed class HookedFileSystem(string rootPath) : IWebDavFileSystem
+    {
+        readonly PhysicalWebDavFileSystem inner = new(rootPath);
+        string? holdWriteOf;
+
+        public string? HoldWriteOf
+        {
+            get => this.holdWriteOf;
+            init => this.holdWriteOf = value;
+        }
+
+        public TaskCompletionSource WriteHeld { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource ReleaseWrite { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async ValueTask WriteAsync(string path, Stream content, CancellationToken cancellationToken)
+        {
+            var target = Volatile.Read(ref this.holdWriteOf);
+
+            if (target is not null && path == target && Interlocked.CompareExchange(ref this.holdWriteOf, null, target) == target)
+            {
+                this.WriteHeld.TrySetResult();
+                await this.ReleaseWrite.Task.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken);
+            }
+
+            await this.inner.WriteAsync(path, content, cancellationToken);
+        }
+
+        public WebDavEntry? GetEntry(string path) => this.inner.GetEntry(path);
+
+        public IEnumerable<WebDavEntry> GetChildren(string path) => this.inner.GetChildren(path);
+
+        public ValueTask<Stream> OpenReadAsync(string path, CancellationToken cancellationToken) => this.inner.OpenReadAsync(path, cancellationToken);
+
+        public ValueTask CreateDirectoryAsync(string path, CancellationToken cancellationToken) => this.inner.CreateDirectoryAsync(path, cancellationToken);
+
+        public ValueTask DeleteAsync(string path, CancellationToken cancellationToken) => this.inner.DeleteAsync(path, cancellationToken);
+
+        public ValueTask MoveAsync(string source, string destination, CancellationToken cancellationToken) => this.inner.MoveAsync(source, destination, cancellationToken);
+
+        public ValueTask CopyAsync(string source, string destination, bool recursive, CancellationToken cancellationToken) => this.inner.CopyAsync(source, destination, recursive, cancellationToken);
+
+        public WebDavQuota? GetQuota(string path) => this.inner.GetQuota(path);
+    }
 }

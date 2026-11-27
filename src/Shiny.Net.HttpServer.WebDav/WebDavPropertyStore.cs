@@ -1,5 +1,3 @@
-using System.Collections.Concurrent;
-
 namespace Shiny.Net.HttpServer.WebDav;
 
 /// <summary>
@@ -77,35 +75,49 @@ public interface IWebDavPropertyStore
 /// </summary>
 public sealed class InMemoryWebDavPropertyStore : IWebDavPropertyStore
 {
-    readonly ConcurrentDictionary<string, ConcurrentDictionary<WebDavPropertyName, string>> byPath = new(StringComparer.Ordinal);
+    // One lock over plain dictionaries rather than nested concurrent ones. A resource's inner
+    // dictionary is dropped when its last property goes, and with nothing tying that to a SET on
+    // the same resource, the SET could write into the dictionary just dropped - answered 200 and
+    // lost. PROPPATCH is rare enough that a single lock costs nothing anyone would notice.
+    readonly Dictionary<string, Dictionary<WebDavPropertyName, string>> byPath = new(StringComparer.Ordinal);
 
     public ValueTask<IReadOnlyList<WebDavProperty>> GetAsync(string path, CancellationToken cancellationToken)
     {
-        if (!this.byPath.TryGetValue(path, out var properties) || properties.IsEmpty)
-            return new ValueTask<IReadOnlyList<WebDavProperty>>(Array.Empty<WebDavProperty>());
+        lock (this.byPath)
+        {
+            if (!this.byPath.TryGetValue(path, out var properties) || properties.Count == 0)
+                return new ValueTask<IReadOnlyList<WebDavProperty>>(Array.Empty<WebDavProperty>());
 
-        var result = new List<WebDavProperty>(properties.Count);
-        foreach (var pair in properties)
-            result.Add(new WebDavProperty(pair.Key, pair.Value));
+            var result = new List<WebDavProperty>(properties.Count);
+            foreach (var pair in properties)
+                result.Add(new WebDavProperty(pair.Key, pair.Value));
 
-        return new ValueTask<IReadOnlyList<WebDavProperty>>(result);
+            return new ValueTask<IReadOnlyList<WebDavProperty>>(result);
+        }
     }
 
     public ValueTask SetAsync(string path, WebDavProperty property, CancellationToken cancellationToken)
     {
-        this.byPath.GetOrAdd(path, _ => new ConcurrentDictionary<WebDavPropertyName, string>())[property.Name] = property.Xml;
+        lock (this.byPath)
+        {
+            if (!this.byPath.TryGetValue(path, out var properties))
+            {
+                properties = [];
+                this.byPath[path] = properties;
+            }
+
+            properties[property.Name] = property.Xml;
+        }
 
         return default;
     }
 
     public ValueTask RemoveAsync(string path, WebDavPropertyName name, CancellationToken cancellationToken)
     {
-        if (this.byPath.TryGetValue(path, out var properties))
+        lock (this.byPath)
         {
-            properties.TryRemove(name, out _);
-
-            if (properties.IsEmpty)
-                this.byPath.TryRemove(path, out _);
+            if (this.byPath.TryGetValue(path, out var properties) && properties.Remove(name) && properties.Count == 0)
+                this.byPath.Remove(path);
         }
 
         return default;
@@ -113,14 +125,14 @@ public sealed class InMemoryWebDavPropertyStore : IWebDavPropertyStore
 
     public ValueTask DeleteAsync(string path, bool recursive, CancellationToken cancellationToken)
     {
-        this.byPath.TryRemove(path, out _);
-
-        if (recursive)
+        lock (this.byPath)
         {
-            foreach (var key in this.byPath.Keys)
+            this.byPath.Remove(path);
+
+            if (recursive)
             {
-                if (IsUnder(key, path))
-                    this.byPath.TryRemove(key, out _);
+                foreach (var key in this.byPath.Keys.Where(k => IsUnder(k, path)).ToList())
+                    this.byPath.Remove(key);
             }
         }
 
@@ -129,32 +141,24 @@ public sealed class InMemoryWebDavPropertyStore : IWebDavPropertyStore
 
     public ValueTask CopyAsync(string fromPath, string toPath, bool move, CancellationToken cancellationToken)
     {
-        // Snapshotted first: the loop below writes into the same dictionary it is reading, and a
-        // copy into a path underneath the source would otherwise walk its own output.
-        var sources = new List<string>();
-
-        if (this.byPath.ContainsKey(fromPath))
-            sources.Add(fromPath);
-
-        foreach (var key in this.byPath.Keys)
+        lock (this.byPath)
         {
-            if (IsUnder(key, fromPath))
-                sources.Add(key);
-        }
+            // Snapshotted first: the loop below writes into the same dictionary it is reading, and a
+            // copy into a path underneath the source would otherwise walk its own output.
+            var sources = this.byPath
+                .Where(pair => pair.Key == fromPath || IsUnder(pair.Key, fromPath))
+                .ToList();
 
-        foreach (var source in sources)
-        {
-            if (!this.byPath.TryGetValue(source, out var properties))
-                continue;
+            foreach (var (source, properties) in sources)
+            {
+                var suffix = source.Length == fromPath.Length ? string.Empty : source[fromPath.Length..].TrimStart('/');
+                var target = suffix.Length == 0 ? toPath : (toPath.Length == 0 ? suffix : toPath + "/" + suffix);
 
-            var suffix = source.Length == fromPath.Length ? string.Empty : source[fromPath.Length..].TrimStart('/');
-            var target = suffix.Length == 0 ? toPath : (toPath.Length == 0 ? suffix : toPath + "/" + suffix);
+                this.byPath[target] = new Dictionary<WebDavPropertyName, string>(properties);
 
-            var clone = new ConcurrentDictionary<WebDavPropertyName, string>(properties);
-            this.byPath[target] = clone;
-
-            if (move)
-                this.byPath.TryRemove(source, out _);
+                if (move)
+                    this.byPath.Remove(source);
+            }
         }
 
         return default;

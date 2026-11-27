@@ -100,6 +100,82 @@ public partial class TusTests
         Assert.Equal(-1, dir.LengthOf(IdOf(url)));
     }
 
+    /// <summary>
+    /// The sweep lists expired uploads without their leases. A PATCH that was already under way when
+    /// the list was made could finish - sliding the expiry and answering 204 - before the sweep took
+    /// the lease, and the sweep then deleted the upload it had just told the client was fine.
+    /// </summary>
+    [Fact]
+    public async Task The_sweep_spares_an_upload_a_patch_revived_after_it_was_listed()
+    {
+        using var dir = new UploadDirectory();
+        var start = DateTimeOffset.UtcNow;
+        var clock = new ManualTimeProvider { Now = start };
+        var store = new ListingHookStore(dir.Store());
+        TusMountBuilder? mount = null;
+
+        await using var server = await TestServer.StartAsync(app => mount = app.MapTus("/files", o =>
+        {
+            o.Store = store;
+            o.Expiration = TimeSpan.FromHours(1);
+            o.TimeProvider = clock;
+        }));
+
+        var url = await CreateAsync(server.Client, 10);
+
+        clock.Now = start.AddMinutes(61);
+
+        store.AfterListing = async () =>
+        {
+            // The PATCH began while the upload was still alive, and finishes now.
+            clock.Now = start.AddMinutes(30);
+            Assert.Equal(HttpStatusCode.NoContent, (await PatchAsync(server.Client, url, 0, Bytes(4))).StatusCode);
+            clock.Now = start.AddMinutes(61);
+        };
+
+        Assert.Equal(0, await mount!.RemoveExpiredUploadsAsync(Token));
+        Assert.Equal(4, dir.LengthOf(IdOf(url)));
+        Assert.Equal(HttpStatusCode.OK, (await HeadAsync(server.Client, url)).StatusCode);
+    }
+
+    /// <summary>A store that runs <see cref="AfterListing"/> once, between listing what has expired and returning the list.</summary>
+    sealed class ListingHookStore(ITusStore inner) : ITusStore
+    {
+        Func<Task>? hook;
+
+        public Func<Task>? AfterListing
+        {
+            get => this.hook;
+            set => this.hook = value;
+        }
+
+        public async ValueTask<IReadOnlyList<string>> GetExpiredAsync(DateTimeOffset nowUtc, CancellationToken cancellationToken)
+        {
+            var expired = await inner.GetExpiredAsync(nowUtc, cancellationToken);
+
+            if (Interlocked.Exchange(ref this.hook, null) is { } after)
+                await after();
+
+            return expired;
+        }
+
+        public ValueTask<string> CreateAsync(TusCreateRequest request, CancellationToken cancellationToken) => inner.CreateAsync(request, cancellationToken);
+
+        public ValueTask<TusUpload?> GetAsync(string id, CancellationToken cancellationToken) => inner.GetAsync(id, cancellationToken);
+
+        public ValueTask<long> AppendAsync(string id, long offset, Stream data, CancellationToken cancellationToken) => inner.AppendAsync(id, offset, data, cancellationToken);
+
+        public ValueTask SetLengthAsync(string id, long length, CancellationToken cancellationToken) => inner.SetLengthAsync(id, length, cancellationToken);
+
+        public ValueTask SetExpirationAsync(string id, DateTimeOffset? expiresUtc, CancellationToken cancellationToken) => inner.SetExpirationAsync(id, expiresUtc, cancellationToken);
+
+        public ValueTask ConcatenateAsync(string id, IReadOnlyList<string> partialIds, CancellationToken cancellationToken) => inner.ConcatenateAsync(id, partialIds, cancellationToken);
+
+        public ValueTask<Stream> OpenReadAsync(string id, CancellationToken cancellationToken) => inner.OpenReadAsync(id, cancellationToken);
+
+        public ValueTask<bool> DeleteAsync(string id, CancellationToken cancellationToken) => inner.DeleteAsync(id, cancellationToken);
+    }
+
     /// <summary>An info file a power cut left empty is an upload that is gone, and is cleaned up as one.</summary>
     [Fact]
     public async Task Treats_an_unreadable_info_as_gone_and_sweeps_it()

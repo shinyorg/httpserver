@@ -92,6 +92,12 @@ public sealed class FileSyncClient : IDisposable
 
     public FileSyncClientOptions Options => this.options;
 
+    /// <summary>Stands in for the file system watcher in <see cref="RunAsync"/>, so a test can say when the folder changed.</summary>
+    internal LocalChangeSignal? LocalSignalForTest { get; set; }
+
+    /// <summary>Called as each pass starts, inside the pass gate.</summary>
+    internal Action? PassStartingForTest { get; set; }
+
     // ---- the loop ----
 
     /// <summary>
@@ -107,6 +113,11 @@ public sealed class FileSyncClient : IDisposable
 
         while (!cancellationToken.IsCancellationRequested)
         {
+            // Taken before the pass, so an edit made while it runs still wakes the next one. Taken
+            // after, the edit's pulse would have gone to a signal nobody was waiting on, and it
+            // would sit there until the scan interval came round.
+            var localNext = localChanged?.Current;
+
             try
             {
                 var result = await this.SyncAsync(cancellationToken).ConfigureAwait(false);
@@ -121,30 +132,36 @@ public sealed class FileSyncClient : IDisposable
             if (backoff > TimeSpan.Zero)
             {
                 await Task.Delay(backoff, cancellationToken).ConfigureAwait(false);
-                continue;
             }
-
-            using var wake = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            var cursor = SyncState.Load(this.stateFile).Cursor;
-            var reasons = new List<Task>
+            else
             {
-                this.WaitForRemoteAsync(cursor, wake.Token),
-                Task.Delay(this.options.ScanInterval, wake.Token)
-            };
+                await this.WaitForReasonAsync(localNext, cancellationToken).ConfigureAwait(false);
 
-            if (localChanged is not null)
-                reasons.Add(localChanged.Next(wake.Token));
-
-            await Task.WhenAny(reasons).ConfigureAwait(false);
-            await wake.CancelAsync().ConfigureAwait(false);
-            cancellationToken.ThrowIfCancellationRequested();
-
-            // Let a burst of local writes (a save is often several) settle into one pass.
-            await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false);
+                // Let a burst of local writes (a save is often several) settle into one pass.
+                await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false);
+            }
         }
 
         static TimeSpan Backoff(TimeSpan current)
             => current == TimeSpan.Zero ? TimeSpan.FromSeconds(5) : TimeSpan.FromTicks(Math.Min(current.Ticks * 2, TimeSpan.FromMinutes(5).Ticks));
+    }
+
+    async Task WaitForReasonAsync(Task? localNext, CancellationToken cancellationToken)
+    {
+        using var wake = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var cursor = SyncState.Load(this.stateFile).Cursor;
+        var reasons = new List<Task>
+        {
+            this.WaitForRemoteAsync(cursor, wake.Token),
+            Task.Delay(this.options.ScanInterval, wake.Token)
+        };
+
+        if (localNext is not null)
+            reasons.Add(localNext.WaitAsync(wake.Token));
+
+        await Task.WhenAny(reasons).ConfigureAwait(false);
+        await wake.CancelAsync().ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
     }
 
     async Task WaitForRemoteAsync(long cursor, CancellationToken cancellationToken)
@@ -164,6 +181,12 @@ public sealed class FileSyncClient : IDisposable
     FileSystemWatcher? CreateWatcher(out LocalChangeSignal? signal)
     {
         signal = null;
+
+        if (this.LocalSignalForTest is { } injected)
+        {
+            signal = injected;
+            return null;
+        }
 
         if (!this.options.WatchLocalChanges)
             return null;
@@ -209,6 +232,7 @@ public sealed class FileSyncClient : IDisposable
 
         try
         {
+            this.PassStartingForTest?.Invoke();
             Directory.CreateDirectory(this.root);
             Directory.CreateDirectory(this.staging);
 
@@ -960,11 +984,12 @@ public sealed class FileSyncClient : IDisposable
     }
 
     /// <summary>Wakes the loop when the folder changes.</summary>
-    sealed class LocalChangeSignal
+    internal sealed class LocalChangeSignal
     {
         TaskCompletionSource next = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public Task Next(CancellationToken cancellationToken) => Volatile.Read(ref this.next).Task.WaitAsync(cancellationToken);
+        /// <summary>Completes on the first pulse after this was read.</summary>
+        public Task Current => Volatile.Read(ref this.next).Task;
 
         public void Pulse()
             => Interlocked.Exchange(ref this.next, new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)).TrySetResult();

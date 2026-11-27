@@ -21,6 +21,8 @@ sealed class FileSyncHandler
     readonly FileSyncOptions options;
     readonly ConditionalWeakTable<IFileSyncStore, ChangeSignal> signals = new();
 
+    static readonly ConditionalWeakTable<IFileSyncStore, SemaphoreSlim> CommitGates = new();
+
     public FileSyncHandler(FileSyncOptions options) => this.options = options;
 
     /// <summary>Turns a <see cref="FileSyncException"/> into the status it names, as a problem response.</summary>
@@ -145,20 +147,6 @@ sealed class FileSyncHandler
         if (total != commit.Size)
             throw new FileSyncException(StatusCodes.Status400BadRequest, $"The chunks add up to {total} bytes, not {commit.Size}.");
 
-        var missing = new List<string>();
-
-        foreach (var hash in commit.Chunks.Select(c => c.Hash).Distinct(StringComparer.Ordinal))
-        {
-            if (!await store.HasChunkAsync(hash, context.RequestAborted).ConfigureAwait(false))
-                missing.Add(hash);
-        }
-
-        if (missing.Count > 0)
-        {
-            await WriteJsonAsync(context, new WireHashes(missing), WireJson.Default.WireHashes, StatusCodes.Status422UnprocessableEntity).ConfigureAwait(false);
-            return;
-        }
-
         await this.ApplyAsync(context, store, new FileSyncCommit
         {
             Path = path,
@@ -194,8 +182,41 @@ sealed class FileSyncHandler
 
     async ValueTask ApplyAsync(HttpContext context, IFileSyncStore store, FileSyncCommit commit)
     {
-        var previous = await store.GetEntryAsync(commit.Path, context.RequestAborted).ConfigureAwait(false);
-        var result = await store.CommitAsync(commit, context.RequestAborted).ConfigureAwait(false);
+        var missing = new List<string>();
+        FileSyncEntry? previous = null;
+        FileSyncCommitResult? committed = null;
+        var gate = CommitGate(store);
+
+        await gate.WaitAsync(context.RequestAborted).ConfigureAwait(false);
+
+        try
+        {
+            // Checked under the gate garbage collection deletes under, so a chunk found here is
+            // still there when the commit naming it lands. Checked outside it, a restored file
+            // could name the chunks of the version that was deleted, have them collected a moment
+            // later, and be committed with nothing behind it.
+            foreach (var hash in commit.Chunks.Select(c => c.Hash).Distinct(StringComparer.Ordinal))
+            {
+                if (!await store.HasChunkAsync(hash, context.RequestAborted).ConfigureAwait(false))
+                    missing.Add(hash);
+            }
+
+            if (missing.Count == 0)
+            {
+                previous = await store.GetEntryAsync(commit.Path, context.RequestAborted).ConfigureAwait(false);
+                committed = await store.CommitAsync(commit, context.RequestAborted).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            gate.Release();
+        }
+
+        if (committed is not { } result)
+        {
+            await WriteJsonAsync(context, new WireHashes(missing), WireJson.Default.WireHashes, StatusCodes.Status422UnprocessableEntity).ConfigureAwait(false);
+            return;
+        }
 
         if (!result.Committed)
         {
@@ -423,26 +444,62 @@ sealed class FileSyncHandler
 
     public async ValueTask<int> CollectGarbageAsync(IFileSyncStore store, CancellationToken cancellationToken)
     {
-        var referenced = new HashSet<string>(StringComparer.Ordinal);
-
-        foreach (var entry in await store.GetAllEntriesAsync(cancellationToken).ConfigureAwait(false))
-        {
-            if (!entry.Deleted)
-                referenced.UnionWith(entry.Chunks.Select(c => c.Hash));
-        }
-
         var cutoff = this.options.TimeProvider.GetUtcNow() - this.options.GarbageGracePeriod;
-        var removed = 0;
+        var referenced = await ReferencedChunksAsync(store, cancellationToken).ConfigureAwait(false);
+        var candidates = new List<string>();
 
+        // Found without the gate: listing every chunk takes a while, and commits should not queue
+        // behind it.
         await foreach (var chunk in store.ListChunksAsync(cancellationToken).ConfigureAwait(false))
         {
-            if (!referenced.Contains(chunk.Hash) && chunk.StoredUtc < cutoff && await store.DeleteChunkAsync(chunk.Hash, cancellationToken).ConfigureAwait(false))
-                removed++;
+            if (!referenced.Contains(chunk.Hash) && chunk.StoredUtc < cutoff)
+                candidates.Add(chunk.Hash);
+        }
+
+        if (candidates.Count == 0)
+            return 0;
+
+        var removed = 0;
+        var gate = CommitGate(store);
+
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+        try
+        {
+            // Asked again now that no commit can land: one since the first look may have brought a
+            // candidate back - a restored file names the chunks of the version that was deleted.
+            referenced = await ReferencedChunksAsync(store, cancellationToken).ConfigureAwait(false);
+
+            foreach (var hash in candidates.Where(h => !referenced.Contains(h)))
+            {
+                if (await store.DeleteChunkAsync(hash, cancellationToken).ConfigureAwait(false))
+                    removed++;
+            }
+        }
+        finally
+        {
+            gate.Release();
         }
 
         return removed;
     }
 
+    static async ValueTask<HashSet<string>> ReferencedChunksAsync(IFileSyncStore store, CancellationToken cancellationToken)
+    {
+        var referenced = new HashSet<string>(StringComparer.Ordinal);
+        var entries = await store.GetAllEntriesAsync(cancellationToken).ConfigureAwait(false);
+
+        foreach (var entry in entries.Where(e => !e.Deleted))
+            referenced.UnionWith(entry.Chunks.Select(c => c.Hash));
+
+        return referenced;
+    }
+
+    /// <summary>
+    /// Serializes "are the chunks there, then commit" against garbage collection's deletes, per
+    /// store. Static so two endpoints mapped over the same store share it.
+    /// </summary>
+    static SemaphoreSlim CommitGate(IFileSyncStore store) => CommitGates.GetValue(store, _ => new SemaphoreSlim(1, 1));
     // ---- helpers ----
 
     static string RequirePath(HttpContext context)
